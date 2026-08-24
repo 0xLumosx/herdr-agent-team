@@ -1,0 +1,8 @@
+# The inspected Codex CLI 0.147.0 layers this file over the user's base config when started
+# with `codex --profile planner`. The installer appends prompts/planner.md as
+# `developer_instructions`. Set `model` here only when you want to override the
+# model selected by the base config.
+
+model_reasoning_effort = "xhigh"
+sandbox_mode = "workspace-write"
+approval_policy = "never"

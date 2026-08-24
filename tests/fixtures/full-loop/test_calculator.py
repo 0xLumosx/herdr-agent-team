@@ -1,0 +1,18 @@
+import unittest
+
+from calculator import add
+
+
+class AddTests(unittest.TestCase):
+    def test_adds_positive_numbers(self):
+        self.assertEqual(add(2, 3), 5)
+
+    def test_adds_negative_numbers(self):
+        self.assertEqual(add(-2, -3), -5)
+
+    def test_adds_zero(self):
+        self.assertEqual(add(0, 0), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

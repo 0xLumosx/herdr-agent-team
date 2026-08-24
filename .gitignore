@@ -1,0 +1,24 @@
+# Operating-system and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime output
+*.log
+.herdr-codex/
+.herdr-codex-test.*/
+test-results/
+.tmp/
+tmp/
+
+# Local backup artifacts, if copied into the repository
+herdr-codex-team-backup-*/
