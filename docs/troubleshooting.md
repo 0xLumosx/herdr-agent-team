@@ -1,12 +1,17 @@
 # Troubleshooting
 
+[简体中文](zh-CN/troubleshooting.md)
+
 ## Start with evidence
 
 Run diagnostics from the project checkout:
 
 ```bash
-./scripts/doctor.sh
+./scripts/doctor.sh --team <prefix> --cwd /path/to/team-worktree
 ```
+
+Omit `--team` for the legacy `planner`/`coder`/`reviewer` team. Omit `--cwd`
+only when you do not need diagnostics to verify the team's working directory.
 
 Inside a Herdr-managed pane, also inspect:
 
@@ -17,21 +22,100 @@ herdr agent list
 
 Do not infer a healthy team from three terminal panes alone. Record which binary, profile file, live name, pane, and lifecycle state actually exist.
 
+## `agent_name_taken`
+
+A message such as `agent name planner is already used` or an
+`agent_name_taken` error means another live agent already owns an exact name
+requested by startup. Herdr live names are unique.
+
+Do not force startup, rename the existing agent, or continue with the other two
+roles. That would leave an ambiguous or partial team. Choose a unique valid team
+prefix instead:
+
+```bash
+./scripts/start.sh --team github --cwd /path/to/project
+```
+
+This requests `github-planner`, `github-coder`, and `github-reviewer`. If one of
+those also exists, choose another prefix or intentionally finish the existing
+team before retrying. Startup must never delete, overwrite, or adopt it.
+
+## Planner sent work to the wrong Coder
+
+Likely causes are an old Planner prompt that still hard-codes `coder`, an
+unrecognized self-name, or incorrect team-prefix derivation.
+
+Inspect the four routing values Planner is required to establish:
+
+```text
+SELF_AGENT
+TEAM_PREFIX
+CODER_AGENT
+REVIEWER_AGENT
+```
+
+For `SELF_AGENT=github-planner`, the only valid route is
+`CODER_AGENT=github-coder` and `REVIEWER_AGENT=github-reviewer`. Use the current
+Herdr inspection commands to verify the exact live names:
+
+```bash
+herdr agent list
+herdr agent get github-planner
+herdr agent get github-coder
+herdr agent get github-reviewer
+```
+
+Do not infer team membership from pane position, tab, workspace, process kind,
+or a hard-coded pane ID. If derivation or exact-target verification fails, the
+correct response is `HERDR_COMMUNICATION_FAILED`, even when another team's
+Coder is idle and available.
+
+Reinstall the current role prompts, restart the requested team, run
+`doctor.sh --team github`, and then run the team-aware communication test. Do
+not accept or merge work produced by the wrong team without independently
+inspecting and reconciling its Git diff.
+
+## Two Coders changed the same working tree
+
+This is a filesystem/Git working-tree collision, not a Herdr routing failure.
+Exact-name routing and the prompt contract reduce accidental cross-team
+messages; they are not an ACL. They also do not prevent `auth-coder` and
+`ui-coder` from writing the same checkout when both teams use one cwd.
+
+Stop issuing new work and preserve both agents' reports and the current diff.
+For different repositories, restart the teams with different `--cwd` values.
+For concurrent tasks in one repository, prepare a separate branch and Git
+worktree for each team:
+
+```bash
+cd /projects/myapp
+git worktree add ../myapp-auth -b task/auth
+git worktree add ../myapp-ui -b task/ui
+```
+
+Then bind each team to its own path. This project does not automatically merge,
+remove, or repair worktrees. See [Multi-team isolation](multi-team.md).
+
 ## Planner says Coder is working, but the Coder pane is idle
 
 This is the highest-priority failure because it can create false progress.
 
-Likely cause: Planner could not use Herdr and silently created or addressed a Codex-native/internal subagent instead of the live Herdr Coder.
+Likely cause: Planner could not use Herdr and silently created or addressed a
+Codex-native/internal subagent, or it derived another team's target instead of
+the expected live Herdr Coder.
 
 Check:
 
 ```bash
 herdr agent list
-herdr agent get coder
-herdr agent read coder --source recent-unwrapped --lines 120
+herdr agent get <expected-team-coder>
+herdr agent read <expected-team-coder> --source recent-unwrapped --lines 120
 ```
 
-Then inspect the Planner profile and confirm that it contains the mandatory `HERDR COMMUNICATION IS MANDATORY` rule and explicitly forbids native subagents, hidden workers, `/root/coder`, `/root/reviewer`, and fallback agent systems.
+Then inspect the Planner profile and confirm that it contains the mandatory
+Herdr identity/routing and strict team-isolation rules and explicitly forbids
+cross-team routing, native subagents, hidden workers, `/root/coder`,
+`/root/reviewer`, and fallback agent systems.
 
 Expected response to failed routing:
 
@@ -57,9 +141,11 @@ The project default is:
 sandbox_mode = "workspace-write"
 ```
 
-Keep the Planner developer instructions that prohibit application-source edits. Restart Planner after changing the profile, then re-run `test.sh communication`.
+Keep the Planner developer instructions that prohibit application-source edits.
+Restart Planner after changing the profile, then re-run `test.sh --team
+<prefix> communication` (or the legacy unprefixed form).
 
-If the error persists, do not broaden to `danger-full-access`. Inspect the exact denied path, verify that the Herdr integration and hooks are current, and run `herdr agent explain` or the diagnostics printed by the current Herdr version.
+If the error persists, do not broaden to `danger-full-access`. Inspect the exact denied path, verify that the Herdr integration and hooks are current, and run `herdr agent explain <expected-team-agent>` or the diagnostics printed by the current Herdr version.
 
 ## All agents appear as `codex`
 
@@ -71,21 +157,26 @@ Run:
 herdr agent list
 ```
 
-On Herdr 0.8.2, rename an existing live target with:
+On Herdr 0.8.2, rename an existing live target that you own and have positively
+identified with:
 
 ```bash
-herdr agent rename <agent-name-or-pane-id> planner
-herdr agent rename <agent-name-or-pane-id> coder
-herdr agent rename <agent-name-or-pane-id> reviewer
+herdr agent rename <agent-name-or-pane-id> <team-prefix>-planner
+herdr agent rename <agent-name-or-pane-id> <team-prefix>-coder
+herdr agent rename <agent-name-or-pane-id> <team-prefix>-reviewer
 ```
 
-Use the actual target returned by Herdr, not sidebar position or a guessed ID. Names must be unique.
+Use the actual target returned by Herdr, not sidebar position or a guessed ID.
+Names must be unique. Never rename an existing agent from another team to
+resolve a collision. Use unprefixed role names only for intentional legacy mode.
 
 ## Agent name disappears after restart
 
 In the inspected Herdr 0.8.2 behavior, a live name follows the current pane occupant. It is cleared when the agent exits, is released, or is replaced. A Codex profile does not permanently assign the Herdr name.
 
-Run `start.sh` again or use `herdr agent rename` after the replacement agent is detected. Then run `doctor.sh` before resuming a task. This is expected runtime lifecycle, not proof that the profile was lost.
+Run `start.sh` again or use `herdr agent rename` after the replacement agent is
+detected. Then run `doctor.sh --team <prefix>` before resuming a task. This is
+expected runtime lifecycle, not proof that the profile was lost.
 
 ## Profile changes have no effect
 
@@ -151,7 +242,7 @@ herdr pane read <pane-id> --source recent-unwrapped --lines 80
 Create or choose a clean shell pane, then retry with the agent's native arguments after `--`:
 
 ```bash
-herdr agent start coder --kind codex --pane <pane-id> -- --profile coder
+herdr agent start <team-prefix>-coder --kind codex --pane <pane-id> -- --profile coder
 ```
 
 ## Ping passes but communication fails
@@ -161,7 +252,7 @@ Direct ping proves the external shell can address Coder and Reviewer. It does no
 Check Planner's sandbox, installed prompt, live name, and pane state. Run:
 
 ```bash
-/path/to/herdr-codex-team/scripts/test.sh communication
+/path/to/herdr-codex-team/scripts/test.sh --team <prefix> communication
 ```
 
 while watching both downstream panes. If Planner only echoes the expected sentinel itself, treat the test as failed.
@@ -171,14 +262,20 @@ while watching both downstream panes. If Planner only echoes the expected sentin
 The full test needs a live three-agent Herdr team, Git, and Python 3 because it verifies a real working-tree change, executes the demo tests, and checks the review loop. Run it only after ping and communication pass:
 
 ```bash
-/path/to/herdr-codex-team/scripts/test.sh full
+/path/to/herdr-codex-team/scripts/test.sh --team <prefix> full
 ```
 
 The script copies its bundled fixture into `.herdr-codex-test.*` under `${HERDR_TEST_PROJECT_DIR:-$PWD}`, initializes an isolated Git repository there, and removes it after success. Invoke the absolute `test.sh` path while the current directory is the same Git project used by `start.sh`, or set `HERDR_TEST_PROJECT_DIR` to that project explicitly. The script rejects a host outside a Git worktree, without a committed `HEAD`, or whose full worktree is not clean.
 
 The host placement matters: the disposable path must remain inside the live team's workspace-write root. The script preserves the directory after failure for diagnosis; set `KEEP_TEST_WORKSPACE=1` to retain a successful run. Use a clean disposable worktree. If the harness reports a dirty host, inspect and preserve that work yourself; do not ask the test to ignore it.
 
-A pass verifies challenge-derived Coder completion and Reviewer pass responses, unchanged fixture history, the exact changed-file scope, unchanged host Git-visible status/branch/`HEAD`, script-owned assertions, fixture test success, and Planner's run-specific approval. It does not inspect ignored host files or prove filesystem writer identity because Planner also has `workspace-write`. Use a disposable host without sensitive ignored files. If hard attribution is part of your acceptance criteria, this v0.1 test is insufficient.
+A pass verifies challenge-derived Coder completion and Reviewer pass responses,
+unchanged fixture history, the exact changed-file scope, unchanged host
+Git-visible status/branch/`HEAD`, script-owned assertions, fixture test success,
+and Planner's run-specific approval. It does not inspect ignored host files or
+prove filesystem writer identity because Planner also has `workspace-write`.
+Use a disposable host without sensitive ignored files. If hard attribution is
+part of your acceptance criteria, the current test is insufficient.
 
 The test reads the latest 2000 unwrapped terminal rows by default. If a legitimately verbose run scrolls its final run-specific token out of that window, preserve the fixture and rerun with a larger positive `HERDR_TEST_READ_LINES`; do not treat a larger window as a substitute for watching the named panes.
 
@@ -191,9 +288,28 @@ cd /path/to/herdr-codex-team
 ./scripts/test.sh static
 ```
 
+## Isolation test cannot run
+
+The isolation mode needs two different prefixed teams that are both live,
+settled, and bound to their expected generic profiles:
+
+```bash
+./scripts/test.sh --team github --against-team auth isolation
+```
+
+`--against-team` is required only for this mode. It must differ from `--team`.
+Run both directional checks when possible. If the current shell cannot safely
+address two real teams, record the live isolation check as `NOT RUN` with that
+reason. Passing static name construction, doctor, or a one-team communication
+test is not proof that one Planner cannot control the other team's Coder.
+
 ## `start.sh` rejects the project directory
 
-The startup interface is `start.sh [--no-focus] [PROJECT_DIR]`. `PROJECT_DIR` defaults to the current directory and must resolve inside a Git worktree so every handoff has an objective `git status` and `git diff` surface.
+The startup interface is `start.sh [--no-focus] [--team PREFIX] [--cwd
+PROJECT_DIR] [PROJECT_DIR]`. `PROJECT_DIR` defaults to the current directory and
+must resolve inside a Git worktree so every handoff has an objective `git
+status` and `git diff` surface. Do not combine `--cwd` with the legacy
+positional path.
 
 Check:
 

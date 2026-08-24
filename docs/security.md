@@ -1,5 +1,7 @@
 # Security
 
+[简体中文](zh-CN/security.md)
+
 ## Security posture
 
 Herdr Codex Team coordinates agents that can execute commands and, for two roles, write inside a repository. It reduces ambiguity through visible routing, least-role permissions, bounded review, and Git evidence. It does not turn language-model prompts into a hardened security boundary.
@@ -8,6 +10,7 @@ Use the project only after understanding the effective authority of each layer:
 
 ```text
 Herdr identity   which visible live agent receives a message
+Team prefix      which exact same-team names Planner may address
 Codex sandbox    what tool operations can access
 Approval policy  whether Codex pauses at ordinary approval points
 Role prompt      what behavior the model is instructed to follow
@@ -48,27 +51,45 @@ The statement “only Coder writes source” is fully sandbox-enforced for Revie
 - **Secret disclosure:** agents can read accessible credentials, `.env` files, proprietary source, or logs and reproduce them in terminals or reports.
 - **False reports:** an agent can claim tests passed or another agent responded; verify against process state, command output, and Git.
 - **Shared-worktree races:** humans, tools, or other agents editing concurrently can make attribution and review unreliable.
+- **Cross-team prompt failure:** prefixes create explicit routes, but a
+  compromised or incorrectly configured Planner can still attempt to address
+  another live team; fail-closed prompts and isolation tests reduce rather than
+  cryptographically eliminate this risk.
 - **Dependency and test side effects:** repository commands can contact networks, mutate external services, or run untrusted build steps within their available permissions.
 
 The independent Reviewer improves defect detection but is not a security scanner, formal verifier, or isolation boundary.
 
-The full integration test is also not a writer-attribution or filesystem audit. It requires challenge-derived Coder and Reviewer success responses, unchanged fixture history, exactly one expected fixture diff, and an otherwise Git-clean committed host whose Git-visible status, branch, and `HEAD` remain unchanged, plus script-owned assertions, fixture tests, and Planner's run-specific approval. The harness also disables user-level Git signing and hooks for its own baseline commit. It does not detect changes to ignored host files, so its host must be disposable and contain no sensitive ignored state. Since Planner has `workspace-write`, those observations cannot prove at the operating-system or cryptographic level that Coder alone produced every byte. Repositories that require hard attribution need external process/filesystem auditing and an isolation design beyond v0.1.
+The full integration test is also not a writer-attribution or filesystem audit.
+It requires challenge-derived Coder and Reviewer success responses, unchanged
+fixture history, exactly one expected fixture diff, and an otherwise Git-clean
+committed host whose Git-visible status, branch, and `HEAD` remain unchanged,
+plus script-owned assertions, fixture tests, and Planner's run-specific
+approval. The harness also disables user-level Git signing and hooks for its
+own baseline commit. It does not detect changes to ignored host files, so its
+host must be disposable and contain no sensitive ignored state. Since Planner
+has `workspace-write`, those observations cannot prove at the operating-system
+or cryptographic level that Coder alone produced every byte. Repositories that
+require hard attribution need external process/filesystem auditing and an
+isolation design beyond the current project.
 
 ## Recommended operating procedure
 
 Before starting:
 
-1. use a clean branch or disposable worktree;
+1. use a clean branch or disposable worktree; give every concurrent team a
+   separate worktree and `--cwd`;
 2. commit or safely preserve the baseline;
 3. remove secrets that the task does not need;
 4. inspect repository-level agent instructions and scripts;
 5. review Codex profile overrides and Herdr hooks;
-6. run `doctor.sh`, then communication tests;
+6. run team-aware `doctor.sh`, then the matching communication tests;
 7. confirm Reviewer remains `read-only`.
 
 During work:
 
 - watch that Herdr routes to the intended live name;
+- verify Planner's `SELF_AGENT`, `TEAM_PREFIX`, `CODER_AGENT`, and
+  `REVIEWER_AGENT` if routing is in doubt;
 - do not auto-answer an agent in a blocked approval/question state;
 - reject unexpected changes immediately and preserve evidence;
 - keep Coder and Reviewer from bypassing Planner;
@@ -110,7 +131,17 @@ Repository templates must never contain API keys, access tokens, private SSH tar
 
 For regulated, safety-critical, credential-bearing, or otherwise sensitive projects, validate this workflow in a disposable non-sensitive repository first. Apply organizational access control, network isolation, required human approval, and audit policy independently of this project.
 
-If your policy requires a hard guarantee that Planner cannot write source, the v0.1 Planner design is not sufficient: its `workspace-write` sandbox is a deliberate Herdr-compatibility compromise. Use an external isolation design that exposes only the Herdr communication endpoint and read-only repository view, or do not use this workflow for that repository.
+If your policy requires a hard guarantee that Planner cannot write source, the
+current Planner design is not sufficient: its `workspace-write` sandbox is a
+deliberate Herdr-compatibility compromise. Use an external isolation design
+that exposes only the Herdr communication endpoint and read-only repository
+view, or do not use this workflow for that repository.
+
+Team prefixes do not change that boundary and do not isolate the filesystem.
+Two name-isolated teams sharing one checkout can still race. For concurrent
+tasks on one repository, create independent branches and Git worktrees before
+starting the teams. This project deliberately does not automate worktree
+creation, merge, removal, or conflict resolution.
 
 ## Reporting a vulnerability
 

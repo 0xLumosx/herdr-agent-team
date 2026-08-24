@@ -1,21 +1,51 @@
 # Workflow
 
+[简体中文](zh-CN/workflow.md)
+
 ## Invariants
 
-Every task follows four invariants:
+Every task follows five invariants:
 
 1. Planner is the only orchestrator and final decision-maker.
 2. Coder is the only role intended to modify application source.
 3. Reviewer is independent, read-only, and never implements a fix.
-4. `planner`, `coder`, and `reviewer` refer only to live Herdr agents with those names.
+4. A legacy team uses the exact live names `planner`, `coder`, and `reviewer`;
+   a prefixed team uses only `<prefix>-planner`, `<prefix>-coder`, and
+   `<prefix>-reviewer`.
+5. Planner orchestrates only the exact Coder and Reviewer derived from its own
+   current live Herdr identity.
 
-If the fourth invariant cannot be established, Planner stops with:
+If identity or the same-team route cannot be established, Planner stops with:
 
 ```text
 HERDR_COMMUNICATION_FAILED
 ```
 
-It does not start a Codex native subagent, hidden worker, `/root/coder`, `/root/reviewer`, or any other fallback.
+It does not choose a similarly named agent, use another team's available role,
+start a Codex native subagent, hidden worker, `/root/coder`, `/root/reviewer`,
+or any other fallback.
+
+## Runtime team identity
+
+At the start of a task and before each handoff, Planner obtains its current live
+Herdr name. It accepts only these two forms:
+
+```text
+SELF_AGENT = planner
+  TEAM_PREFIX = (legacy, empty)
+  CODER_AGENT = coder
+  REVIEWER_AGENT = reviewer
+
+SELF_AGENT = <prefix>-planner
+  TEAM_PREFIX = <prefix>
+  CODER_AGENT = <prefix>-coder
+  REVIEWER_AGENT = <prefix>-reviewer
+```
+
+Planner verifies both exact downstream names with Herdr. Team identity never
+comes from pane position, a fixed pane ID, the current tab/workspace, or process
+kind. If `auth-coder` is missing while `docs-coder` exists, the result is still
+`HERDR_COMMUNICATION_FAILED`.
 
 ## 1. User to Planner
 
@@ -34,10 +64,12 @@ Planner may resolve low-risk ambiguity from repository evidence. If an unresolve
 
 ## 2. Planner to Coder
 
-Before sending work, Planner confirms the live target with Herdr. The handoff is self-contained and should follow this shape:
+Before sending work, Planner confirms its exact derived live target with Herdr.
+The handoff is self-contained and should follow this shape:
 
 ```text
-ROLE: Live Herdr agent `coder`
+ROLE: Live Herdr agent `<CODER_AGENT>`
+TEAM: `<TEAM_PREFIX>` (or `legacy`)
 
 Goal:
 ...
@@ -104,10 +136,12 @@ Planner must not edit the source itself to “save a round.” Its `workspace-wr
 
 ## 4. Planner to Reviewer
 
-Planner confirms the live Reviewer, then sends a self-contained brief:
+Planner confirms the exact same-team live Reviewer, then sends a self-contained
+brief:
 
 ```text
-ROLE: Live Herdr agent `reviewer`
+ROLE: Live Herdr agent `<REVIEWER_AGENT>`
+TEAM: `<TEAM_PREFIX>` (or `legacy`)
 
 Original goal:
 ...
@@ -200,13 +234,18 @@ Only then may Planner return `APPROVED`, summarizing changes, validation, and re
 
 ## Communication semantics
 
-On the inspected Herdr 0.8.2 surface, Planner can submit work through:
+On the inspected Herdr 0.8.2 surface, Planner submits work to the exact derived
+name. For an `auth-planner`, for example:
 
 ```bash
-herdr agent prompt coder "<self-contained task>" --wait --timeout 120000
+herdr agent prompt auth-coder "<self-contained task>" --wait --timeout 120000
 ```
 
-`--wait` observes lifecycle state, not a cryptographically bound request/response turn. If an agent is already working, its current turn can satisfy a wait. The workflow therefore combines target-name verification, visible pane observation, sentinel tests, and result inspection instead of treating any one signal as conclusive.
+`--wait` observes lifecycle state, not a cryptographically bound
+request/response turn. If an agent is already working, its current turn can
+satisfy a wait. The workflow therefore combines self-identity derivation,
+exact target-name verification, visible pane observation, run-specific tests,
+and result inspection instead of treating any one signal as conclusive.
 
 If a target is `blocked`, inspect the agent state and visible terminal. Do not answer an approval or question automatically on the user's behalf.
 
@@ -217,8 +256,12 @@ Do not discard or reset the working tree merely because Planner or Herdr restart
 1. recover the user's goal and acceptance criteria;
 2. run `git status`, `git diff`, and `git diff --staged`;
 3. inspect validation artifacts and current processes;
-4. run `doctor.sh` and confirm all three live names;
+4. run `doctor.sh --team <prefix> --cwd <worktree>` (or the legacy unprefixed
+   form) and confirm all three exact live names;
 5. decide whether Coder must continue or Reviewer can inspect the existing diff;
 6. send a fresh, self-contained handoff.
 
-v0.1 does not persist a formal state machine. Human-readable file-backed checkpoints are a possible future extension, not a hidden dependency of the current workflow.
+The project does not persist a formal state machine. Human-readable file-backed
+checkpoints are a possible future extension, not a hidden dependency of the
+current workflow. See [Multi-team isolation](multi-team.md) for concurrent-team
+and Git-worktree guidance.

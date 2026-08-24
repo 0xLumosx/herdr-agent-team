@@ -1,5 +1,7 @@
 # Installation
 
+[简体中文](zh-CN/installation.md)
+
 ## Before you install
 
 Use a normal user account. Do not run the scripts with `sudo`. The installer writes role profiles under the current user's Codex home and should not need system-wide access.
@@ -23,6 +25,10 @@ herdr --help
 ```
 
 Codex must support `--profile` files at `$CODEX_HOME/<name>.config.toml`. Herdr must expose its `status`, `workspace`, `pane`, and `agent` command groups. Authenticate Codex using its normal supported login flow before starting the team. `doctor.sh` and `start.sh` perform the detailed command-surface checks; `install.sh` first confirms that both binaries exist and reports their versions.
+
+Startup, diagnostics, and live tests also require a real JSON parser. Install
+`jq`, or keep Python 3 available as the standard-library fallback. The full
+workflow demo always requires Python 3 because it runs independent assertions.
 
 Herdr's official setup guidance is at <https://herdr.dev/agent-guide.md>. Codex's official profile-file behavior is documented in the [configuration reference](https://developers.openai.com/codex/config-reference/).
 
@@ -79,6 +85,10 @@ If any destination exists, the installer first copies it to a timestamped backup
 
 The base `~/.codex/config.toml` remains in place. It continues to supply account, provider, and other user-level settings; a role profile is layered on top when selected.
 
+These are the only three profiles installed even when you run many teams.
+`github-coder` and `auth-coder`, for example, both select the generic `coder`
+profile. Team identity belongs to the Herdr live name, not a copied profile.
+
 Re-running the installer is safe with respect to pre-existing profiles because each conflict is backed up first. It is not a merge operation: any local customization in the installed role files should be reviewed or restored from the printed backup path.
 
 ## 4. Review Herdr integration and hooks
@@ -103,7 +113,11 @@ An integration may add or change Codex hooks. Codex can then show a warning such
 ./scripts/doctor.sh
 ```
 
-Before a team exists, binary and profile checks should pass while live-agent checks may correctly report that `planner`, `coder`, and `reviewer` are absent. `doctor.sh` exits nonzero in that pre-start state; use its messages to distinguish an expected missing team from a binary, profile, or integration problem.
+Before a team exists, binary and profile checks should pass while live-agent
+checks may correctly report that the requested names are absent. Use
+`doctor.sh` for legacy names or `doctor.sh --team <prefix>` for a prefixed team.
+It exits nonzero in that pre-start state; use its messages to distinguish an
+expected missing team from a binary, profile, or integration problem.
 
 ## Start the team
 
@@ -124,17 +138,45 @@ The startup script creates a new workspace with explicit returned identifiers an
 
 ### 2. Run the startup helper
 
+For a prefixed team:
+
 ```bash
-/absolute/path/to/herdr-codex-team/scripts/start.sh "$PWD"
+/absolute/path/to/herdr-codex-team/scripts/start.sh \
+  --team github \
+  --cwd "$PWD"
 ```
 
 The interface is:
 
 ```text
-start.sh [--no-focus] [PROJECT_DIR]
+start.sh [--no-focus] [--team PREFIX] [--cwd PROJECT_DIR] [PROJECT_DIR]
 ```
 
-`PROJECT_DIR` defaults to the current directory and must be inside a Git worktree. `--no-focus` asks startup to preserve the current focus. The helper creates a new workspace with three shell panes and starts named Codex agents with the installed role profiles. It prints the resulting names and pane identifiers.
+`PROJECT_DIR` defaults to the current directory and must be inside a Git
+worktree. The positional form remains for backward compatibility; do not supply
+it together with `--cwd`. `--no-focus` asks startup to preserve the current
+focus. `--team github` produces `github-planner`, `github-coder`, and
+`github-reviewer`. Omitting it preserves legacy `planner`, `coder`, and
+`reviewer` names.
+
+`TEAM_PREFIX=github` is an environment alternative. If the environment and
+`--team` both specify a value, they must agree. Startup validates the three
+generated names and checks all of them for collisions before creating a
+workspace. On a collision such as `agent_name_taken`, it stops without
+renaming, deleting, or replacing the existing team.
+
+Run another unique prefix to create a concurrent team:
+
+```bash
+/absolute/path/to/herdr-codex-team/scripts/start.sh \
+  --team auth \
+  --cwd /absolute/path/to/another-project
+```
+
+Different repositories can safely use different `--cwd` paths. Two tasks in
+one repository should use separate branches and Git worktrees before startup;
+the helper does not create, merge, or remove them. See
+[Multi-team isolation](multi-team.md).
 
 For one run, model environment variables add a Codex `--model` override for the corresponding role without rewriting installed files:
 
@@ -142,7 +184,8 @@ For one run, model environment variables add a Codex `--model` override for the 
 PLANNER_MODEL="<available-model>" \
 CODER_MODEL="<available-model>" \
 REVIEWER_MODEL="<available-model>" \
-/absolute/path/to/herdr-codex-team/scripts/start.sh --no-focus "$PWD"
+/absolute/path/to/herdr-codex-team/scripts/start.sh \
+  --no-focus --team github --cwd "$PWD"
 ```
 
 Startup is successful only when:
@@ -151,9 +194,18 @@ Startup is successful only when:
 herdr agent list
 ```
 
-shows unique live names `planner`, `coder`, and `reviewer`. Three panes that merely contain a process of kind `codex` do not satisfy the naming requirement.
+shows the three exact requested live names. For `--team github`, those are
+`github-planner`, `github-coder`, and `github-reviewer`; in legacy mode they are
+`planner`, `coder`, and `reviewer`. Three panes that merely contain a process of
+kind `codex` do not satisfy the naming requirement.
 
-This confirms process startup, not the whole security posture. Before sending work, run `doctor.sh` to verify the installed sandbox and approval settings as well as live kind, name, readiness, lifecycle state, and the foreground `--profile <role>` arguments. A working agent is reported as a warning; communication tests require all relevant targets to be settled at `idle` or `done` and bound to the matching role profile.
+This confirms process startup, not the whole security posture. Before sending
+work, run the team-aware doctor to verify installed sandbox/approval settings,
+profile load, integration, exact identity, readiness, lifecycle state,
+workspace/pane/cwd association, and foreground `--profile <role>` arguments. A
+working agent is reported as a warning; communication tests require all
+relevant targets to be settled at `idle` or `done` and bound to the matching
+generic role profile.
 
 ### Verified manual primitives
 
@@ -161,7 +213,7 @@ If automation stops, use the current binary's `--help` before applying a manual 
 
 ```bash
 # Create an isolated workspace and read its root pane ID from the JSON response.
-herdr workspace create --cwd "$PWD" --label "codex-team:<project>" \
+herdr workspace create --cwd "$PWD" --label "codex-team:github:<project>" \
   --env "CODEX_HOME=${CODEX_HOME:-$HOME/.codex}" --no-focus
 
 # Split only panes returned by the preceding commands.
@@ -171,34 +223,52 @@ herdr pane split <right-pane-id> --direction down --ratio 0.5 --cwd "$PWD" \
   --env "CODEX_HOME=${CODEX_HOME:-$HOME/.codex}" --no-focus
 
 # Start a supported Codex process in an existing shell pane.
-herdr agent start planner --kind codex --pane <planner-pane-id> -- --profile planner
-herdr agent start coder --kind codex --pane <coder-pane-id> -- --profile coder
-herdr agent start reviewer --kind codex --pane <reviewer-pane-id> -- --profile reviewer
+herdr agent start github-planner --kind codex --pane <planner-pane-id> -- --profile planner
+herdr agent start github-coder --kind codex --pane <coder-pane-id> -- --profile coder
+herdr agent start github-reviewer --kind codex --pane <reviewer-pane-id> -- --profile reviewer
 ```
 
 `agent start` requires the target pane to be at an interactive shell prompt. It does not create the pane. Agent-native arguments belong after `--`.
 
-If Codex is already live but its name is wrong, Herdr 0.8.2 supports:
+If you are repairing an agent you own and have positively identified its pane,
+Herdr 0.8.2 supports:
 
 ```bash
-herdr agent rename <agent-name-or-pane-id> planner
+herdr agent rename <agent-name-or-pane-id> github-planner
 ```
 
-Use `coder` or `reviewer` for the other roles. Names must be unique. Do not derive pane IDs from sidebar order; copy them from Herdr's JSON response or `herdr pane list`.
+Use the exact same-team Coder or Reviewer name for the other roles. Names must
+be unique. Never rename an agent belonging to another team to resolve a
+collision. Do not derive pane IDs from sidebar order; copy them from Herdr's
+JSON response or `herdr pane list`.
 
 ### 3. Re-run diagnostics
 
+The interface is:
+
+```text
+doctor.sh [--team PREFIX] [--cwd PROJECT_DIR]
+```
+
 ```bash
-/absolute/path/to/herdr-codex-team/scripts/doctor.sh
+/absolute/path/to/herdr-codex-team/scripts/doctor.sh \
+  --team github \
+  --cwd "$PWD"
 ```
 
 Now binary, on-disk profile, foreground profile binding, runtime, name, and state checks should all have enough live data to evaluate. If the platform cannot expose foreground process arguments, diagnostics fail closed instead of treating a renamed stale session as a valid role.
 
 ### 4. Establish communication evidence
 
+The interface is:
+
+```text
+test.sh [--team PREFIX] [--against-team PREFIX] static|ping|communication|full|isolation
+```
+
 ```bash
-/absolute/path/to/herdr-codex-team/scripts/test.sh ping
-/absolute/path/to/herdr-codex-team/scripts/test.sh communication
+/absolute/path/to/herdr-codex-team/scripts/test.sh --team github ping
+/absolute/path/to/herdr-codex-team/scripts/test.sh --team github communication
 ```
 
 Invoke these while the shell remains in the same Git project passed to `start.sh`. Watch the live panes during the test. A Planner-generated claim that Coder responded is not enough if the Herdr Coder pane never receives input or changes lifecycle state.
@@ -206,10 +276,24 @@ Invoke these while the shell remains in the same Git project passed to `start.sh
 For the full test, the current directory is also the default host for the nested disposable fixture:
 
 ```bash
-/absolute/path/to/herdr-codex-team/scripts/test.sh full
+/absolute/path/to/herdr-codex-team/scripts/test.sh --team github full
 ```
 
 If the shell must be elsewhere, set `HERDR_TEST_PROJECT_DIR=/absolute/path/to/the-project-used-by-start.sh`. The script validates that the entire host Git worktree has a committed `HEAD` and is clean before it creates the nested fixture; use a disposable worktree rather than hiding or stashing changes merely to satisfy the test.
+
+When two prefixed teams are live and settled, test cross-team isolation from
+both directions:
+
+```bash
+/absolute/path/to/herdr-codex-team/scripts/test.sh \
+  --team github --against-team auth isolation
+/absolute/path/to/herdr-codex-team/scripts/test.sh \
+  --team auth --against-team github isolation
+```
+
+`--against-team` is required only for `isolation`. If two real teams are not
+available, report this check as `NOT RUN`; static name parsing is not live
+routing evidence.
 
 ## Updating a profile
 

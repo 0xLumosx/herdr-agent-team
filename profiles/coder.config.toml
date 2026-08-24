@@ -1,8 +1,9 @@
 # The inspected Codex CLI 0.147.0 layers this file over the user's base config when started
 # with `codex --profile coder`. The installer appends prompts/coder.md as
-# `developer_instructions`. Set `model` here only when you want to override the
-# model selected by the base config.
+# `developer_instructions`. This is a reusable role profile; live Herdr names may
+# be `coder` or `<team-prefix>-coder`.
 
+model = "gpt-5.6-luna"
 model_reasoning_effort = "high"
 sandbox_mode = "workspace-write"
 approval_policy = "never"

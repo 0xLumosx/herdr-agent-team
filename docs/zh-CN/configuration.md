@@ -1,0 +1,184 @@
+# 配置
+
+[English](../configuration.md)
+
+## Profile 位置和优先级
+
+仓库在 `profiles/` 下包含可复用的角色模板。安装器会把生成的角色文件放在基础 Codex 配置旁：
+
+```text
+$CODEX_HOME/config.toml
+$CODEX_HOME/planner.config.toml
+$CODEX_HOME/coder.config.toml
+$CODEX_HOME/reviewer.config.toml
+```
+
+未设置 `CODEX_HOME` 时，默认使用 `~/.codex`。
+
+当前 Codex CLI 使用以下命令启动时，会把 `$CODEX_HOME/<name>.config.toml` 叠加到基础用户配置之上：
+
+```bash
+codex --profile <name>
+```
+
+这是独立文件 profile 行为，而不是本项目向用户基础文件追加 `[profiles.<name>]` table。角色文件彼此分开，使安装、备份、检查和移除都能保持最小范围。参见[官方 Codex 配置参考](https://developers.openai.com/codex/config-reference/)。
+
+Profile 不编码 Team 前缀。实时 Agent `github-coder` 仍以 `--profile coder` 启动；`auth-coder` 独立复用同一个 profile。Herdr 实时名称携带 runtime Team 身份，Codex profile 名称携带可复用角色配置。因此无论 Team 数量是多少，`install.sh` 始终只管理这三个角色文件。
+
+## 角色默认值
+
+| 设置 | Planner | Coder | Reviewer |
+| --- | --- | --- | --- |
+| `sandbox_mode` | `workspace-write` | `workspace-write` | `read-only` |
+| `approval_policy` | `never` | `never` | `never` |
+| reasoning 默认值 | `xhigh` | `high` | `xhigh` |
+| 应用源码编辑 | prompt 禁止 | 允许且预期 | sandbox 和 prompt 均阻止 |
+
+Coder 模板还提供以下默认建议：
+
+```toml
+model = "gpt-5.6-luna"
+model_reasoning_effort = "high"
+```
+
+工作流不会根据这个模型名称选择不同分支。用户可以使用当前 Codex account 和 CLI 支持的任何模型覆盖它。
+
+不要在未重新测试 Herdr 通信的情况下把 Planner 改成 `read-only`。只读 Planner 曾因 `Operation not permitted` 失败。也不要为了让 Reviewer 自己修复 finding 而把它改为可写 sandbox；这会破坏独立审查边界。
+
+## 模型
+
+工作流不要求固定模型标识符。仓库给 Coder 提供默认值，但路由、角色检查和测试都不依赖该值。编辑每个已安装 profile，选择当前 Codex account 和已安装 CLI 支持的模型：
+
+```toml
+model = "<available-model>"
+model_reasoning_effort = "xhigh"
+```
+
+建议的选择标准：
+
+- Planner 需要可靠的长程推理、需求分析和架构判断。
+- Coder 适合使用 coding-focused model，并在速度和质量之间取合适平衡。
+- Reviewer 需要独立推理和足够上下文来检查周边代码，而非只读 patch summary。
+
+模型可用性和支持的 reasoning 值会随时间变化。请查询最新官方 Codex 文档和自己的 account，不要从旧 README 复制 identifier。如果某模型拒绝 `xhigh`，请选择它支持的最强值，并重新运行 communication 测试。
+
+项目还支持三个范围明确的环境变量覆盖：
+
+```bash
+PLANNER_MODEL="<available-model>" \
+CODER_MODEL="<available-model>" \
+REVIEWER_MODEL="<available-model>" \
+./scripts/install.sh
+```
+
+安装时，每个已设置变量都会渲染进对应的已安装 profile；现有目标仍会先备份。也可以把相同变量传给 `start.sh`，为单次运行添加 `--model` 覆盖而不重写已安装文件。未设置变量时，保留相应角色 profile 或基础配置中的模型选择。当模型选择影响安全或成本时，请同时检查环境和最终已安装文件。
+
+## Developer instructions 和可读 Prompt
+
+规范角色文本保存在 `prompts/`，维护者无需解码长 TOML string 即可审查。安装路径通过简单 shell 过程把角色专属配置和这些指令组合起来，不需要外部 template engine。
+
+修改角色时：
+
+1. 编辑仓库中的可读 prompt；
+2. 检查对应 profile 模板；
+3. 运行仓库静态检查；
+4. 运行 `install.sh` 并记录备份目录；
+5. 重启发生变化的 Codex 角色；
+6. 运行 `test.sh static`，然后至少针对目标 live Herdr session 运行 Team-aware `ping` 和 `communication` 模式。
+
+不要只修改正在运行的 session 中的 chat instruction，就假设已安装 Team 也已改变。新 session 必须能从已安装 profile 重建完整角色。
+
+## 重新加载行为
+
+Codex 在 session 启动时读取所选 profile，不会自动把文件变化重新加载到现有 session。例如修改 `planner.config.toml` 后：
+
+1. 保留任务 context 和工作树变更；
+2. 退出旧 Planner session；
+3. 在目标 Herdr pane 中重新启动 `codex --profile planner`；
+4. 确认实时名称是 legacy `planner` 或预期的 `<team-prefix>-planner`；
+5. 从真实 diff 和自包含 handoff 恢复任务。
+
+重启 Agent 可能清除 Herdr 实时名称，因为名称属于 pane occupant。每次重启角色后都要运行 `doctor.sh --team <prefix>`（legacy 模式使用不带前缀的 `doctor.sh`）和 `herdr agent list`。
+
+绝不能通过分配另一个 Team 的名称来修复重启。Profile 匹配不代表 Team membership。
+
+## 审批和 sandbox 设置
+
+`approval_policy = "never"` 表示 Codex 在普通审批点不会暂停。它不会授予 sandbox 禁止的文件系统访问权限。反过来，即使 prompt 要求不要使用，`workspace-write` 仍然提供实质性的写入能力。
+
+必须从概念上区分这三种机制：
+
+```text
+approval policy  Codex 何时在操作前询问
+sandbox mode     操作可以访问什么
+role prompt      Agent 被要求采取什么行为
+```
+
+不要把 `danger-full-access` 当作兼容性变通方案。应诊断缺失 path、Herdr integration、hook trust 或 command surface。
+
+## 本地变更和更新
+
+已安装文件属于用户本地状态，不应 commit。仓库 profile 不得包含 credential 或私有机器 path。
+
+从新仓库版本更新前，检查希望保留的本地角色设置：
+
+```bash
+grep -E '^(model|model_reasoning_effort|sandbox_mode|approval_policy)[[:space:]]*=' \
+  "$HOME/.codex/planner.config.toml"
+```
+
+需要时对 Coder 和 Reviewer 重复操作。直接与 `profiles/*.config.toml` 比较时出现大量差异是预期现象，因为已安装文件还包含 ownership header 和渲染后的 Markdown prompt。运行 `install.sh`；它会在写入新文件前备份完整已安装版本。比较输出的备份和新文件，仅恢复有意的本地变更，然后重新运行测试。
+
+## 替代 Codex home
+
+高级用户可以设置 `CODEX_HOME`，让安装和启动使用独立的 Codex home；install、doctor、start 和 Codex 本身必须一致使用该变量。该目录可能包含 credential、trusted-hook state 和私有配置，应视为敏感内容。
+
+不要只在安装时设置 `CODEX_HOME`，启动 Agent 时却省略；否则 Codex 会读取另一组 profile。
+
+## Team 和工作目录输入
+
+Team 身份是 runtime input，不是已安装配置：
+
+```bash
+./scripts/start.sh --team github --cwd /path/to/project
+./scripts/doctor.sh --team github --cwd /path/to/project
+./scripts/test.sh --team github communication
+```
+
+`TEAM_PREFIX=github` 是 `--team` 的环境变量替代方式。如果两者同时提供，则必须一致。两者均省略时选择 legacy 名称 `planner`、`coder` 和 `reviewer`。
+
+Prefix 必须能为三个角色生成合法且唯一的 Herdr 名称。Startup 会在 workspace 创建前检查精确生成名，并在冲突时停止；它不会重命名、替换或删除现有 live agent。
+
+`--cwd` 选择 startup 所用 Git worktree 和可选的 doctor cwd 检查目标。它不会创建 worktree。不同仓库要使用不同 `--cwd`；两个 Team 在同一仓库中并发工作时要使用不同 Git worktree。参见[多 Team 隔离](multi-team.md)。
+
+## Runtime timeout 和测试保留
+
+脚本接受以下可选环境设置：
+
+| 变量 | 默认值 | 用途 |
+| --- | ---: | --- |
+| `HERDR_START_TIMEOUT_MS` | `120000` | 每次 `herdr agent start` 的 readiness timeout |
+| `HERDR_TEST_TIMEOUT_MS` | `120000` | direct ping 和 Planner-routing prompt wait |
+| `HERDR_FULL_TEST_TIMEOUT_MS` | `1200000` | 完整 Planner/Coder/Reviewer loop wait |
+| `HERDR_TEST_READ_LINES` | `2000` | 为本次运行特定 response evidence 检查的 terminal 行数 |
+| `HERDR_TEST_PROJECT_DIR` | 当前目录 | live Team 使用的 Git project，也是 nested full-test fixture 的 host |
+| `KEEP_TEST_WORKSPACE` | `0` | 设为 `1` 以保留成功的 disposable full-test repository |
+
+Timeout 是以毫秒为单位的正整数。在检查过的 Herdr 0.8.2 command surface 上，单次 `agent start` timeout 必须大于 3000 ms 且不超过 300000 ms，因此 `HERDR_START_TIMEOUT_MS` 要保持在该范围。测试失败时会自动保留 full-loop 目录，以供诊断。
+
+启动较慢时示例：
+
+```bash
+HERDR_START_TIMEOUT_MS=180000 ./scripts/start.sh /path/to/project
+```
+
+只有日志显示真实的缓慢 readiness 或工作时才应增加 timeout。Timeout 无法修复 missing agent、duplicate name、blocked UI、unavailable server 或 native-subagent fallback。
+
+运行完整测试时，应位于传给 `start.sh` 的同一 project；也可以显式提供 host：
+
+```bash
+HERDR_TEST_PROJECT_DIR=/path/to/project \
+  /path/to/herdr-codex-team/scripts/test.sh --team github full
+```
+
+Host 必须位于 Git-clean worktree 中且有已提交的 `HEAD`。这一布局使 nested fixture 保持在 live Planner/Coder 的 `workspace-write` root 内，同时 baseline check 会拒绝 Git-visible 外部变更、commit 和 branch switch。Git status 不会审计 ignored file，因此应使用不含敏感 ignored content 的 disposable worktree；选择无关、unborn 或 dirty 目录会安全失败。

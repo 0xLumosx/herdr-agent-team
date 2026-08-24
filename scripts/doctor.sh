@@ -2,6 +2,17 @@
 
 set -euo pipefail
 
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+TEAM_LIB="$SCRIPT_DIR/lib/team.sh"
+JSON_LIB="$SCRIPT_DIR/lib/json.sh"
+[[ -f "$TEAM_LIB" && -f "$JSON_LIB" ]] || {
+  printf '[FAIL] Missing script helper under %s/lib.\n' "$SCRIPT_DIR" >&2
+  exit 1
+}
+# shellcheck source=lib/team.sh
+source "$TEAM_LIB"
+# shellcheck source=lib/json.sh
+source "$JSON_LIB"
 CODEX_DIR=${CODEX_HOME:-"$HOME/.codex"}
 case "$CODEX_DIR" in
   /*) ;;
@@ -13,6 +24,10 @@ fi
 export CODEX_HOME="$CODEX_DIR"
 failures=0
 warnings=0
+TEAM_CLI_SET=0
+TEAM_CLI_PREFIX=''
+EXPECTED_CWD_ARG=''
+CWD_ARG_SET=0
 
 ok() {
   printf '[OK] %s\n' "$*"
@@ -28,54 +43,89 @@ fail() {
   failures=$((failures + 1))
 }
 
+usage() {
+  printf '%s\n' \
+    'Usage: ./scripts/doctor.sh [--team PREFIX] [--cwd PROJECT_DIR]' \
+    '' \
+    'Without --team or TEAM_PREFIX, checks legacy planner/coder/reviewer names.' \
+    'With --team github, checks github-planner/github-coder/github-reviewer.' \
+    'TEAM_PREFIX may supply the prefix when --team is omitted.' \
+    '--cwd additionally requires all three agents to use that exact directory.'
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --team)
+      [[ $# -ge 2 ]] || { usage >&2; fail '--team requires a prefix.'; exit 2; }
+      [[ $TEAM_CLI_SET -eq 0 ]] || { fail '--team may be provided only once.'; exit 2; }
+      TEAM_CLI_SET=1
+      TEAM_CLI_PREFIX=$2
+      shift 2
+      ;;
+    --team=*)
+      [[ $TEAM_CLI_SET -eq 0 ]] || { fail '--team may be provided only once.'; exit 2; }
+      TEAM_CLI_SET=1
+      TEAM_CLI_PREFIX=${1#--team=}
+      shift
+      ;;
+    --cwd)
+      [[ $# -ge 2 ]] || { usage >&2; fail '--cwd requires a project directory.'; exit 2; }
+      [[ $CWD_ARG_SET -eq 0 ]] || { fail '--cwd may be provided only once.'; exit 2; }
+      CWD_ARG_SET=1
+      EXPECTED_CWD_ARG=$2
+      shift 2
+      ;;
+    --cwd=*)
+      [[ $CWD_ARG_SET -eq 0 ]] || { fail '--cwd may be provided only once.'; exit 2; }
+      CWD_ARG_SET=1
+      EXPECTED_CWD_ARG=${1#--cwd=}
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      fail "Unknown argument: $1"
+      exit 2
+      ;;
+  esac
+done
+
+if ! REQUESTED_TEAM_PREFIX=$(team_resolve_requested_prefix "$TEAM_CLI_SET" "$TEAM_CLI_PREFIX"); then
+  fail 'Could not resolve a single non-empty team prefix.'
+  exit 2
+fi
+if ! team_configure "$REQUESTED_TEAM_PREFIX"; then
+  fail "Invalid team prefix '$REQUESTED_TEAM_PREFIX'. It must match [a-z][a-z0-9_-]* and be at most 23 characters."
+  exit 2
+fi
+
+EXPECTED_CWD=''
+if [[ $CWD_ARG_SET -eq 1 ]]; then
+  [[ -n "$EXPECTED_CWD_ARG" && -d "$EXPECTED_CWD_ARG" ]] || {
+    fail "Expected cwd does not exist or is not a directory: $EXPECTED_CWD_ARG"
+    exit 2
+  }
+  EXPECTED_CWD=$(CDPATH= cd -- "$EXPECTED_CWD_ARG" && pwd -P)
+fi
+
 extract_agent_field() {
   local payload=$1
   local field=$2
-  local compact
-  local value
-  if command -v jq >/dev/null 2>&1; then
-    printf '%s\n' "$payload" | jq -r --arg field "$field" \
-      '.result.agent[$field] // empty' 2>/dev/null || true
-    return
-  fi
 
-  compact=$(printf '%s\n' "$payload" | tr '\n' ' ')
-  value=$(printf '%s\n' "$compact" | sed -n \
-    's/.*"'"$field"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-  if [[ -z "$value" ]]; then
-    value=$(printf '%s\n' "$compact" | sed -n \
-      's/.*"'"$field"'"[[:space:]]*:[[:space:]]*\([A-Za-z0-9._-]*\).*/\1/p')
-  fi
-  printf '%s' "$value"
+  json_agent_field "$payload" "$field" || true
 }
 
 process_uses_profile() {
   local payload=$1
   local role=$2
-  local compact
 
-  if command -v jq >/dev/null 2>&1; then
-    printf '%s\n' "$payload" | jq -e --arg role "$role" '
-      any(.result.process_info.foreground_processes[]?;
-        (
-          ((.argv // []) as $args |
-            any(range(0; ($args | length));
-              (($args[.] == "--profile") and ($args[. + 1] == $role))))
-          or
-          ((.cmdline // "") |
-            test("(^|[[:space:]])--profile[[:space:]]+" + $role + "([[:space:]]|$)"))
-        )
-      )
-    ' >/dev/null 2>&1
-    return
-  fi
-
-  compact=$(printf '%s\n' "$payload" | tr '\n' ' ')
-  printf '%s\n' "$compact" | grep -Eq -- \
-    '"--profile"[[:space:]]*,[[:space:]]*"'"$role"'"|--profile[[:space:]]+'"$role"'([[:space:]]|")'
+  json_process_uses_profile "$payload" "$role"
 }
 
-printf 'Herdr Codex Team doctor\n\n'
+printf 'Herdr Codex Team doctor (team: %s)\n\n' "$TEAM_DISPLAY"
 
 if command -v codex >/dev/null 2>&1; then
   ok "Codex found: $(codex --version 2>&1 | head -n 1)"
@@ -87,6 +137,14 @@ if command -v herdr >/dev/null 2>&1; then
   ok "Herdr found: $(herdr --version 2>&1 | head -n 1)"
 else
   fail 'Herdr not found. Install Herdr and make sure `herdr` is in PATH.'
+fi
+
+json_ready=0
+if JSON_BACKEND=$(json_backend_name); then
+  json_ready=1
+  ok "JSON parser found: $JSON_BACKEND"
+else
+  fail 'A real JSON parser is required: install jq or make python3 available.'
 fi
 
 for role in planner coder reviewer; do
@@ -131,6 +189,11 @@ if ! command -v herdr >/dev/null 2>&1; then
   exit 1
 fi
 
+if [[ $json_ready -ne 1 ]]; then
+  printf '\nEnvironment is not healthy: %s failure(s), %s warning(s).\n' "$failures" "$warnings"
+  exit 1
+fi
+
 if herdr agent start --help >/dev/null 2>&1 && \
    herdr agent prompt --help >/dev/null 2>&1 && \
    herdr agent get --help >/dev/null 2>&1 && \
@@ -165,68 +228,110 @@ fi
 
 if [[ $server_running -eq 1 ]]; then
   printf '\nExpected agents:\n'
+  team_workspace_id=''
+  team_cwd=''
+  seen_panes='|'
   for role in planner coder reviewer; do
-    if agent_payload=$(herdr agent get "$role" 2>&1); then
+    live_name_expected=$(team_agent_for_role "$role")
+    if agent_payload=$(herdr agent get "$live_name_expected" 2>&1); then
       live_name=$(extract_agent_field "$agent_payload" name)
       state=$(extract_agent_field "$agent_payload" agent_status)
       agent_kind=$(extract_agent_field "$agent_payload" agent)
       interactive_ready=$(extract_agent_field "$agent_payload" interactive_ready)
       launch_pending=$(extract_agent_field "$agent_payload" launch_pending)
       pane_id=$(extract_agent_field "$agent_payload" pane_id)
-      if [[ "$live_name" != "$role" ]]; then
-        fail "$role target resolved to unexpected live name '${live_name:-unknown}'."
+      workspace_id=$(extract_agent_field "$agent_payload" workspace_id)
+      agent_cwd=$(extract_agent_field "$agent_payload" cwd)
+      foreground_cwd=$(extract_agent_field "$agent_payload" foreground_cwd)
+      effective_cwd=${foreground_cwd:-$agent_cwd}
+      if [[ -n "$effective_cwd" && -d "$effective_cwd" ]]; then
+        effective_cwd=$(CDPATH= cd -- "$effective_cwd" && pwd -P)
+      fi
+      if [[ "$live_name" != "$live_name_expected" ]]; then
+        fail "$live_name_expected target resolved to unexpected live name '${live_name:-unknown}'."
         continue
       fi
       if [[ "$agent_kind" != 'codex' ]]; then
-        fail "$role name resolves to agent kind '${agent_kind:-unknown}', not codex."
+        fail "$live_name_expected resolves to agent kind '${agent_kind:-unknown}', not codex."
         continue
       fi
+      identity_failures_before=$failures
       if [[ -z "$pane_id" ]]; then
-        fail "$role did not expose a pane ID, so its active profile cannot be verified."
+        fail "$live_name_expected did not expose a pane ID, so its active profile cannot be verified."
+      elif [[ "$seen_panes" == *"|$pane_id|"* ]]; then
+        fail "$live_name_expected reuses pane $pane_id; every role must occupy a distinct pane."
       elif process_payload=$(herdr pane process-info --pane "$pane_id" 2>&1); then
         if process_uses_profile "$process_payload" "$role"; then
-          ok "$role foreground process uses --profile $role"
+          ok "$live_name_expected foreground process uses generic --profile $role"
         else
-          fail "$role is not verifiably running with --profile $role. Restart it through start.sh."
+          fail "$live_name_expected is not verifiably running with --profile $role. Restart it through start.sh."
         fi
       else
-        fail "$role foreground process could not be inspected: $process_payload"
+        fail "$live_name_expected foreground process could not be inspected: $process_payload"
+      fi
+      seen_panes="$seen_panes$pane_id|"
+      if [[ -z "$workspace_id" ]]; then
+        fail "$live_name_expected did not expose a workspace ID."
+      elif [[ -z "$team_workspace_id" ]]; then
+        team_workspace_id=$workspace_id
+      elif [[ "$workspace_id" != "$team_workspace_id" ]]; then
+        fail "$live_name_expected is in workspace $workspace_id, not same-team workspace $team_workspace_id."
+      fi
+      if [[ -z "$effective_cwd" ]]; then
+        fail "$live_name_expected did not expose cwd or foreground_cwd."
+      elif [[ -n "$EXPECTED_CWD" && "$effective_cwd" != "$EXPECTED_CWD" ]]; then
+        fail "$live_name_expected cwd is '$effective_cwd', expected '$EXPECTED_CWD'."
+      elif [[ -z "$team_cwd" ]]; then
+        team_cwd=$effective_cwd
+      elif [[ "$effective_cwd" != "$team_cwd" ]]; then
+        fail "$live_name_expected cwd is '$effective_cwd', not same-team cwd '$team_cwd'."
+      fi
+      if [[ $failures -eq $identity_failures_before ]]; then
+        ok "$live_name_expected identity: pane=$pane_id workspace=$workspace_id cwd=$effective_cwd"
       fi
       if [[ "$launch_pending" == 'true' ]]; then
-        fail "$role agent launch is still pending. Inspect with: herdr agent get $role"
+        fail "$live_name_expected launch is still pending. Inspect with: herdr agent get $live_name_expected"
         continue
       fi
       case "$state" in
         idle|done)
           if [[ "$interactive_ready" == 'true' ]]; then
-            ok "$role agent found (state: $state, ready: true)"
+            ok "$live_name_expected found (state: $state, ready: true)"
           else
-            fail "$role agent is $state but not interactively ready. Inspect its pane."
+            fail "$live_name_expected is $state but not interactively ready. Inspect its pane."
           fi
           ;;
         working)
-          warn "$role agent is currently working. Wait for it to settle before running communication tests."
+          warn "$live_name_expected is currently working. Wait for it to settle before running communication tests."
           ;;
         blocked)
-          fail "$role agent is blocked. Read its pane and let the user resolve the approval or question."
+          fail "$live_name_expected is blocked. Read its pane and let the user resolve the approval or question."
           ;;
         unknown|'')
-          fail "$role agent lifecycle state is '${state:-unknown}'; completion is not verified."
+          fail "$live_name_expected lifecycle state is '${state:-unknown}'; completion is not verified."
           ;;
         *)
-          fail "$role agent reported unsupported lifecycle state '$state'."
+          fail "$live_name_expected reported unsupported lifecycle state '$state'."
           ;;
       esac
     else
-      fail "$role agent not found. Run ./scripts/start.sh /path/to/project."
+      fail "$live_name_expected not found. Run ./scripts/start.sh${REQUESTED_TEAM_PREFIX:+ --team $REQUESTED_TEAM_PREFIX} --cwd /path/to/project."
     fi
   done
+
+  if [[ -n "$team_workspace_id" ]]; then
+    ok "Team workspace: $team_workspace_id"
+  fi
+  if [[ -n "$team_cwd" ]]; then
+    ok "Team cwd: $team_cwd"
+  fi
 
   printf '\nCurrent Herdr agent list:\n'
   herdr agent list 2>&1 || fail 'Unable to read the current Herdr agent list.'
 else
   for role in planner coder reviewer; do
-    fail "$role agent could not be checked while the Herdr server is unavailable."
+    live_name_expected=$(team_agent_for_role "$role")
+    fail "$live_name_expected could not be checked while the Herdr server is unavailable."
   done
 fi
 

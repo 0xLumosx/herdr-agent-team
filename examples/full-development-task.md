@@ -65,11 +65,13 @@ Validation
 
 Required agent workflow
 
-Planner is the only orchestrator. Confirm the live Herdr agents `coder` and
-`reviewer` exist before sending work. Those names mean the visible Herdr agents,
-not Codex native subagents, internal workers, hidden agents, `/root/coder`, or
-`/root/reviewer`. If communication fails, stop with
-HERDR_COMMUNICATION_FAILED.
+Planner is the only orchestrator. Derive the exact Coder and Reviewer names
+from your current live Herdr identity: legacy `planner` uses only `coder` and
+`reviewer`, while `<prefix>-planner` uses only `<prefix>-coder` and
+`<prefix>-reviewer`. Confirm those exact visible agents before sending work.
+Never use another team's agents, Codex native subagents, internal workers,
+hidden agents, `/root/coder`, or `/root/reviewer`. If identity or communication
+fails, stop with HERDR_COMMUNICATION_FAILED.
 
 Only Coder may modify application source and tests. Reviewer is read-only and
 must inspect the original requirement, acceptance criteria, actual git status,

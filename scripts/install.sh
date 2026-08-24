@@ -126,8 +126,13 @@ render_profile() {
     printf '# Installed by herdr-codex-team. Edit the source template and rerun install.sh.\n'
     if [[ -n "$model" ]]; then
       printf 'model = "%s"\n' "$model"
+      # A role template may carry a default model. Remove only that key when
+      # the user supplies an explicit install-time override, avoiding duplicate
+      # TOML keys while preserving its reasoning and sandbox defaults.
+      sed '/^[[:space:]]*model[[:space:]]*=/d' "$template"
+    else
+      command cat -- "$template"
     fi
-    command cat -- "$template"
     printf '\ndeveloper_instructions = '\''\'\''\'\''\n'
     command cat -- "$prompt"
     printf '\n'\''\'\''\'\''\n'

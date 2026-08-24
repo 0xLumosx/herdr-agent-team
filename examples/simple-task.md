@@ -1,6 +1,7 @@
 # Simple first task
 
-Copy the task below into the live Herdr Planner pane after `doctor.sh`, `test.sh ping`, and `test.sh communication` pass.
+Copy the task below into the intended live Herdr Planner pane after the
+team-aware doctor, ping, and communication checks pass.
 
 ```text
 Goal
@@ -34,10 +35,13 @@ Acceptance criteria
 
 Required workflow
 
-Use only the live Herdr agents named `coder` and `reviewer`. Do not create or
-substitute Codex native subagents, internal workers, hidden agents,
-`/root/coder`, or `/root/reviewer`. If Herdr communication fails, stop and
-return HERDR_COMMUNICATION_FAILED.
+Derive the exact same-team Coder and Reviewer names from your current live
+Herdr Planner identity. Legacy `planner` routes only to `coder` and `reviewer`;
+`<prefix>-planner` routes only to `<prefix>-coder` and `<prefix>-reviewer`.
+Verify both targets before handoff. Do not use another team's agents or create
+or substitute Codex native subagents, internal workers, hidden agents,
+`/root/coder`, or `/root/reviewer`. If identity or Herdr communication fails,
+stop and return HERDR_COMMUNICATION_FAILED.
 
 Coder and Reviewer must not contact each other. Planner owns every handoff and
 may run at most four implementation/review rounds.
