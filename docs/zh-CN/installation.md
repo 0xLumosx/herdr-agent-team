@@ -85,7 +85,7 @@ REVIEWER_MODEL="<available-model>" \
 
 即使运行多个 Team，也只会安装这三个 profile。例如 `github-coder` 和 `auth-coder` 都选择通用 `coder` profile。Team 身份属于 Herdr 实时名称，不属于复制出来的 profile。
 
-重复运行安装器时，每个冲突 profile 都会先备份，因此不会直接丢失原文件。但这不是 merge：安装角色文件中的本地定制应从打印出的备份路径检查或恢复。
+重复运行安装器时，每个冲突 profile 都会先备份，因此不会直接丢失原文件。但这不是 merge。请检查打印出的备份，但只能把顶层 `model = ...` 赋值直接恢复到已安装角色文件。Reasoning、sandbox、approval 和角色指令是受管字段；应在仓库模板中应用有意变更，运行静态检查后重新安装。Credential、provider endpoint 和私有机器 path 应留在用户本地配置中，不得放入仓库模板。
 
 ## 4. 检查 Herdr Integration 和 Hook
 
@@ -182,9 +182,13 @@ herdr agent list
 
 如果自动化停止，请先查看当前 binary 的 `--help`，再执行手动恢复。Herdr 0.8.2 提供以下原语：
 
+对于带前缀的团队，workspace 标签刻意保持为较短的 `codex-team:<team>`；
+live Agent 名称和 `--cwd` 仍分别保留角色与项目身份。Legacy 模式继续使用
+`codex-team:<project>`。
+
 ```bash
 # 创建隔离 workspace，并从 JSON 响应读取 root pane ID。
-herdr workspace create --cwd "$PWD" --label "codex-team:github:<project>" \
+herdr workspace create --cwd "$PWD" --label "codex-team:github" \
   --env "CODEX_HOME=${CODEX_HOME:-$HOME/.codex}" --no-focus
 
 # 只 split 前序命令返回的 pane。
@@ -230,7 +234,7 @@ doctor.sh [--team PREFIX] [--cwd PROJECT_DIR]
 接口为：
 
 ```text
-test.sh [--team PREFIX] [--against-team PREFIX] static|ping|communication|full|isolation
+test.sh [--team PREFIX] [--against-team PREFIX] static|ping|communication|full|policy|isolation
 ```
 
 ```bash
@@ -240,10 +244,11 @@ test.sh [--team PREFIX] [--against-team PREFIX] static|ping|communication|full|i
 
 请在传给 `start.sh` 的同一 Git project 中调用这些命令。测试期间观察 live pane。即使 Planner 声称 Coder 已回复，只要 Herdr Coder pane 从未收到输入或 lifecycle state 未发生变化，就不足以作为证据。
 
-对于 full 测试，当前目录也是 nested disposable fixture 的默认 host：
+对于 `full` 和 `policy` 测试，当前目录也是各自 nested disposable fixture 的默认 host：
 
 ```bash
 /absolute/path/to/herdr-codex-team/scripts/test.sh --team github full
+/absolute/path/to/herdr-codex-team/scripts/test.sh --team github policy
 ```
 
 如果 shell 必须位于别处，设置 `HERDR_TEST_PROJECT_DIR=/absolute/path/to/the-project-used-by-start.sh`。脚本在创建 nested fixture 前，会验证整个 host Git worktree 有 committed `HEAD` 且 clean；请使用 disposable worktree，不要仅为满足测试而隐藏或 stash 变更。
@@ -261,13 +266,15 @@ test.sh [--team PREFIX] [--against-team PREFIX] static|ping|communication|full|i
 
 ## 更新 Profile
 
-编辑已安装角色文件，然后只退出并重启对应 Codex session：
+仅修改模型时，优先使用文档中的 `PLANNER_MODEL`、`CODER_MODEL` 或 `REVIEWER_MODEL` 覆盖。若直接编辑已安装文件，只支持顶层 `model = ...` 赋值；它不纳入受管 policy digest。
+
+修改 reasoning、sandbox、approval 或角色指令时，必须编辑 `profiles/` 或 `prompts/` 下的对应 source，运行 `test.sh static`，再运行 `install.sh`。`doctor.sh` 和 `start.sh` 会拒绝这些受管字段在已安装文件中的直接漂移。两类持久变更后都只退出并重启受影响的 Codex session：
 
 ```bash
 codex --profile planner
 ```
 
-已经运行的 session 不会自动重新加载 profile 变化。重新运行 `install.sh` 会在备份后替换三个已安装角色文件，因此想恢复仓库模板时可以使用它。
+已经运行的 session 不会自动重新加载 profile 变化。重新运行 `install.sh` 会在备份后替换三个已安装角色文件。
 
 ## 静态验证与卸载
 

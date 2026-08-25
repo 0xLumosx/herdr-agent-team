@@ -59,6 +59,86 @@ except (KeyError, TypeError, ValueError):
 ' "$field" 2>/dev/null
 }
 
+# Identity and path preflights must not coerce booleans or numbers into text.
+# Required fields are non-empty strings; optional fields are strings or null.
+json_agent_required_string() {
+  local payload=$1
+  local field=$2
+
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s\n' "$payload" | jq -ser --arg field "$field" '
+      if length != 1 then error("expected one JSON document") else .[0] end |
+      .result.agent as $agent |
+      if ($agent | type) != "object" then error("expected agent object")
+      else
+        $agent[$field] as $value |
+        if (($value | type) == "string" and ($value | length) > 0) then $value
+        else error("expected non-empty string agent field")
+        end
+      end
+    ' 2>/dev/null
+    return
+  fi
+
+  command -v python3 >/dev/null 2>&1 || return 127
+  printf '%s\n' "$payload" | python3 -c '
+import json
+import sys
+
+try:
+    agent = json.load(sys.stdin)["result"]["agent"]
+    if not isinstance(agent, dict):
+        raise TypeError
+    value = agent.get(sys.argv[1])
+    if not isinstance(value, str) or not value:
+        raise TypeError
+    print(value)
+except (KeyError, TypeError, ValueError):
+    sys.exit(2)
+' "$field" 2>/dev/null
+}
+
+json_agent_optional_string() {
+  local payload=$1
+  local field=$2
+
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s\n' "$payload" | jq -ser --arg field "$field" '
+      if length != 1 then error("expected one JSON document") else .[0] end |
+      .result.agent as $agent |
+      if ($agent | type) != "object" then error("expected agent object")
+      else
+        $agent[$field] as $value |
+        if $value == null then ""
+        elif ($value | type) == "string" then $value
+        else error("expected string or null agent field")
+        end
+      end
+    ' 2>/dev/null
+    return
+  fi
+
+  command -v python3 >/dev/null 2>&1 || return 127
+  printf '%s\n' "$payload" | python3 -c '
+import json
+import sys
+
+try:
+    agent = json.load(sys.stdin)["result"]["agent"]
+    if not isinstance(agent, dict):
+        raise TypeError
+    value = agent.get(sys.argv[1])
+    if value is None:
+        print("")
+    elif isinstance(value, str):
+        print(value)
+    else:
+        raise TypeError
+except (KeyError, TypeError, ValueError):
+    sys.exit(2)
+' "$field" 2>/dev/null
+}
+
 json_object_string() {
   local payload=$1
   local object_name=$2

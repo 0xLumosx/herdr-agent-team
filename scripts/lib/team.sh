@@ -65,6 +65,29 @@ team_agent_for_role() {
   esac
 }
 
+# Print the canonical role for a live name managed by this project. This
+# accepts the three legacy names and valid <team>-<role> names only.
+team_role_from_live_name() {
+  local name=${1-}
+  local role
+  local prefix
+
+  case "$name" in
+    planner|coder|reviewer)
+      printf '%s' "$name"
+      return 0
+      ;;
+    *-planner) role=planner; prefix=${name%-planner} ;;
+    *-coder) role=coder; prefix=${name%-coder} ;;
+    *-reviewer) role=reviewer; prefix=${name%-reviewer} ;;
+    *) return 1 ;;
+  esac
+
+  team_validate_prefix "$prefix" || return 1
+  [[ "$(team_name_for_prefix "$prefix" "$role")" == "$name" ]] || return 1
+  printf '%s' "$role"
+}
+
 team_resolve_requested_prefix() {
   local cli_was_set=${1-0}
   local cli_prefix=${2-}

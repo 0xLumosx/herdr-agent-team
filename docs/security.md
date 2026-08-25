@@ -50,7 +50,15 @@ The statement “only Coder writes source” is fully sandbox-enforced for Revie
 - **Untrusted hooks or integrations:** a hook executes outside the semantic role contract and can change when software is updated.
 - **Secret disclosure:** agents can read accessible credentials, `.env` files, proprietary source, or logs and reproduce them in terminals or reports.
 - **False reports:** an agent can claim tests passed or another agent responded; verify against process state, command output, and Git.
-- **Shared-worktree races:** humans, tools, or other agents editing concurrently can make attribution and review unreliable.
+- **Profile-source authenticity:** SHA-256 markers detect installed prompt or
+  policy drift relative to the current checkout. They are not signatures: a
+  writer that can change the checkout and installed files can change both, so
+  the markers do not establish trusted provenance or resist a malicious local
+  writer.
+- **Shared-worktree races:** startup refuses an already visible, inspectable
+  Herdr Codex role in the same physical worktree, but the preflight is not an
+  atomic lock. Humans, external tools, post-check races, or agents outside the
+  recognized naming scheme can still make attribution and review unreliable.
 - **Cross-team prompt failure:** prefixes create explicit routes, but a
   compromised or incorrectly configured Planner can still attempt to address
   another live team; fail-closed prompts and isolation tests reduce rather than

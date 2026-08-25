@@ -154,7 +154,7 @@ github-reviewer   → codex --profile reviewer
 
 ## 并发 Team 的工作树
 
-精确名称路由配合 fail-closed prompt contract，在各 Agent 遵守约定时可降低误发跨 Team 消息的风险；它不是 ACL 或安全边界，也不能阻止两个 Coder 修改相同文件。
+精确名称路由配合 fail-closed prompt contract，在各 Agent 遵守约定时可降低误发跨 Team 消息的风险。创建 workspace 之前，`start.sh` 会检查另一名可核实 Herdr Codex 角色 Agent 的 `cwd` 与 `foreground_cwd`：若它们解析到同一物理 Git worktree，或路径包含目标 root／位于目标 root 内，则拒绝启动。只有 cwd scope 不发生这种重叠的独立 worktree 才允许并存。这只是启动前 guard，不是原子 reservation 或 ACL；检查后的竞态与 Herdr 外部 writer 仍然可能存在。
 
 - 不同仓库可使用不同 `--cwd` 并发运行。
 - 同一仓库中的并发任务应为每个 Team 使用独立 Git worktree 和 branch。
@@ -180,7 +180,8 @@ git worktree add ../myapp-ui -b task/ui
 2. 在需要时创建 `$CODEX_HOME`；
 3. 替换前备份每个现有目标 profile；
 4. 只安装 `planner.config.toml`、`coder.config.toml` 和 `reviewer.config.toml`；
-5. 报告 Herdr Codex integration 状态，但不会静默信任已经变化的 hook。
+5. 为实际嵌入的角色 prompt 与受管 profile policy 分别记录 SHA-256，供 `doctor.sh` 与 `start.sh` 拒绝与当前 checkout 发生漂移的已安装指令、reasoning、sandbox、approval 或未来策略字段；可独立配置的 `model = ...` 行不纳入 policy hash；
+6. 报告 Herdr Codex integration 状态，但不会静默信任已经变化的 hook。
 
 Team 不会导致按前缀复制 profile。即使有二十个 Team，仍然只使用这三个已安装文件。安装器不会删除或重写基础 `config.toml`、发布任何内容，也不会强制信任 hook。
 
@@ -202,6 +203,7 @@ Reviewer 只返回 `PASS` 或 `CHANGES_REQUIRED`。阻塞性 finding 必须说�
 /path/to/herdr-codex-team/scripts/test.sh --team github ping
 /path/to/herdr-codex-team/scripts/test.sh --team github communication
 /path/to/herdr-codex-team/scripts/test.sh --team github full
+/path/to/herdr-codex-team/scripts/test.sh --team github policy
 /path/to/herdr-codex-team/scripts/test.sh \
   --team github --against-team auth isolation
 /path/to/herdr-codex-team/scripts/test.sh \
@@ -214,13 +216,14 @@ Reviewer 只返回 `PASS` 或 `CHANGES_REQUIRED`。阻塞性 finding 必须说�
 | `ping` | shell 能够访问精确的同 Team Coder 和 Reviewer，并收到本次运行特定的回复 |
 | `communication` | live Planner 将本次运行特定的 challenge 路由到这些真实下游 pane |
 | `full` | 一个小型 Git-backed 缺陷经过 live Planner/Coder/Reviewer 循环，并通过有边界的 artifact 检查 |
+| `policy` | 使用对抗性提示与带基线校验的嵌套 Git fixture，检查各角色对未授权写入、委派和直接联系请求的特定拒绝边界 |
 | `isolation` | 一个有方向的同 Team 路由成功，同时具名 peer Team 保留的 transcript 和 lifecycle sequence 保持不变；交换两个前缀以检查反方向 |
 
 Isolation harness 把 Coder 保留终端中的 challenge-derived standalone token 与 lifecycle sequence 变化作为行为证据。Herdr 的普通 retained terminal 不是带角色标签的审计日志，因此它不能以密码学方式证明 token 的作者；对于有后果的运行，仍应观察具名 pane 并检查任务 artifact。
 
 运行 live 测试时，请观察精确具名的 pane。Planner 仅凭文本宣称目标已处理，并不能证明预期目标实际发生了状态变化。请在传给 `start.sh` 的同一 Git worktree 内使用 `test.sh` 的绝对路径运行，或显式设置 `HERDR_TEST_PROJECT_DIR`。
 
-完整测试要求使用 clean、committed、可丢弃的 host worktree，并在其中创建嵌套 fixture。它检查路由和生成的 Git artifact，但不提供操作系统级写入者归属证明。由于 Planner 使用 `workspace-write` sandbox，“Coder 是唯一 writer”对 Planner 仍属于 prompt/workflow 策略。
+`full` 与 `policy` 测试要求使用 clean、committed、可丢弃的 host worktree，并在其中创建嵌套 fixture。它们检查路由和生成的 Git artifact，但不提供操作系统级写入者归属证明。由于 Planner 使用 `workspace-write` sandbox，“Coder 是唯一 writer”对 Planner 仍属于 prompt/workflow 策略。Policy 模式还检查 peer transcript、lifecycle sequence 与可见 Herdr agent 名称不变，但无法证明隐藏 native worker 从未存在。
 
 本仓库的静态测试套件不代表 live 多 Team 路由已经通过。如果没有两个合适的 Team，请将 isolation 测试报告为 `NOT RUN`，而不是 `PASS`。单方向结果不是双向隔离结果；必须交换 `--team` 与 `--against-team` 后再次运行。本次更新所在环境没有运行 live isolation。
 
@@ -228,7 +231,7 @@ Isolation harness 把 Coder 保留终端中的 challenge-derived standalone toke
 
 打开目标 Planner pane，粘贴一份自包含请求。单 Team 可参考[简单任务](examples/simple-task.md)，实际交接可参考[完整开发任务](examples/full-development-task.md)，并发 Team 可参考[多 Team 示例](examples/multi-team.md)。
 
-请求应包含目标、约束、明确的非目标、验收标准和预期验证。Planner 必须在每次交给 Coder/Reviewer 的消息中包含全部必要上下文；下游 Agent 不应依赖用户之前的聊天记录。
+请求应包含目标、约束、明确的非目标、验收标准和预期验证。Planner 必须在每次交给 Coder/Reviewer 的消息中包含全部必要上下文；下游 Agent 不应依赖用户之前的聊天记录。每次普通交接及其响应还必须携带稳定的 `TASK_ID`、当前 `ROUND`（1–4）和每次全新的 `HANDOFF_ID`；缺失或回显不匹配时工作流 fail-closed 停止。
 
 ## 配置和模型
 
@@ -249,9 +252,9 @@ sandbox_mode = "workspace-write"
 approval_policy = "never"
 ```
 
-这是默认建议，不是路由依赖。工作流与模型无关。你可以选择当前 Codex account 和 CLI 可用的模型、编辑已安装 profile，或通过 `PLANNER_MODEL`、`CODER_MODEL` 和 `REVIEWER_MODEL` 在安装时或每次启动时覆盖。修改 profile 后必须重启对应角色。
+这是默认建议，不是路由依赖。工作流与模型无关。你可以通过 `PLANNER_MODEL`、`CODER_MODEL` 和 `REVIEWER_MODEL` 在安装时或每次启动时选择当前 Codex account 与 CLI 可用的模型，也可以只编辑已安装角色文件顶层的 `model = ...` 赋值。修改模型后必须重启对应角色。
 
-Planner 和 Reviewer 默认使用 `xhigh` reasoning；Coder 使用 `high`。只能使用所选模型支持的值。详见[配置](docs/zh-CN/configuration.md)和[官方 Codex 配置参考](https://developers.openai.com/codex/config-reference/)。
+Planner 和 Reviewer 默认使用 `xhigh` reasoning；Coder 使用 `high`。Reasoning、sandbox、approval 和角色指令都是受管策略；必须在仓库 `profiles/` 或 `prompts/` 下的对应模板中修改，运行 `install.sh`，然后重启受影响角色。只能使用所选模型支持的值。详见[配置](docs/zh-CN/configuration.md)和[官方 Codex 配置参考](https://developers.openai.com/codex/config-reference/)。
 
 ## 审批与 sandbox 设置
 

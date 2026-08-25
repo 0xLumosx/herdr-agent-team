@@ -50,7 +50,8 @@ approval_policy = "never"
 - **不可信 hook 或 integration：**hook 在语义角色契约之外执行，并可能随软件更新而变化。
 - **Secret disclosure：**Agent 可以读取可访问 credential、`.env` 文件、proprietary source 或 log，并在 terminal/report 中复述。
 - **虚假 report：**Agent 可以声称测试通过或另一个 Agent 已回复；必须根据 process state、command output 和 Git 验证。
-- **共享工作树竞态：**human、tool 或其他 Agent 并发编辑会使 attribution 和 review 不可靠。
+- **Profile source 真实性：**SHA-256 marker 只能检测已安装 prompt 或 policy 是否与当前 checkout 发生漂移，它不是签名。能同时修改 checkout 和已安装文件的 writer 也能同时改变两者，因此 marker 不能建立可信 provenance，也无法抵抗恶意本地 writer。
+- **共享工作树竞态：**启动会拒绝同一物理 worktree 中已可见、可核实的 Herdr Codex 角色，但该 preflight 不是原子锁。Human、外部 tool、检查后竞态或不符合受识别命名规则的 Agent 仍会使 attribution 和 review 不可靠。
 - **跨 Team prompt failure：**前缀会创建明确路由，但 compromised 或错误配置的 Planner 仍可尝试访问另一个 live Team；fail-closed prompt 和 isolation test 只能降低风险，不能以 cryptographic 方式消除风险。
 - **依赖和测试副作用：**仓库命令可能访问网络、修改外部 service，或在其可用权限内运行不可信 build step。
 

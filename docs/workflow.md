@@ -70,6 +70,9 @@ The handoff is self-contained and should follow this shape:
 ```text
 ROLE: Live Herdr agent `<CODER_AGENT>`
 TEAM: `<TEAM_PREFIX>` (or `legacy`)
+TASK_ID: `<stable for the whole user task>`
+ROUND: `<1 through 4>`
+HANDOFF_ID: `<fresh for this handoff>`
 
 Goal:
 ...
@@ -101,6 +104,9 @@ On success, Coder returns:
 
 ```text
 IMPLEMENTATION_DONE
+TASK_ID: <exact value from the handoff>
+ROUND: <exact value from the handoff>
+HANDOFF_ID: <exact value from the handoff>
 
 Summary:
 ...
@@ -142,6 +148,9 @@ brief:
 ```text
 ROLE: Live Herdr agent `<REVIEWER_AGENT>`
 TEAM: `<TEAM_PREFIX>` (or `legacy`)
+TASK_ID: `<same task id as Coder>`
+ROUND: `<same round as the implementation being reviewed>`
+HANDOFF_ID: `<fresh and different from Coder's handoff id>`
 
 Original goal:
 ...
@@ -152,9 +161,6 @@ Acceptance criteria:
 
 Constraints and non-goals:
 - ...
-
-Round:
-1 of 4
 
 Coder report:
 ...
@@ -173,6 +179,10 @@ Do not modify files and do not contact Coder.
 ```
 
 Reviewer independently inspects the repository. It does not reject code merely because it prefers a different style. Every blocking finding must describe an actual engineering consequence.
+
+Coder and Reviewer echo the three correlation lines immediately after their
+line-1 status. Planner rejects a missing, reordered, reused, or mismatched echo
+as `HERDR_COMMUNICATION_FAILED` before interpreting the response body.
 
 `CHANGES_REQUIRED` findings use:
 

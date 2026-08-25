@@ -47,12 +47,13 @@ model_reasoning_effort = "high"
 
 ## 模型
 
-工作流不要求固定模型标识符。仓库给 Coder 提供默认值，但路由、角色检查和测试都不依赖该值。编辑每个已安装 profile，选择当前 Codex account 和已安装 CLI 支持的模型：
+工作流不要求固定模型标识符。仓库给 Coder 提供默认值，但路由、角色检查和测试都不依赖该值。请使用下文的环境变量覆盖选择当前 Codex account 和已安装 CLI 支持的模型，或者只编辑已安装角色文件中的这一顶层赋值：
 
 ```toml
 model = "<available-model>"
-model_reasoning_effort = "xhigh"
 ```
+
+`model_reasoning_effort` 属于受管策略，不是可直接修改的本地覆盖。如需更改，请编辑 `profiles/` 下的对应仓库模板，运行静态检查后重新安装。Sandbox、approval、角色指令和未来受管策略字段同样必须按 source 修改并重新安装。
 
 建议的选择标准：
 
@@ -60,7 +61,7 @@ model_reasoning_effort = "xhigh"
 - Coder 适合使用 coding-focused model，并在速度和质量之间取合适平衡。
 - Reviewer 需要独立推理和足够上下文来检查周边代码，而非只读 patch summary。
 
-模型可用性和支持的 reasoning 值会随时间变化。请查询最新官方 Codex 文档和自己的 account，不要从旧 README 复制 identifier。如果某模型拒绝 `xhigh`，请选择它支持的最强值，并重新运行 communication 测试。
+模型可用性和支持的 reasoning 值会随时间变化。请查询最新官方 Codex 文档和自己的 account，不要从旧 README 复制 identifier。如果某模型拒绝 `xhigh`，请把对应仓库 profile 更新为它支持的最强值，运行 `install.sh`，重启角色，再重新运行 communication 测试。
 
 项目还支持三个范围明确的环境变量覆盖：
 
@@ -90,7 +91,7 @@ REVIEWER_MODEL="<available-model>" \
 
 ## 重新加载行为
 
-Codex 在 session 启动时读取所选 profile，不会自动把文件变化重新加载到现有 session。例如修改 `planner.config.toml` 后：
+Codex 在 session 启动时读取所选 profile，不会自动把文件变化重新加载到现有 session。例如修改仓库 `profiles/planner.config.toml` 并运行 `install.sh` 后：
 
 1. 保留任务 context 和工作树变更；
 2. 退出旧 Planner session；
@@ -120,14 +121,14 @@ role prompt      Agent 被要求采取什么行为
 
 已安装文件属于用户本地状态，不应 commit。仓库 profile 不得包含 credential 或私有机器 path。
 
-从新仓库版本更新前，检查希望保留的本地角色设置：
+从新仓库版本更新前，检查当前使用的本地角色设置和受管策略：
 
 ```bash
 grep -E '^(model|model_reasoning_effort|sandbox_mode|approval_policy)[[:space:]]*=' \
   "$HOME/.codex/planner.config.toml"
 ```
 
-需要时对 Coder 和 Reviewer 重复操作。直接与 `profiles/*.config.toml` 比较时出现大量差异是预期现象，因为已安装文件还包含 ownership header 和渲染后的 Markdown prompt。运行 `install.sh`；它会在写入新文件前备份完整已安装版本。比较输出的备份和新文件，仅恢复有意的本地变更，然后重新运行测试。
+需要时对 Coder 和 Reviewer 重复操作。直接与 `profiles/*.config.toml` 比较时出现大量差异是预期现象，因为已安装文件还包含 ownership header 和渲染后的 Markdown prompt。运行 `install.sh`；它会在写入新文件前备份完整已安装版本。比较输出的备份和新文件。只能直接恢复顶层 `model = ...` 赋值；有意的受管策略变更必须转移到仓库 source 并重新安装。绝不得把 credential、provider endpoint 或私有机器 path 复制到仓库模板。然后重新运行测试。
 
 ## 替代 Codex home
 
@@ -158,13 +159,13 @@ Prefix 必须能为三个角色生成合法且唯一的 Herdr 名称。Startup �
 | 变量 | 默认值 | 用途 |
 | --- | ---: | --- |
 | `HERDR_START_TIMEOUT_MS` | `120000` | 每次 `herdr agent start` 的 readiness timeout |
-| `HERDR_TEST_TIMEOUT_MS` | `120000` | direct ping 和 Planner-routing prompt wait |
+| `HERDR_TEST_TIMEOUT_MS` | `120000` | direct ping、Planner-routing 和单个 policy phase 的 prompt wait |
 | `HERDR_FULL_TEST_TIMEOUT_MS` | `1200000` | 完整 Planner/Coder/Reviewer loop wait |
 | `HERDR_TEST_READ_LINES` | `2000` | 为本次运行特定 response evidence 检查的 terminal 行数 |
-| `HERDR_TEST_PROJECT_DIR` | 当前目录 | live Team 使用的 Git project，也是 nested full-test fixture 的 host |
+| `HERDR_TEST_PROJECT_DIR` | 当前目录 | live Team 使用的 Git project，也是 nested `full`/`policy` fixture 的 host |
 | `KEEP_TEST_WORKSPACE` | `0` | 设为 `1` 以保留成功的 disposable full-test repository |
 
-Timeout 是以毫秒为单位的正整数。在检查过的 Herdr 0.8.2 command surface 上，单次 `agent start` timeout 必须大于 3000 ms 且不超过 300000 ms，因此 `HERDR_START_TIMEOUT_MS` 要保持在该范围。测试失败时会自动保留 full-loop 目录，以供诊断。
+Timeout 是以毫秒为单位的正整数。在检查过的 Herdr 0.8.2 command surface 上，单次 `agent start` timeout 必须大于 3000 ms 且不超过 300000 ms，因此 `HERDR_START_TIMEOUT_MS` 要保持在该范围。`full` 或 `policy` 测试失败时会自动保留当前 fixture，以供诊断。
 
 启动较慢时示例：
 
@@ -174,7 +175,7 @@ HERDR_START_TIMEOUT_MS=180000 ./scripts/start.sh /path/to/project
 
 只有日志显示真实的缓慢 readiness 或工作时才应增加 timeout。Timeout 无法修复 missing agent、duplicate name、blocked UI、unavailable server 或 native-subagent fallback。
 
-运行完整测试时，应位于传给 `start.sh` 的同一 project；也可以显式提供 host：
+运行 `full` 或 `policy` 测试时，应位于传给 `start.sh` 的同一 project；也可以显式提供 host：
 
 ```bash
 HERDR_TEST_PROJECT_DIR=/path/to/project \

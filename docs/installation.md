@@ -89,7 +89,14 @@ These are the only three profiles installed even when you run many teams.
 `github-coder` and `auth-coder`, for example, both select the generic `coder`
 profile. Team identity belongs to the Herdr live name, not a copied profile.
 
-Re-running the installer is safe with respect to pre-existing profiles because each conflict is backed up first. It is not a merge operation: any local customization in the installed role files should be reviewed or restored from the printed backup path.
+Re-running the installer is safe with respect to pre-existing profiles because
+each conflict is backed up first. It is not a merge operation. Review the
+printed backup, but restore only a top-level `model = ...` assignment directly
+to an installed role file. Reasoning, sandbox, approval, and role instructions
+are managed fields: apply an intentional change to the repository template,
+run the static checks, and reinstall. Keep credentials, provider endpoints, and
+private machine paths in user-local configuration rather than repository
+templates.
 
 ## 4. Review Herdr integration and hooks
 
@@ -211,9 +218,13 @@ generic role profile.
 
 If automation stops, use the current binary's `--help` before applying a manual recovery. Herdr 0.8.2 exposes these primitives:
 
+For prefixed teams, the workspace label is intentionally kept short as
+`codex-team:<team>`; the live agent names and `--cwd` retain the role and project
+identity. Legacy mode continues to use `codex-team:<project>`.
+
 ```bash
 # Create an isolated workspace and read its root pane ID from the JSON response.
-herdr workspace create --cwd "$PWD" --label "codex-team:github:<project>" \
+herdr workspace create --cwd "$PWD" --label "codex-team:github" \
   --env "CODEX_HOME=${CODEX_HOME:-$HOME/.codex}" --no-focus
 
 # Split only panes returned by the preceding commands.
@@ -263,7 +274,7 @@ Now binary, on-disk profile, foreground profile binding, runtime, name, and stat
 The interface is:
 
 ```text
-test.sh [--team PREFIX] [--against-team PREFIX] static|ping|communication|full|isolation
+test.sh [--team PREFIX] [--against-team PREFIX] static|ping|communication|full|policy|isolation
 ```
 
 ```bash
@@ -273,10 +284,12 @@ test.sh [--team PREFIX] [--against-team PREFIX] static|ping|communication|full|i
 
 Invoke these while the shell remains in the same Git project passed to `start.sh`. Watch the live panes during the test. A Planner-generated claim that Coder responded is not enough if the Herdr Coder pane never receives input or changes lifecycle state.
 
-For the full test, the current directory is also the default host for the nested disposable fixture:
+For the `full` and `policy` tests, the current directory is also the default
+host for their nested disposable fixtures:
 
 ```bash
 /absolute/path/to/herdr-codex-team/scripts/test.sh --team github full
+/absolute/path/to/herdr-codex-team/scripts/test.sh --team github policy
 ```
 
 If the shell must be elsewhere, set `HERDR_TEST_PROJECT_DIR=/absolute/path/to/the-project-used-by-start.sh`. The script validates that the entire host Git worktree has a committed `HEAD` and is clean before it creates the nested fixture; use a disposable worktree rather than hiding or stashing changes merely to satisfy the test.
@@ -297,13 +310,24 @@ routing evidence.
 
 ## Updating a profile
 
-Edit the installed role file, then exit and restart only that Codex session:
+For a model-only change, prefer the documented `PLANNER_MODEL`, `CODER_MODEL`,
+or `REVIEWER_MODEL` override. A direct installed-file edit is supported only
+for the top-level `model = ...` assignment, which is excluded from the managed
+policy digest.
+
+For reasoning, sandbox, approval, or role-instruction changes, edit the
+matching source under `profiles/` or `prompts/`, run `test.sh static`, then run
+`install.sh`. `doctor.sh` and `start.sh` reject direct installed-file drift in
+those managed fields. Exit and restart the affected Codex session after either
+kind of persistent change:
 
 ```bash
 codex --profile planner
 ```
 
-An already-running session does not automatically reload profile changes. Re-running `install.sh` replaces all three installed role files after backing them up, so use it when you want to return to repository templates.
+An already-running session does not automatically reload profile changes.
+Re-running `install.sh` replaces all three installed role files after backing
+them up.
 
 ## Static verification and uninstall
 

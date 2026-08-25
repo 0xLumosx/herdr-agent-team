@@ -181,13 +181,14 @@ myapp
     └── ui-planner / ui-coder / ui-reviewer
 ```
 
-这样每个 Coder 都有独立 working tree、branch 和 diff。本项目记录这条边界，但刻意不自动创建 branch、merge 工作、移除 worktree 或解决 conflict。
+这样每个 Coder 都有独立 working tree、branch 和 diff。`start.sh` 会检查符合本项目角色命名规则的其他 live Agent 之 `cwd` 与 `foreground_cwd`：若任一路径解析到同一物理 Git worktree、包含目标 root，或位于目标 root 内，则拒绝启动；匹配角色无法核实时也 fail-closed。不同 linked worktree 只有在这些 cwd scope 不与目标 root 重叠时才允许并存。这仍是非原子的启动前检查，不能防止检查后的竞态或 Herdr 外部 writer。本项目刻意不自动创建 branch、merge 工作、移除 worktree 或解决 conflict。
 
 ## 常见故障
 
 - **`agent_name_taken`：**另一个 live agent 已占用某个精确名称。请选择唯一前缀；不要覆盖或重命名现有 Team。
 - **Planner 路由到错误 Coder：**检查 `SELF_AGENT`、`TEAM_PREFIX`、`CODER_AGENT` 和 `REVIEWER_AGENT`。仍 hard-code `coder` 的 stale prompt 会破坏前缀路由。
-- **两个 Coder 修改一个 checkout：**这是 filesystem/Git working-tree collision，不是 Herdr routing failure。请使用不同仓库，或独立 Git worktree 和 `--cwd`。
+- **`shared_git_worktree`：**另一个可核实的 Herdr Codex 角色已经使用请求的物理 worktree。复用或关闭该 Team，或改用独立 Git worktree；不要绕过 guard。
+- **启动前检查后仍有两个 writer：**这是 filesystem/Git 竞态或外部 writer，不是路由隔离证明。停止两条工作流并人工恢复 diff。
 - **只有另一个 Team 的 Coder 存在：**以 `HERDR_COMMUNICATION_FAILED` 停止。另一个 Team 的可用性永远不能修复同 Team Agent 缺失。
 
 证据收集命令和恢复边界见[故障排查](troubleshooting.md)。

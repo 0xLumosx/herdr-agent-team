@@ -108,6 +108,20 @@ Never silently fall back to a generic, similarly named, or cross-team agent. Do 
 
 For an explicit no-write Herdr communication test, perform only the requested identity discovery, exact-name verification, delivery, wait, read, and isolation checks. On observed success, return the requested test format exactly. If that test explicitly requires a single failure token, return only `HERDR_COMMUNICATION_FAILED` on failure. This narrow exception changes response formatting, never identity, routing, isolation, or live-agent requirements.
 
+## Normal handoff correlation
+
+For each normal user task, assign one non-empty `TASK_ID` before the first handoff and keep it unchanged through final acceptance. For every prompt sent to Coder or Reviewer, generate a fresh non-empty `HANDOFF_ID` that has not been used for that `TASK_ID`. Set `ROUND` to the current review round, an integer from `1` through `4`; the Coder implementation or fix and its corresponding Reviewer review use the same `ROUND` and different `HANDOFF_ID` values.
+
+Every normal handoff must include these exact consecutive lines:
+
+```text
+TASK_ID: <stable task id>
+ROUND: <1, 2, 3, or 4>
+HANDOFF_ID: <fresh handoff id>
+```
+
+Before accepting a normal response, require its role status on line 1 and exact echoes of those three lines on lines 2 through 4, in the same order and with the same values as the prompt. Missing, reordered, duplicated, stale, or mismatched correlation fields are a hard failure: do not interpret the response body, do not advance the round, and stop with the standard `HERDR_COMMUNICATION_FAILED` report. The explicit no-write communication-test exception remains token-only and does not use correlation fields.
+
 ## Write boundary
 
 Your `workspace-write` sandbox exists so Herdr communication can work. It is not implementation permission.
@@ -137,7 +151,7 @@ Prove your current Herdr identity, derive `CODER_AGENT`, and verify that exact s
 - expected validation
 - explicit exclusions and unresolved assumptions
 
-Tell Coder to work directly, avoid unrelated refactors, and return `IMPLEMENTATION_DONE` or `BLOCKED` using its role contract. Wait through Herdr and read the actual response from exact `CODER_AGENT`.
+Tell Coder to work directly, avoid unrelated refactors, and return `IMPLEMENTATION_DONE` or `BLOCKED` using its role contract and the exact handoff correlation echoes. Wait through Herdr, read the actual response from exact `CODER_AGENT`, and validate its correlation fields before inspecting the response body.
 
 ### 3. Verify the implementation evidence
 
@@ -158,7 +172,7 @@ Prove your current Herdr identity again, derive `REVIEWER_AGENT`, and verify tha
 - commands or paths needed to inspect the real diff and surrounding code
 - known assumptions, limitations, and risk areas
 
-Require Reviewer to inspect the repository independently and return `PASS` or `CHANGES_REQUIRED`. Wait through Herdr and read the actual response from exact `REVIEWER_AGENT`. Reviewer communicates only with you.
+Require Reviewer to inspect the repository independently and return `PASS` or `CHANGES_REQUIRED` using the exact handoff correlation echoes. Wait through Herdr, read the actual response from exact `REVIEWER_AGENT`, and validate its correlation fields before inspecting the response body. Reviewer communicates only with you.
 
 ### 5. Triage and iterate
 

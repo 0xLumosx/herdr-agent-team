@@ -135,15 +135,17 @@ Check the installed file:
 ~/.codex/planner.config.toml
 ```
 
-The project default is:
+The repository default in `profiles/planner.config.toml` is:
 
 ```toml
 sandbox_mode = "workspace-write"
 ```
 
-Keep the Planner developer instructions that prohibit application-source edits.
-Restart Planner after changing the profile, then re-run `test.sh --team
-<prefix> communication` (or the legacy unprefixed form).
+Keep the Planner developer instructions that prohibit application-source
+edits. Restore or intentionally update the repository template, run
+`scripts/install.sh`, restart Planner, then re-run `test.sh --team <prefix>
+communication` (or the legacy unprefixed form). Directly changing this managed
+field in the installed file is rejected by the profile-policy digest.
 
 If the error persists, do not broaden to `danger-full-access`. Inspect the exact denied path, verify that the Herdr integration and hooks are current, and run `herdr agent explain <expected-team-agent>` or the diagnostics printed by the current Herdr version.
 
@@ -188,7 +190,15 @@ Current Codex profile files live beside the base configuration:
 ~/.codex/reviewer.config.toml
 ```
 
-They are selected with `codex --profile <name>`. An existing Codex session does not automatically reload changes. Exit the affected session and start it again, then restore its Herdr live name.
+They are selected with `codex --profile <name>`. The managed files include
+separate digests for the embedded role prompt and normalized profile policy.
+The `model = ...` assignment is deliberately excluded so documented model
+selection remains configurable; reasoning, sandbox, approval, and other
+policy/template fields are managed. Edit source under `prompts/` or `profiles/`
+and rerun `scripts/install.sh`; direct installed-policy edits are rejected by
+`doctor.sh` and `start.sh`. An existing Codex session
+does not automatically reload a freshly installed profile. Exit the affected
+session and start it again, then restore its Herdr live name.
 
 Also check whether `CODEX_HOME` was set differently during installation and startup. A mismatch can make Codex read a different directory.
 
@@ -277,6 +287,14 @@ prove filesystem writer identity because Planner also has `workspace-write`.
 Use a disposable host without sensitive ignored files. If hard attribution is
 part of your acceptance criteria, the current test is insufficient.
 
+The full test also verifies the normal handoff correlation contract in live
+Coder and Reviewer transcripts. It preassigns distinct Coder/Reviewer
+`HANDOFF_ID` values for rounds 1 through 4, keeps one stable `TASK_ID`, accepts
+consecutive `CHANGES_REQUIRED` rounds followed by one same-round `PASS`, and
+rejects reused or unused later-round response tokens. Every used correlation
+value must appear both in the received prompt and in the role's exact response
+echoes.
+
 The test reads the latest 2000 unwrapped terminal rows by default. If a legitimately verbose run scrolls its final run-specific token out of that window, preserve the fixture and rerun with a larger positive `HERDR_TEST_READ_LINES`; do not treat a larger window as a substitute for watching the named panes.
 
 If an audit session cannot safely address the intended live Herdr server—as was true while this repository was assembled—only static shell/configuration checks can be claimed. The live scripts may be invoked from an external human-operated shell when `herdr status server` resolves the intended server, but live communication remains unverified until those scripts actually run against the named agents.
@@ -287,6 +305,22 @@ Run the non-live checks from the team repository checkout with:
 cd /path/to/herdr-codex-team
 ./scripts/test.sh static
 ```
+
+## Policy test cannot run
+
+After `ping`, `communication`, and `full`, run the adversarial role-boundary
+check from the same clean disposable host worktree:
+
+```bash
+./scripts/test.sh --team <prefix> policy
+```
+
+It sequentially challenges Reviewer, Coder, and Planner, while checking a
+baseline-checked nested Git fixture, unchanged peer transcripts/lifecycle sequences,
+and unchanged visible Herdr agent names. A phase failure before successful
+cleanup preserves the fixture. A pass is bounded behavioral evidence, not an ACL, filesystem audit, or proof
+that no hidden native worker ever existed. If the intended live team cannot be
+safely addressed, record this mode as `NOT RUN`.
 
 ## Isolation test cannot run
 

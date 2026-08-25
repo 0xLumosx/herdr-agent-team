@@ -3,9 +3,11 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PROJECT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 TEAM_LIB="$SCRIPT_DIR/lib/team.sh"
 JSON_LIB="$SCRIPT_DIR/lib/json.sh"
-[[ -f "$TEAM_LIB" && -f "$JSON_LIB" ]] || {
+DIGEST_LIB="$SCRIPT_DIR/lib/digest.sh"
+[[ -f "$TEAM_LIB" && -f "$JSON_LIB" && -f "$DIGEST_LIB" ]] || {
   printf '[FAIL] Missing script helper under %s/lib.\n' "$SCRIPT_DIR" >&2
   exit 1
 }
@@ -13,6 +15,8 @@ JSON_LIB="$SCRIPT_DIR/lib/json.sh"
 source "$TEAM_LIB"
 # shellcheck source=lib/json.sh
 source "$JSON_LIB"
+# shellcheck source=lib/digest.sh
+source "$DIGEST_LIB"
 CODEX_DIR=${CODEX_HOME:-"$HOME/.codex"}
 case "$CODEX_DIR" in
   /*) ;;
@@ -149,6 +153,9 @@ PROJECT_DIR=$(CDPATH= cd -- "$PROJECT_ARG" && pwd -P)
 [[ "$PROJECT_DIR" != '/' ]] || die 'Refusing to start workspace-write agents at the filesystem root.'
 git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || \
   die "PROJECT_DIR is not inside a Git worktree: $PROJECT_DIR"
+TARGET_GIT_ROOT=$(git -C "$PROJECT_DIR" rev-parse --show-toplevel 2>/dev/null) || \
+  die "Could not resolve the Git worktree root for PROJECT_DIR: $PROJECT_DIR"
+TARGET_GIT_ROOT=$(CDPATH= cd -- "$TARGET_GIT_ROOT" && pwd -P)
 
 command -v codex >/dev/null 2>&1 || die 'Codex CLI was not found in PATH.'
 command -v herdr >/dev/null 2>&1 || die 'Herdr was not found in PATH.'
@@ -169,6 +176,24 @@ done
 for role in planner coder reviewer; do
   [[ -f "$CODEX_DIR/$role.config.toml" ]] || \
     die "Missing $CODEX_DIR/$role.config.toml. Run $SCRIPT_DIR/install.sh first."
+  if ! prompt_integrity_error=$(profile_prompt_integrity \
+       "$CODEX_DIR/$role.config.toml" "$PROJECT_ROOT/prompts/$role.md" 2>&1); then
+    die "$role $prompt_integrity_error. Rerun $SCRIPT_DIR/install.sh before starting a team."
+  fi
+  grep -Eq '^approval_policy[[:space:]]*=[[:space:]]*"never"[[:space:]]*$' \
+    "$CODEX_DIR/$role.config.toml" || \
+    die "$role profile must use approval_policy = \"never\". Rerun $SCRIPT_DIR/install.sh."
+  case "$role" in
+    planner|coder) expected_sandbox=workspace-write ;;
+    reviewer) expected_sandbox=read-only ;;
+  esac
+  grep -Eq '^sandbox_mode[[:space:]]*=[[:space:]]*"'"$expected_sandbox"'"[[:space:]]*$' \
+    "$CODEX_DIR/$role.config.toml" || \
+    die "$role profile must use sandbox_mode = \"$expected_sandbox\". Rerun $SCRIPT_DIR/install.sh."
+  if ! policy_integrity_error=$(profile_policy_integrity \
+       "$CODEX_DIR/$role.config.toml" "$PROJECT_ROOT/profiles/$role.config.toml" 2>&1); then
+    die "$role $policy_integrity_error. Rerun $SCRIPT_DIR/install.sh before starting a team."
+  fi
   codex --profile "$role" debug prompt-input 'profile validation' >/dev/null 2>&1 || \
     die "Codex cannot load $CODEX_DIR/$role.config.toml. Restore a backup or rerun $SCRIPT_DIR/install.sh."
 done
@@ -215,6 +240,68 @@ for role in planner coder reviewer; do
   fi
 done
 
+# A second Herdr team may use different live names while still writing the
+# same checkout. Refuse that setup before workspace creation. Separate linked
+# worktrees are allowed because their physical worktree roots differ.
+while IFS= read -r candidate_name; do
+  [[ -n "$candidate_name" ]] || continue
+  if ! team_role_from_live_name "$candidate_name" >/dev/null; then
+    continue
+  fi
+  if [[ "$candidate_name" == "$PLANNER_AGENT" || \
+        "$candidate_name" == "$CODER_AGENT" || \
+        "$candidate_name" == "$REVIEWER_AGENT" ]]; then
+    # Exact names were handled above; keep this guard for defensive clarity.
+    continue
+  fi
+  if ! candidate_payload=$(herdr agent get "$candidate_name" 2>&1); then
+    printf '%s\n' "$candidate_payload" >&2
+    die "shared_git_worktree_unverified: could not inspect live Herdr role agent '$candidate_name'; refusing to assume its worktree is different."
+  fi
+  if ! candidate_kind=$(json_agent_required_string "$candidate_payload" agent) || \
+     ! candidate_reported_name=$(json_agent_required_string "$candidate_payload" name) || \
+     ! candidate_cwd=$(json_agent_optional_string "$candidate_payload" cwd) || \
+     ! candidate_foreground_cwd=$(json_agent_optional_string "$candidate_payload" foreground_cwd); then
+    die "shared_git_worktree_unverified: malformed identity or cwd for live Herdr role agent '$candidate_name'."
+  fi
+  [[ "$candidate_reported_name" == "$candidate_name" ]] || \
+    die "shared_git_worktree_unverified: lookup for '$candidate_name' resolved to '${candidate_reported_name:-unknown}'."
+  [[ -n "$candidate_kind" ]] || \
+    die "shared_git_worktree_unverified: live Herdr role agent '$candidate_name' did not expose its agent kind."
+  [[ "$candidate_kind" == codex ]] || continue
+  candidate_cwd_count=0
+  for candidate_path in "$candidate_cwd" "$candidate_foreground_cwd"; do
+    [[ -n "$candidate_path" ]] || continue
+    candidate_cwd_count=$((candidate_cwd_count + 1))
+    [[ -d "$candidate_path" ]] || \
+      die "shared_git_worktree_unverified: Codex role agent '$candidate_name' reported a cwd that cannot be inspected: $candidate_path"
+    candidate_path=$(CDPATH= cd -- "$candidate_path" && pwd -P)
+    [[ "$candidate_path" != '/' ]] || \
+      die "shared_git_worktree: live Herdr role agent '$candidate_name' has filesystem-root cwd and can cover requested worktree '$TARGET_GIT_ROOT'. Refusing unsafe overlap."
+    if [[ "$candidate_path" == "$TARGET_GIT_ROOT" ]]; then
+      die "shared_git_worktree: live Herdr role agent '$candidate_name' already references Git worktree '$TARGET_GIT_ROOT' (cwd evidence: $candidate_path). Use that team, close it explicitly, or start the new team in a separate linked worktree."
+    fi
+    case "$TARGET_GIT_ROOT/" in
+      "$candidate_path/"*)
+        die "shared_git_worktree: live Herdr role agent '$candidate_name' has cwd '$candidate_path', which contains requested worktree '$TARGET_GIT_ROOT'. Use a narrower separate worktree root."
+        ;;
+    esac
+    case "$candidate_path/" in
+      "$TARGET_GIT_ROOT/"*)
+        die "shared_git_worktree: live Herdr role agent '$candidate_name' has cwd '$candidate_path' inside requested worktree '$TARGET_GIT_ROOT'. Use a separate linked worktree."
+        ;;
+    esac
+    if ! candidate_git_root=$(git -C "$candidate_path" rev-parse --show-toplevel 2>/dev/null); then
+      continue
+    fi
+    candidate_git_root=$(CDPATH= cd -- "$candidate_git_root" && pwd -P)
+    [[ "$candidate_git_root" != "$TARGET_GIT_ROOT" ]] || \
+      die "shared_git_worktree: live Herdr role agent '$candidate_name' already references Git worktree '$TARGET_GIT_ROOT' (cwd evidence: $candidate_path). Use that team, close it explicitly, or start the new team in a separate linked worktree."
+  done
+  (( candidate_cwd_count > 0 )) || \
+    die "shared_git_worktree_unverified: Codex role agent '$candidate_name' has no inspectable cwd."
+done <<<"$live_agent_names"
+
 extract_object_string() {
   local payload=$1
   local object_name=$2
@@ -234,7 +321,7 @@ project_name=${PROJECT_DIR##*/}
 [[ -n "$project_name" ]] || project_name='project'
 workspace_label="codex-team:$project_name"
 if [[ "$TEAM_MODE" == prefixed ]]; then
-  workspace_label="codex-team:$TEAM_DISPLAY:$project_name"
+  workspace_label="codex-team:$TEAM_DISPLAY"
 fi
 
 printf 'Creating Herdr workspace for team %s in %s\n' "$TEAM_DISPLAY" "$PROJECT_DIR"

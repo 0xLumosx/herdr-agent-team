@@ -4,6 +4,13 @@ set -euo pipefail
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROJECT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+DIGEST_LIB="$SCRIPT_DIR/lib/digest.sh"
+[[ -f "$DIGEST_LIB" ]] || {
+  printf '[FAIL] Missing script helper: %s\n' "$DIGEST_LIB" >&2
+  exit 1
+}
+# shellcheck source=lib/digest.sh
+source "$DIGEST_LIB"
 CODEX_DIR=${CODEX_HOME:-"$HOME/.codex"}
 case "$CODEX_DIR" in
   /*) ;;
@@ -120,10 +127,18 @@ render_profile() {
   local target="$render_dir/$role.config.toml"
   local template="$PROJECT_ROOT/profiles/$role.config.toml"
   local prompt="$PROJECT_ROOT/prompts/$role.md"
+  local prompt_digest
+  local policy_digest
 
   model=$(model_for_role "$role")
+  prompt_digest=$(prompt_payload_sha256 "$prompt") || \
+    die "Could not compute the embedded prompt digest for $role. Install shasum, sha256sum, or openssl."
+  policy_digest=$(profile_policy_source_sha256 "$template") || \
+    die "Could not compute the managed profile-policy digest for $role."
   {
     printf '# Installed by herdr-codex-team. Edit the source template and rerun install.sh.\n'
+    printf '# herdr-prompt-sha256: %s\n' "$prompt_digest"
+    printf '# herdr-profile-policy-sha256: %s\n' "$policy_digest"
     if [[ -n "$model" ]]; then
       printf 'model = "%s"\n' "$model"
       # A role template may carry a default model. Remove only that key when
@@ -145,6 +160,14 @@ for role in planner coder reviewer; do
 done
 
 for role in planner coder reviewer; do
+  if ! integrity_error=$(profile_prompt_integrity \
+       "$render_dir/$role.config.toml" "$PROJECT_ROOT/prompts/$role.md" 2>&1); then
+    die "Rendered $role profile failed prompt self-check: $integrity_error"
+  fi
+  if ! integrity_error=$(profile_policy_integrity \
+       "$render_dir/$role.config.toml" "$PROJECT_ROOT/profiles/$role.config.toml" 2>&1); then
+    die "Rendered $role profile failed policy self-check: $integrity_error"
+  fi
   if ! CODEX_HOME="$render_dir" \
        codex --profile "$role" debug prompt-input 'profile validation' >/dev/null 2>&1; then
     die "Codex could not load the rendered $role profile; no destination profile was replaced."

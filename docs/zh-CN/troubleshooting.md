@@ -107,13 +107,13 @@ Planner 可能使用无法访问本地 Herdr communication mechanism 的 `read-o
 ~/.codex/planner.config.toml
 ```
 
-项目默认值为：
+仓库 `profiles/planner.config.toml` 中的默认值为：
 
 ```toml
 sandbox_mode = "workspace-write"
 ```
 
-同时保留禁止 Planner 编辑应用源码的 developer instruction。修改 profile 后重启 Planner，再运行 `test.sh --team <prefix> communication`（legacy 使用不带前缀形式）。
+同时保留禁止 Planner 编辑应用源码的 developer instruction。恢复或有意更新仓库模板，运行 `scripts/install.sh`，重启 Planner，再运行 `test.sh --team <prefix> communication`（legacy 使用不带前缀形式）。直接修改已安装文件中的这一受管字段会被 profile-policy digest 拒绝。
 
 如果错误仍然存在，不要扩大到 `danger-full-access`。请检查精确被拒 path、确认 Herdr integration 和 hook 是 current，并运行 `herdr agent explain <expected-team-agent>` 或当前 Herdr 版本打印出的诊断命令。
 
@@ -153,7 +153,7 @@ herdr agent rename <agent-name-or-pane-id> <team-prefix>-reviewer
 ~/.codex/reviewer.config.toml
 ```
 
-它们通过 `codex --profile <name>` 选择。现有 Codex session 不会自动重新加载变更。退出受影响 session 并重新启动，然后恢复其 Herdr 实时名称。
+它们通过 `codex --profile <name>` 选择。受管理文件分别包含已嵌入角色 prompt 与规范化 profile policy 的 digest。为保留文档约定的模型选择自由，`model = ...` 行被刻意排除；reasoning、sandbox、approval 和其他 policy/template 字段仍受管理。应修改 `prompts/` 或 `profiles/` 下的 source 并重新运行 `scripts/install.sh`；直接修改已安装策略会被 `doctor.sh` 与 `start.sh` 拒绝。现有 Codex session 不会自动重新加载新安装的 profile。退出受影响 session 并重新启动，然后恢复其 Herdr 实时名称。
 
 还要检查安装和启动时是否设置了不同 `CODEX_HOME`。不匹配会使 Codex 读取另一个目录。
 
@@ -236,6 +236,8 @@ Host 位置很重要：disposable path 必须留在 live Team 的 workspace-writ
 
 Pass 能验证 challenge-derived Coder completion 和 Reviewer pass response、fixture history 未变、精确 changed-file scope、host Git-visible status/branch/`HEAD` 未变、脚本自身 assertion、fixture test 和 Planner 本次运行特定 approval。它不会检查 ignored host file，也无法证明 filesystem writer identity，因为 Planner 同样有 `workspace-write`。请使用不含敏感 ignored file 的 disposable host。如果 hard attribution 属于验收标准，当前测试不够充分。
 
+Full 测试还会在 live Coder/Reviewer transcript 中验证普通交接关联。它为第 1–4 轮预先分配互不相同的 Coder/Reviewer `HANDOFF_ID`，始终保持同一 `TASK_ID`，允许连续的 `CHANGES_REQUIRED` 轮次最终以同轮 `PASS` 结束，并拒绝复用或未使用的后续轮 response token。每个已使用关联值都必须同时出现在收到的 prompt 与角色精确回显中。
+
 测试默认读取最新 2000 行 unwrapped terminal。如果一次合法但输出很长的运行让最终本次运行特定 token 滚出窗口，请保留 fixture，并以更大的正 `HERDR_TEST_READ_LINES` 重试；扩大窗口不能替代观察具名 pane。
 
 如果 audit session 无法安全访问目标 live Herdr server——本仓库组装时正是这种情况——只能声称完成静态 shell/configuration 检查。当 `herdr status server` 能解析预期 server 时，可从外部人工操作 shell 调用 live script；在这些脚本实际对具名 Agent 运行前，live communication 仍未验证。
@@ -246,6 +248,16 @@ Pass 能验证 challenge-derived Coder completion 和 Reviewer pass response、f
 cd /path/to/herdr-codex-team
 ./scripts/test.sh static
 ```
+
+## Policy 测试无法运行
+
+在 `ping`、`communication` 与 `full` 之后，从相同 clean disposable host worktree 运行：
+
+```bash
+./scripts/test.sh --team <prefix> policy
+```
+
+它依次对 Reviewer、Coder、Planner 注入对抗性角色越界请求，同时检查带基线校验的嵌套 Git fixture、peer transcript/lifecycle sequence 与可见 Herdr agent 名称不变。成功 cleanup 之前的 phase 失败会保留 fixture。通过只代表有边界的行为证据，不是 ACL、filesystem audit，也不能证明隐藏 native worker 从未存在。若无法安全访问预期 live Team，请把该模式记录为 `NOT RUN`。
 
 ## Isolation 测试无法运行
 

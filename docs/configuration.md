@@ -54,13 +54,18 @@ Do not change Planner to `read-only` without retesting Herdr communication. A re
 
 The workflow does not require a fixed model identifier. The repository gives
 Coder a default, but routing, role checks, and tests do not depend on it. Set a
-model that your Codex account and installed CLI support by editing each
-installed profile:
+model that your Codex account and installed CLI support with the environment
+overrides below, or edit only this top-level assignment in an installed role
+file:
 
 ```toml
 model = "<available-model>"
-model_reasoning_effort = "xhigh"
 ```
+
+`model_reasoning_effort` is managed policy rather than a direct local override.
+To change it, edit the matching repository template under `profiles/`, run the
+static checks, and reinstall. The same source-and-reinstall rule applies to
+sandbox, approval, role instructions, and future managed policy fields.
 
 Suggested selection criteria:
 
@@ -68,7 +73,11 @@ Suggested selection criteria:
 - Coder benefits from a coding-focused model with an appropriate speed/quality balance.
 - Reviewer needs independent reasoning and enough context to inspect surrounding code, not just the patch summary.
 
-Model availability and supported reasoning values change over time. Consult current official Codex documentation and your account rather than copying an identifier from an old README. If a model rejects `xhigh`, choose the strongest value it supports and re-run the communication tests.
+Model availability and supported reasoning values change over time. Consult
+current official Codex documentation and your account rather than copying an
+identifier from an old README. If a model rejects `xhigh`, update the matching
+repository profile to the strongest supported value, run `install.sh`, restart
+the role, and re-run the communication tests.
 
 The project also supports three narrowly scoped environment overrides:
 
@@ -99,7 +108,9 @@ Do not edit only a running session's chat instructions and assume the installed 
 
 ## Reload behavior
 
-Codex reads the selected profile at session startup. It does not automatically reload the file into an existing session. After changing `planner.config.toml`, for example:
+Codex reads the selected profile at session startup. It does not automatically
+reload the file into an existing session. After changing the repository
+`profiles/planner.config.toml` and running `install.sh`, for example:
 
 1. preserve any task context and working-tree changes;
 2. exit the old Planner session;
@@ -133,14 +144,23 @@ Do not use `danger-full-access` as a compatibility workaround. Diagnose the miss
 
 Installed files are user-local state and should not be committed. Repository profiles must contain no credentials or private machine paths.
 
-Before updating from a newer repository revision, inspect the local role settings you intend to preserve:
+Before updating from a newer repository revision, inspect the local role
+settings and managed policy currently in use:
 
 ```bash
 grep -E '^(model|model_reasoning_effort|sandbox_mode|approval_policy)[[:space:]]*=' \
   "$HOME/.codex/planner.config.toml"
 ```
 
-Repeat for Coder and Reviewer as needed. A direct diff against `profiles/*.config.toml` is expected to be noisy because the installed file also contains an ownership header and the rendered Markdown prompt. Run `install.sh`; it backs up the complete installed versions before writing new ones. Compare the printed backup with the new installed file, reapply only intentional local changes, and rerun tests.
+Repeat for Coder and Reviewer as needed. A direct diff against
+`profiles/*.config.toml` is expected to be noisy because the installed file
+also contains an ownership header and the rendered Markdown prompt. Run
+`install.sh`; it backs up the complete installed versions before writing new
+ones. Compare the printed backup with the new installed file. Restore only a
+top-level `model = ...` assignment directly; port intentional managed-policy
+changes to the repository source and reinstall. Never copy credentials,
+provider endpoints, or private machine paths into repository templates. Then
+rerun the tests.
 
 ## Alternative Codex home
 
@@ -178,13 +198,17 @@ The scripts accept these optional environment settings:
 | Variable | Default | Purpose |
 | --- | ---: | --- |
 | `HERDR_START_TIMEOUT_MS` | `120000` | readiness timeout for each `herdr agent start` |
-| `HERDR_TEST_TIMEOUT_MS` | `120000` | direct ping and Planner-routing prompt wait |
+| `HERDR_TEST_TIMEOUT_MS` | `120000` | direct ping, Planner-routing, and individual policy-phase prompt wait |
 | `HERDR_FULL_TEST_TIMEOUT_MS` | `1200000` | full Planner/Coder/Reviewer loop wait |
 | `HERDR_TEST_READ_LINES` | `2000` | terminal rows inspected for run-specific response evidence |
-| `HERDR_TEST_PROJECT_DIR` | current directory | Git project used by the live team and host for the nested full-test fixture |
+| `HERDR_TEST_PROJECT_DIR` | current directory | Git project used by the live team and host for nested `full`/`policy` fixtures |
 | `KEEP_TEST_WORKSPACE` | `0` | set to `1` to preserve a successful disposable full-test repository |
 
-Timeouts are positive integer milliseconds. On the inspected Herdr 0.8.2 surface, an individual `agent start` timeout must be greater than 3000 ms and no more than 300000 ms, so keep `HERDR_START_TIMEOUT_MS` within that range. A failed test preserves its full-loop directory automatically for diagnosis.
+Timeouts are positive integer milliseconds. On the inspected Herdr 0.8.2
+surface, an individual `agent start` timeout must be greater than 3000 ms and
+no more than 300000 ms, so keep `HERDR_START_TIMEOUT_MS` within that range. A
+failed `full` or `policy` test preserves its active fixture automatically for
+diagnosis.
 
 Example for a slower startup:
 
@@ -194,7 +218,8 @@ HERDR_START_TIMEOUT_MS=180000 ./scripts/start.sh /path/to/project
 
 Increase timeouts only when logs show genuine slow readiness or work. A timeout cannot fix a missing agent, duplicate name, blocked UI, unavailable server, or native-subagent fallback.
 
-Run the full test while the current directory is the same project passed to `start.sh`, or provide the host explicitly:
+Run the `full` or `policy` test while the current directory is the same project
+passed to `start.sh`, or provide the host explicitly:
 
 ```bash
 HERDR_TEST_PROJECT_DIR=/path/to/project \

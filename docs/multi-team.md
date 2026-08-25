@@ -177,10 +177,14 @@ the retained terminal alone cannot prove who authored a displayed token.
 ## Working-directory isolation
 
 Exact-name routing plus the fail-closed prompt contract reduces accidental
-cross-team messaging when followed; it is not an ACL or security boundary. It
-also does not isolate files. Two Coders launched with the same working tree can
-still race on the same file, overwrite changes, or make review evidence
-ambiguous.
+cross-team messaging when followed; it is not an ACL or security boundary.
+`start.sh` now inspects other live names that match this project's role naming
+scheme and checks both its reported cwd and foreground cwd. Startup refuses a
+matching Codex role when either path resolves to the same physical Git
+worktree, contains the requested root, or sits inside it. An uninspectable
+matching role fails closed. A different linked worktree is allowed only when
+those cwd scopes do not overlap the requested root. This remains a non-atomic
+preflight: a race after the check and writers outside Herdr are not prevented.
 
 Different repositories may run concurrently with separate `--cwd` values:
 
@@ -224,9 +228,12 @@ remove worktrees, or resolve conflicts automatically.
 - **Planner routed to the wrong Coder:** inspect `SELF_AGENT`, `TEAM_PREFIX`,
   `CODER_AGENT`, and `REVIEWER_AGENT`. A stale prompt that hard-codes `coder`
   defeats prefixed routing.
-- **Two Coders changed one checkout:** this is a filesystem/Git working-tree
-  collision, not a Herdr routing failure. Use different repositories or
-  separate Git worktrees and `--cwd` values.
+- **`shared_git_worktree`:** another inspectable Herdr Codex role already uses
+  the requested physical worktree. Reuse/close that team or choose a separate
+  Git worktree; do not bypass the guard.
+- **Two Coders changed one checkout despite preflight:** this is a
+  filesystem/Git race or an external writer, not proof of routing isolation.
+  Stop both workflows and recover the diff manually.
 - **Only the other team's Coder exists:** stop with
   `HERDR_COMMUNICATION_FAILED`. Another team's availability is never a repair
   for a missing same-team agent.

@@ -8,6 +8,18 @@ Normal implementation work arrives as a self-contained handoff from your team's 
 
 When a prompt explicitly identifies itself as a Herdr communication test, prohibits file changes, and requests one exact response token, make no tool calls that mutate state and reply with that token only. This exception verifies transport; it is not implementation work.
 
+## Normal handoff correlation
+
+A normal implementation handoff is actionable only when it includes non-empty `TASK_ID` and `HANDOFF_ID` values plus a `ROUND` integer from `1` through `4`. Preserve those values exactly. In the response, put the result status on line 1 and echo these exact lines immediately on lines 2 through 4, before any other text:
+
+```text
+TASK_ID: <exact value from the handoff>
+ROUND: <exact value from the handoff>
+HANDOFF_ID: <exact value from the handoff>
+```
+
+If a normal handoff omits or invalidates a correlation field, do no implementation work. Return `BLOCKED`, reproduce every present value exactly, and use `MISSING` only for an absent value. Never invent or reuse a correlation value. The communication-test exception remains token-only and does not use this format.
+
 ## Implementation workflow
 
 ### 1. Establish the boundary
@@ -38,6 +50,9 @@ For completed implementation or fixes, return:
 
 ```text
 IMPLEMENTATION_DONE
+TASK_ID: <exact value from the handoff>
+ROUND: <exact value from the handoff>
+HANDOFF_ID: <exact value from the handoff>
 
 Summary:
 <what behavior changed>
@@ -59,6 +74,9 @@ If safe progress is impossible, return:
 
 ```text
 BLOCKED
+TASK_ID: <exact value from the handoff, or MISSING>
+ROUND: <exact value from the handoff, or MISSING>
+HANDOFF_ID: <exact value from the handoff, or MISSING>
 
 Blocker:
 <specific blocking condition>

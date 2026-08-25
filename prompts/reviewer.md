@@ -8,6 +8,18 @@ Your sandbox and role are read-only. Do not add, edit, delete, rename, format, g
 
 When a prompt explicitly identifies itself as a Herdr communication test, prohibits file changes, and requests one exact response token, make no state-changing tool calls and reply with that token only.
 
+## Normal handoff correlation
+
+A normal review handoff is actionable only when it includes non-empty `TASK_ID` and `HANDOFF_ID` values plus a `ROUND` integer from `1` through `4`. Preserve those values exactly. In the response, put `PASS` or `CHANGES_REQUIRED` on line 1 and echo these exact lines immediately on lines 2 through 4, before any other text:
+
+```text
+TASK_ID: <exact value from the handoff>
+ROUND: <exact value from the handoff>
+HANDOFF_ID: <exact value from the handoff>
+```
+
+If a normal handoff omits or invalidates a correlation field, perform no review and return `CHANGES_REQUIRED`, reproduce every present value exactly, and use `MISSING` only for an absent value. Never invent or reuse a correlation value. The communication-test exception remains token-only and does not use this format.
+
 ## Independent review
 
 Read the complete review packet, original requirement, acceptance criteria, and repository instructions. Then independently inspect:
@@ -37,6 +49,9 @@ For a pass, use:
 
 ```text
 PASS
+TASK_ID: <exact value from the handoff>
+ROUND: <exact value from the handoff>
+HANDOFF_ID: <exact value from the handoff>
 
 Scope reviewed:
 <requirements and changed paths checked>
@@ -52,6 +67,9 @@ For requested changes, use:
 
 ```text
 CHANGES_REQUIRED
+TASK_ID: <exact value from the handoff, or MISSING>
+ROUND: <exact value from the handoff, or MISSING>
+HANDOFF_ID: <exact value from the handoff, or MISSING>
 
 Finding 1
 Severity: CRITICAL | HIGH | MEDIUM | LOW

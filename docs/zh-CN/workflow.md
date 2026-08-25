@@ -60,6 +60,9 @@ Planner 可以根据仓库证据解决 low-risk ambiguity。如果未解决的�
 ```text
 ROLE: Live Herdr agent `<CODER_AGENT>`
 TEAM: `<TEAM_PREFIX>` (or `legacy`)
+TASK_ID: `<整个用户任务保持稳定>`
+ROUND: `<1 到 4>`
+HANDOFF_ID: `<本次交接全新>`
 
 Goal:
 ...
@@ -91,6 +94,9 @@ Coder 先读后改，完成最小而完整的变更，避免无关清理。它�
 
 ```text
 IMPLEMENTATION_DONE
+TASK_ID: <精确回显交接值>
+ROUND: <精确回显交接值>
+HANDOFF_ID: <精确回显交接值>
 
 Summary:
 ...
@@ -131,6 +137,9 @@ Planner 确认精确同 Team live Reviewer，再发送自包含 brief：
 ```text
 ROLE: Live Herdr agent `<REVIEWER_AGENT>`
 TEAM: `<TEAM_PREFIX>` (or `legacy`)
+TASK_ID: `<与 Coder 相同的 task id>`
+ROUND: `<与被审实现相同的 round>`
+HANDOFF_ID: `<全新且不同于 Coder 的 handoff id>`
 
 Original goal:
 ...
@@ -141,9 +150,6 @@ Acceptance criteria:
 
 Constraints and non-goals:
 - ...
-
-Round:
-1 of 4
 
 Coder report:
 ...
@@ -162,6 +168,8 @@ Do not modify files and do not contact Coder.
 ```
 
 Reviewer 独立检查仓库。它不能仅因偏好不同 style 而拒绝代码。每个 blocking finding 必须描述真实工程后果。
+
+Coder 与 Reviewer 都必须在首行状态之后立即精确回显这三个关联字段。缺失、乱序、复用或不匹配时，Planner 在解释响应正文前按 `HERDR_COMMUNICATION_FAILED` 停止。
 
 `CHANGES_REQUIRED` finding 使用：
 

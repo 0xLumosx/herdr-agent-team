@@ -3,9 +3,11 @@
 set -euo pipefail
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PROJECT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 TEAM_LIB="$SCRIPT_DIR/lib/team.sh"
 JSON_LIB="$SCRIPT_DIR/lib/json.sh"
-[[ -f "$TEAM_LIB" && -f "$JSON_LIB" ]] || {
+DIGEST_LIB="$SCRIPT_DIR/lib/digest.sh"
+[[ -f "$TEAM_LIB" && -f "$JSON_LIB" && -f "$DIGEST_LIB" ]] || {
   printf '[FAIL] Missing script helper under %s/lib.\n' "$SCRIPT_DIR" >&2
   exit 1
 }
@@ -13,6 +15,8 @@ JSON_LIB="$SCRIPT_DIR/lib/json.sh"
 source "$TEAM_LIB"
 # shellcheck source=lib/json.sh
 source "$JSON_LIB"
+# shellcheck source=lib/digest.sh
+source "$DIGEST_LIB"
 CODEX_DIR=${CODEX_HOME:-"$HOME/.codex"}
 case "$CODEX_DIR" in
   /*) ;;
@@ -161,6 +165,18 @@ for role in planner coder reviewer; do
   fi
   if ! grep -Eq '^developer_instructions[[:space:]]*=' "$profile"; then
     fail "$role profile has no installed developer_instructions. Rerun ./scripts/install.sh."
+  fi
+  if prompt_integrity_error=$(profile_prompt_integrity \
+       "$profile" "$PROJECT_ROOT/prompts/$role.md" 2>&1); then
+    ok "$role installed prompt matches the managed source"
+  else
+    fail "$role $prompt_integrity_error. Rerun ./scripts/install.sh."
+  fi
+  if policy_integrity_error=$(profile_policy_integrity \
+       "$profile" "$PROJECT_ROOT/profiles/$role.config.toml" 2>&1); then
+    ok "$role installed profile policy matches the managed source"
+  else
+    fail "$role $policy_integrity_error. Rerun ./scripts/install.sh."
   fi
   if command -v codex >/dev/null 2>&1; then
     if codex --profile "$role" debug prompt-input 'profile validation' >/dev/null 2>&1; then

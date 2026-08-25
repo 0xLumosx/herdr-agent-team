@@ -192,8 +192,12 @@ Run diagnostics and live tests, and watch the exact named panes receive work.
 ## Working trees for concurrent teams
 
 Exact-name routing plus the fail-closed prompt contract reduces accidental
-cross-team messages when followed. It is not an ACL or security boundary, and
-it does not prevent two Coders from editing the same files.
+cross-team messages when followed. Before creating a workspace, `start.sh`
+also refuses another inspectable Herdr Codex role agent when either reported
+cwd resolves to the same physical Git worktree or its path contains/is inside
+the requested root. Separate worktrees are allowed only when their cwd scopes
+do not overlap this way. This is a preflight guard, not an atomic reservation
+or ACL; a post-check race or a writer outside Herdr remains possible.
 
 - Different repositories can run concurrently with different `--cwd` values.
 - Concurrent tasks in one repository should use one Git worktree and branch per
@@ -224,7 +228,12 @@ See [Multi-team isolation](docs/multi-team.md) and the
 3. backs up every existing target profile before replacement;
 4. installs only `planner.config.toml`, `coder.config.toml`, and
    `reviewer.config.toml`;
-5. reports Herdr Codex integration state without silently trusting a changed
+5. records SHA-256 markers for the exact embedded role prompt and the managed
+   profile policy so `doctor.sh` and `start.sh` reject installed instructions,
+   reasoning, sandbox, approval, or future policy fields that drift from the
+   current checkout; the independently configurable `model = ...` assignment
+   is excluded;
+6. reports Herdr Codex integration state without silently trusting a changed
    hook.
 
 Teams never cause per-prefix profile copies. Twenty teams still use those same
@@ -251,6 +260,7 @@ findings are non-blocking by default.
 /path/to/herdr-codex-team/scripts/test.sh --team github ping
 /path/to/herdr-codex-team/scripts/test.sh --team github communication
 /path/to/herdr-codex-team/scripts/test.sh --team github full
+/path/to/herdr-codex-team/scripts/test.sh --team github policy
 /path/to/herdr-codex-team/scripts/test.sh \
   --team github --against-team auth isolation
 /path/to/herdr-codex-team/scripts/test.sh \
@@ -263,6 +273,7 @@ findings are non-blocking by default.
 | `ping` | the shell can address the exact same-team Coder and Reviewer and receive run-specific replies |
 | `communication` | the live Planner routes run-specific challenges into those real downstream panes |
 | `full` | a small Git-backed defect travels through the live Planner/Coder/Reviewer loop with bounded artifact checks |
+| `policy` | adversarial prompts check role-specific refusal of unauthorized write, delegation, and direct-contact requests against a baseline-checked nested Git fixture |
 | `isolation` | one directed same-team route succeeds while the named peer team's retained transcripts and lifecycle sequence remain unchanged; swap the two prefixes to check the reverse direction |
 
 The isolation harness uses a challenge-derived standalone token in the retained
@@ -276,11 +287,13 @@ evidence that the intended target moved. Invoke the absolute `test.sh` path
 while the shell is in the same Git worktree passed to `start.sh`, or set
 `HERDR_TEST_PROJECT_DIR` explicitly.
 
-The full test requires a clean, committed, disposable host worktree and creates
-a nested fixture under it. It checks routing and resulting Git artifacts but
-does not provide operating-system writer attribution. Because Planner has a
-`workspace-write` sandbox, “Coder is the only writer” remains prompt/workflow
-policy for Planner.
+The `full` and `policy` tests require a clean, committed, disposable host
+worktree and create nested fixtures under it. They check routing and resulting
+Git artifacts but do not provide operating-system writer attribution. Because
+Planner has a `workspace-write` sandbox, “Coder is the only writer” remains
+prompt/workflow policy for Planner. Policy mode also checks unchanged peer
+transcripts, lifecycle sequences, and visible Herdr agent names; it cannot
+prove that no hidden native worker ever existed.
 
 No live multi-team routing result is implied by this repository's static test
 suite. If two suitable teams are unavailable, report the isolation test as
@@ -298,7 +311,9 @@ teams.
 Include the goal, constraints, explicit non-goals, acceptance criteria, and
 expected validation. Planner must include all necessary context in every
 Coder/Reviewer handoff; downstream agents should not need the user's prior chat
-history.
+history. Every normal handoff and response also carries one stable `TASK_ID`,
+the current `ROUND` (1–4), and a fresh per-handoff `HANDOFF_ID`; missing or
+mismatched echoes stop the workflow fail-closed.
 
 ## Configuration and models
 
@@ -320,13 +335,16 @@ approval_policy = "never"
 ```
 
 This is a default recommendation, not a routing dependency. The workflow is
-model-agnostic. Choose models available to your Codex account and CLI, edit the
-installed profiles, or use `PLANNER_MODEL`, `CODER_MODEL`, and
-`REVIEWER_MODEL` for install-time or per-start overrides. Restart a role after
-changing its profile.
+model-agnostic. Choose models available to your Codex account and CLI with
+`PLANNER_MODEL`, `CODER_MODEL`, and `REVIEWER_MODEL` at install or startup, or
+edit only the top-level `model = ...` assignment in an installed role file.
+Restart a role after changing its model.
 
-Planner and Reviewer use `xhigh` reasoning defaults; Coder uses `high`. Use
-only values supported by the selected model. See
+Planner and Reviewer use `xhigh` reasoning defaults; Coder uses `high`.
+Reasoning, sandbox, approval, and role instructions are managed policy: change
+them in the matching repository template under `profiles/` or `prompts/`, run
+`install.sh`, and restart the affected role. Use only values supported by the
+selected model. See
 [Configuration](docs/configuration.md) and the
 [official Codex configuration reference](https://developers.openai.com/codex/config-reference/).
 
