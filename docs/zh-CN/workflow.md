@@ -118,7 +118,7 @@ Remaining concerns:
 
 ## 3. Planner 验证实现
 
-Planner 将 Coder report 视为线索，而不是证明。它至少读取：
+Planner 将 Coder report 视为线索，而不是证明。对每个 Git-backed root，它至少读取：
 
 ```bash
 git status --short
@@ -126,7 +126,9 @@ git diff
 git diff --staged
 ```
 
-它把 changed file 和 validation evidence 与计划比较。如果 Coder 修改无关文件或 diff 实质不完整，Planner 会在审查前向 Coder 发送聚焦修正。
+对每个 non-Git root，Planner 记录 `Git evidence: NOT AVAILABLE`，检查 Coder 最大努力提供的 touched-path inventory 与这些文件，并持续说明完整 baseline、diff、untracked-file scope、rollback point 和预存变更归属不可用。直接检查不能弥补这些缺口。
+
+Planner 把可用的 changed-file 和 validation evidence 与计划比较。如果 Coder 修改无关文件或可用证据实质不完整，Planner 会在审查前向 Coder 发送聚焦修正。
 
 Planner 不能通过自己编辑源码来“节省一轮”。它的 `workspace-write` sandbox 是为了 Herdr 兼容，不是实现权限。
 
@@ -158,7 +160,9 @@ Validation evidence:
 ...
 
 Review scope:
-- inspect git status and the actual diff
+- for every Git-backed root, inspect git status and the actual diff
+- for every non-Git root, record Git evidence as NOT AVAILABLE and inspect the
+  reported touched paths directly
 - read changed files and relevant surrounding code
 - assess correctness, regression, security, error handling, compatibility,
   state/data consistency, edge cases, and test quality
@@ -221,7 +225,8 @@ Planner recommendation:
 
 Reviewer `PASS` 不会自动批准任务。Planner 最终检查：
 
-- 实际 Git diff 和意外文件；
+- Git-backed root 的实际 Git diff 和意外文件；
+- non-Git root 所报 touched path 和明确的证据不可用限制；
 - 每项 acceptance criterion；
 - 声称的 test、typecheck、lint 和 build result；
 - 与变更相符的 compatibility 和 rollback concern；
@@ -243,13 +248,15 @@ herdr agent prompt auth-coder "<self-contained task>" --wait --timeout 120000
 
 ## 中断后恢复
 
-不要仅仅因为 Planner 或 Herdr 重启就丢弃或 reset 工作树。恢复中的 Planner 应：
+不要仅仅因为 Planner 或 Herdr 重启就丢弃或 reset 项目文件。恢复中的 Planner 应：
 
 1. 恢复用户 goal 和 acceptance criteria；
-2. 运行 `git status`、`git diff` 和 `git diff --staged`；
+2. 对每个 Git-backed root 运行 `git status`、`git diff` 和 `git diff --staged`；对 non-Git root 记录 `Git evidence: NOT AVAILABLE`，并直接检查上次所报 touched-path inventory；
 3. 检查 validation artifact 和当前 process；
-4. 运行 `doctor.sh --team <prefix> --cwd <worktree>`（或 legacy 不带前缀形式），确认三个精确实时名称；
-5. 判断 Coder 是否必须继续，或 Reviewer 是否可以检查现有 diff；
+4. 使用 startup 时相同的有序 root 列表运行 `doctor.sh --team <prefix> --cwd <primary> --add-dir <extra> ...`（或 legacy 不带前缀形式），确认三个精确实时名称和受管 process scope；
+5. 判断 Coder 是否必须继续，或 Reviewer 是否可以检查现有 Git/non-Git 变更证据；
 6. 发送新的自包含 handoff。
 
 项目不持久化 formal state machine。基于人类可读文件的 checkpoint 是可能的未来扩展，不是当前工作流的 hidden dependency。并发 Team 和 Git worktree 指南见[多 Team 隔离](multi-team.md)。
+
+Multi-root 访问改变证据，不改变权限：Coder 仍是策略上唯一允许修改项目文件的角色；Planner 仍具有技术上的 `workspace-write` 能力，但禁止将其用于实现；Reviewer 的 sandbox 在每个 root 上仍为 `read-only`。

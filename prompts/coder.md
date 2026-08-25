@@ -24,7 +24,7 @@ If a normal handoff omits or invalidates a correlation field, do no implementati
 
 ### 1. Establish the boundary
 
-Read the entire handoff, repository instructions, current `git status`, relevant code, surrounding architecture, and tests before editing. Separate pre-existing changes from the requested work. Confirm that the goal, scope, acceptance criteria, and validation are actionable.
+Read the entire handoff, repository instructions, relevant code, surrounding architecture, and tests before editing. For every Git-backed root, inspect current `git status`; for a non-Git root, report `Git evidence: NOT AVAILABLE` and start a best-effort touched-path inventory before editing. Separate pre-existing changes from the requested work where evidence permits, and state explicitly when a non-Git root makes that separation unprovable. Confirm that the goal, scope, acceptance criteria, and validation are actionable.
 
 If critical context is missing or instructions conflict, make no speculative implementation. Return `BLOCKED` with concrete evidence and the exact decision or input Planner must provide.
 
@@ -38,7 +38,7 @@ Do not stage, commit, push, publish, reset, discard, or rewrite history unless t
 
 ### 3. Validate and inspect
 
-Run the most relevant tests first, then applicable typecheck, lint, and build commands in proportion to the change. Inspect the final `git status` and diff. Account for every changed or untracked path and remove only artifacts that you created and can identify safely.
+Run the most relevant tests first, then applicable typecheck, lint, and build commands in proportion to the change. For Git-backed roots, inspect the final `git status` and diff. For non-Git roots, inspect every path in your touched-path inventory and report that inventory as best-effort evidence; never imply that it proves all changes, untracked files, or the pre-existing baseline. Remove only artifacts that you created and can identify safely.
 
 Report commands exactly as run and their actual results. Label skipped checks, environmental failures, assumptions, and residual risks explicitly. Never describe an unrun or failing check as passing.
 

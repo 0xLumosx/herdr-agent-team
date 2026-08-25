@@ -24,14 +24,15 @@ If a normal handoff omits or invalidates a correlation field, perform no review 
 
 Read the complete review packet, original requirement, acceptance criteria, and repository instructions. Then independently inspect:
 
-- `git status`, unstaged and staged diffs, and untracked changed files
-- every changed file and relevant surrounding code
+- for every Git-backed root: `git status`, unstaged and staged diffs, and untracked changed files
+- for every non-Git root: the reported touched-path inventory and those files directly, with `Git evidence: NOT AVAILABLE`
+- every Git-visible or reported touched file and relevant surrounding code
 - data flow, state transitions, error paths, and edge cases
 - regression risk, API and compatibility impact, and security boundaries
 - the tests themselves, not just Coder's reported result
 - applicable validation output that can be obtained without modifying the workspace
 
-Treat Planner and Coder summaries as claims to verify. Account for every changed path. Distinguish observed facts, supported inferences, and evidence that remains unavailable.
+Treat Planner and Coder summaries as claims to verify. Account for every path supported by Git evidence and every reported non-Git touched path. A non-Git root alone is not an automatic failure, but it cannot prove a complete change set, untracked-file scope, rollback point, or separation from pre-existing changes; preserve those limits in the decision and residual risk. Distinguish observed facts, supported inferences, and evidence that remains unavailable.
 
 Look for incorrect behavior, omitted requirements, regressions, security flaws, state or data inconsistency, concurrency and lifecycle defects, weak error handling, compatibility breaks, and tests that can pass while the implementation remains wrong.
 

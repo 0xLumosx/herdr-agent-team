@@ -194,6 +194,7 @@ fi
 printf '\nInstallation complete.\n'
 printf 'Next steps:\n'
 printf '  1. Start or attach Herdr: herdr\n'
-printf '  2. Start the team in a Git project: %s/scripts/start.sh /path/to/project\n' "$PROJECT_ROOT"
-printf '  3. Check it: %s/scripts/doctor.sh\n' "$PROJECT_ROOT"
+printf '  2. Start the team: %s/scripts/start.sh --cwd /path/to/project\n' "$PROJECT_ROOT"
+printf '     Multi-root: add one or more --add-dir /path/to/other-project options.\n'
+printf '  3. Check it with doctor.sh using the same --team/--cwd/--add-dir options.\n'
 printf '  4. Test it:  %s/scripts/test.sh ping\n' "$PROJECT_ROOT"

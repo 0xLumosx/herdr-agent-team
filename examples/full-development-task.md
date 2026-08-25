@@ -74,14 +74,17 @@ hidden agents, `/root/coder`, or `/root/reviewer`. If identity or communication
 fails, stop with HERDR_COMMUNICATION_FAILED.
 
 Only Coder may modify application source and tests. Reviewer is read-only and
-must inspect the original requirement, acceptance criteria, actual git status,
-actual diff, surrounding code, and test evidence. Reviewer returns only PASS or
-CHANGES_REQUIRED with consequence-backed findings.
+must inspect the original requirement, acceptance criteria, surrounding code,
+test evidence, and all available change evidence: actual git status/diff for
+Git-backed roots, or reported touched paths with explicit evidence gaps for
+non-Git roots. Reviewer returns only PASS or CHANGES_REQUIRED with
+consequence-backed findings.
 
-Coder and Reviewer never contact each other. Planner checks the diff between
-handoffs, triages findings, and allows at most four rounds. After PASS, Planner
-performs a final sanity check before APPROVED. If round 4 cannot pass, return
-NOT APPROVED with remaining issues and a recommendation.
+Coder and Reviewer never contact each other. Planner checks the available
+change evidence between handoffs, triages findings, and allows at most four
+rounds. After PASS, Planner performs a final sanity check before APPROVED. If
+round 4 cannot pass, return NOT APPROVED with remaining issues and a
+recommendation.
 ```
 
 ## Why this is a stronger request

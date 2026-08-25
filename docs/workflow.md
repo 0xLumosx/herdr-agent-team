@@ -128,7 +128,8 @@ If it cannot proceed, it returns `BLOCKED` with the exact missing input, failing
 
 ## 3. Planner verifies the implementation
 
-Planner treats the Coder report as a lead, not proof. It reads at least:
+Planner treats the Coder report as a lead, not proof. For each Git-backed root,
+it reads at least:
 
 ```bash
 git status --short
@@ -136,7 +137,15 @@ git diff
 git diff --staged
 ```
 
-It compares changed files and validation evidence to the plan. If the Coder changed unrelated files or the diff is materially incomplete, Planner sends a focused correction to Coder before review.
+For each non-Git root, Planner records `Git evidence: NOT AVAILABLE`, inspects
+Coder's best-effort touched-path inventory and those files directly, and carries
+forward that a complete baseline, diff, untracked-file scope, rollback point,
+and pre-existing-change attribution are unavailable. Direct inspection does not
+close those gaps.
+
+Planner compares the available changed-file and validation evidence to the
+plan. If Coder changed unrelated files or the available evidence is materially
+incomplete, Planner sends a focused correction to Coder before review.
 
 Planner must not edit the source itself to “save a round.” Its `workspace-write` sandbox exists for Herdr compatibility, not implementation authority.
 
@@ -169,7 +178,9 @@ Validation evidence:
 ...
 
 Review scope:
-- inspect git status and the actual diff
+- for every Git-backed root, inspect git status and the actual diff
+- for every non-Git root, record Git evidence as NOT AVAILABLE and inspect the
+  reported touched paths directly
 - read changed files and relevant surrounding code
 - assess correctness, regression, security, error handling, compatibility,
   state/data consistency, edge cases, and test quality
@@ -234,7 +245,9 @@ The cap is not a reason to lower the acceptance bar. It is a reason to return co
 
 Reviewer `PASS` does not automatically approve the task. Planner performs a final check of:
 
-- the actual Git diff and unexpected files;
+- the actual Git diff and unexpected files for Git-backed roots;
+- the reported touched paths and explicit unavailable-evidence limits for
+  non-Git roots;
 - every acceptance criterion;
 - claimed test, typecheck, lint, and build results;
 - compatibility and rollback concerns appropriate to the change;
@@ -261,17 +274,26 @@ If a target is `blocked`, inspect the agent state and visible terminal. Do not a
 
 ## Recovery after interruption
 
-Do not discard or reset the working tree merely because Planner or Herdr restarted. The recovering Planner should:
+Do not discard or reset project files merely because Planner or Herdr restarted. The recovering Planner should:
 
 1. recover the user's goal and acceptance criteria;
-2. run `git status`, `git diff`, and `git diff --staged`;
+2. run `git status`, `git diff`, and `git diff --staged` for every Git-backed
+   root; for a non-Git root, record `Git evidence: NOT AVAILABLE` and inspect
+   the last reported touched-path inventory directly;
 3. inspect validation artifacts and current processes;
-4. run `doctor.sh --team <prefix> --cwd <worktree>` (or the legacy unprefixed
-   form) and confirm all three exact live names;
-5. decide whether Coder must continue or Reviewer can inspect the existing diff;
+4. run `doctor.sh --team <prefix> --cwd <primary> --add-dir <extra> ...` with
+   the same ordered root list used at startup (or the legacy unprefixed form)
+   and confirm all three exact live names and managed process scopes;
+5. decide whether Coder must continue or Reviewer can inspect the available
+   Git/non-Git change evidence;
 6. send a fresh, self-contained handoff.
 
 The project does not persist a formal state machine. Human-readable file-backed
 checkpoints are a possible future extension, not a hidden dependency of the
 current workflow. See [Multi-team isolation](multi-team.md) for concurrent-team
 and Git-worktree guidance.
+
+Multi-root access changes evidence, not authority: Coder remains the only role
+allowed by policy to edit project files, Planner retains technical
+`workspace-write` capability but is forbidden to use it for implementation,
+and Reviewer's sandbox remains `read-only` across every root.

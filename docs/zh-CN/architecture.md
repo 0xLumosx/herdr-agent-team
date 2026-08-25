@@ -60,7 +60,7 @@ Planner 只在自己的 Team 内编排。
               │     │    Coder     │                │
               │     │ 唯一 writer  │                │
               │     └──────┬───────┘                │
-              │            │ 结果 + 真实 diff       │
+              │            │ 结果 + 变更证据        │
               └────────────┘                       │
                            │ 审查简报                 │
                            ▼                         │
@@ -93,8 +93,8 @@ $CODEX_HOME/reviewer.config.toml
 ### 设置脚本
 
 - `install.sh` 验证前置条件、备份冲突文件并安装 profile。
-- `doctor.sh` 检查 binary、已安装 profile、Herdr runtime、精确 legacy 或带前缀的实时名称、状态、workspace/pane/cwd 关联，以及前台 `--profile <role>` 绑定。
-- `start.sh` 仅使用已安装 Herdr 公开的 CLI 能力，准备一个 legacy 或带前缀的三 pane Team。它拒绝名称冲突，不会重命名或删除现有 Agent。
+- `doctor.sh` 检查 binary、已安装 profile、Herdr runtime、精确 legacy 或带前缀的实时名称、状态、workspace/pane/cwd 关联，以及前台 profile、sandbox、受管 writable-root 覆盖和角色专属额外 root argv 绑定。
+- `start.sh` 仅使用已安装 Herdr 公开的 CLI 能力，准备一个 legacy 或带前缀的三 pane Team。它拒绝名称冲突和完整 root-set 重叠，不会重命名或删除现有 Agent。可重复 Codex `--add-dir` 只应用到使用 `workspace-write` 的 Planner 和 Coder。
 - `test.sh` 检查 Team-aware direct ping、经 Planner 的通信、完整循环，并在两个真实 Team 可用时检查路由隔离。
 - `uninstall.sh` 只把本项目管理的 profile 文件移到可恢复的日期备份中。
 
@@ -102,9 +102,11 @@ $CODEX_HOME/reviewer.config.toml
 
 Direct-ping fixture 定义精确 sentinel 回复；mediated 和 full-loop 测试则使用本次运行特定的 challenge，成功回复只能由下游 live agent 推导。完整的派生回复不出现在外层 Planner 输入中，因此仅转发或 echo 该输入无法通过检查。本次运行特定的字符串也让旧 scrollback 或通用模型回复更难被误判为预期 live agent 已处理消息的证据。可见 pane 状态变化仍是证据的一部分。
 
-Isolation 模式指定一个 primary Team 和一个 adversarial peer Team。它检查 live 同 Team 路由，并在 peer Team 的下游证据中查找本次运行特定的 challenge。两个 Team 必须都是真实且 settled；仅靠静态名称构造无法证明跨 Team 隔离。如果无法执行 live 检查，必须报告 `NOT RUN`。
+Isolation 模式指定一个 primary Team 和一个 adversarial peer Team。它检查 live 同 Team 路由，并在 peer Team 的下游证据中查找本次运行特定的 challenge。两个 Team 必须都是真实且 settled；仅靠静态名称构造无法证明跨 Team 隔离。如果无法执行 live 检查，必须报告 `NOT RUN`。它是路由证据，不证明 root set 之间的文件系统隔离。
 
 Full-loop harness 要求 host worktree Git-clean 且有已提交的 `HEAD`，并在 live Team 所使用的项目下创建 disposable nested Git repository。它使用 challenge-derived Coder/Reviewer response token，避免把输入文字误判为成功回复；还要求 fixture `HEAD` 保持在 harness baseline、只有预期 fixture 文件发生差异、周边 host 的 Git-visible status/branch/`HEAD` 保持不变、脚本自身 Python assertion 和 fixture test 通过，并且 Planner 发出本次运行特定的 approval token。Harness commit 会禁用用户级签名和 hook。它不是 filesystem audit，无法发现对 ignored host file 的修改，也不能提供 writer attribution：Planner 拥有 `workspace-write`，而项目没有安装操作系统级 audit 机制。“Only Coder writes” 对 Reviewer 有硬约束，但对 Planner 仍是 prompt/workflow 策略。
+
+Harness 要求 Git-backed 主 host。如果 Team 的主 cwd 为 non-Git，`full` 和 `policy` 均为 `NOT RUN`。Git-backed 主 root 下获得的结果不能建立 non-Git 额外 root 的 baseline、完整 diff、rollback 或 writer attribution。
 
 ## 身份：profile、kind 与实时名称各不相同
 
@@ -134,14 +136,14 @@ kind: codex, name: auth-reviewer
 | 访问另一个 Team | 否 | 否 | 否 |
 | 按策略修改应用源码 | 否 | 是 | 否 |
 | Filesystem sandbox | `workspace-write` | `workspace-write` | `read-only` |
-| 检查 Git diff | 必需 | 对自身 report 必需 | 必需 |
+| 检查可用变更证据 | 每个 Git root 的 diff；每个 non-Git root 的 touched-path 限制 | 对自身 report 执行相同检查 | 独立检查两者并保留缺口 |
 | 宣布最终批准 | 是 | 否 | 否 |
 
-Planner 的 no-write 边界是 prompt 和工作流规则，而不是硬文件系统限制。保留 `workspace-write` 是因为只读 Planner 在尝试 Herdr 通信时曾产生 `Operation not permitted`。必须理解这一取舍，不能把它描述为完美隔离。
+Planner 的 no-write 边界是 prompt 和工作流规则，而不是硬文件系统限制。保留 `workspace-write` 是因为只读 Planner 在尝试 Herdr 通信时曾产生 `Operation not permitted`。Coder 具有相同技术写 scope，并是唯一预期实现 writer。Reviewer 被强制为 `read-only` 且启动时不传 `--add-dir`；它仍可只读检查请求的 root，但不会获得额外可写 root。受管 startup 会清空继承的 `sandbox_workspace_write.writable_roots`，然后只向 Planner 和 Coder 传入精确的额外可写 root set。必须理解这一取舍，不能把它描述为完美隔离。
 
 ## 交接契约
 
-每条 Planner-to-Coder 消息都包含 goal、相关 context、constraints、acceptance criteria、expected validation，以及不得修改无关代码的明确禁令。每条 Planner-to-Reviewer 消息都包含原始 requirement、acceptance criteria、当前 round、Coder report、validation evidence 和要检查的精确 diff/revision scope。
+每条 Planner-to-Coder 消息都包含 goal、相关 context、constraints、acceptance criteria、expected validation，以及不得修改无关代码的明确禁令。每条 Planner-to-Reviewer 消息都包含原始 requirement、acceptance criteria、当前 round、Coder report、validation evidence 和要检查的精确变更证据 scope：Git-backed root 使用 diff/revision 证据，non-Git root 使用所报告的 touched path 和明确证据缺口。
 
 Coder 返回包含事实细节的 `IMPLEMENTATION_DONE` 或 `BLOCKED`。Reviewer 只返回 `PASS` 或 `CHANGES_REQUIRED`。Planner 不会照单全收任何 report：它会在做出下一步决策前读取工作树。
 
@@ -165,13 +167,13 @@ Coder 实现或修复 → Reviewer 审查 → Planner 分诊
 2. **Team-name boundary：**当 Planner 遵守 fail-closed 契约时，精确 `<prefix>-<role>` 名称可防止跨 Team 访问；它们不隔离文件或操作系统进程。
 3. **Codex sandbox：**限制 tool access。`approval_policy = "never"` 会改变提示行为，但不会禁用 sandbox。
 4. **Role prompt：**在语义上约束行为。它是有用策略，不是安全原语。
-5. **Git 和验证：**提供最终决策所依据的客观记录。没有匹配 diff/test 证据的 report 只是未验证声明。
+5. **Git 和验证：**在 Git 历史存在时提供最终决策所依据的客观记录。Non-Git touched-path inventory 只是最大努力证据，不能证明完整变更集或 baseline。
 
-即使两个 Team 在 Herdr 名称上完全隔离，只要两个 Coder 共享同一 checkout，仍可能破坏彼此的工作。不同仓库要使用不同 `--cwd`；同一仓库内的并发任务要使用不同 Git worktree 和 branch。本项目记录该边界，但不自动管理其生命周期。
+即使两个 Team 在 Herdr 名称上完全隔离，只要任一主 scope 或额外 scope 重叠，仍可能破坏彼此的工作。Startup 会比较完整受管 root set：Git-backed 路径按物理 worktree root，non-Git 路径按物理目录 root。同一仓库内的并发任务要使用不同 Git worktree 和 branch，每个额外 root 也必须互不重叠。Preflight 不是操作系统锁。
 
 ## 重启与未来持久化
 
-项目不维护工作流 database。Planner 重启时，应保留所有文件并从以下命令开始恢复：
+项目不维护工作流 database。Planner 重启时，应保留所有文件。对每个 Git-backed root，从以下命令开始恢复：
 
 ```bash
 git status --short
@@ -179,7 +181,9 @@ git diff
 git diff --staged
 ```
 
-新的 Planner 从真实 diff 重建目标和当前状态，重新推导当前 Team 身份、验证精确的同 Team live Herdr agent，并从合适的 handoff 继续。它不能假定 Coder report 或 Reviewer result 被保留下来。
+对每个 non-Git root，记录 `Git evidence: NOT AVAILABLE` 并直接检查上次所报 touched path；这无法重建完整 baseline。
+
+新的 Planner 从可用 diff 和所报 touched path 重建目标与当前状态，保留 non-Git 证据缺口，重新推导当前 Team 身份、验证精确的同 Team live Herdr agent，并从合适的 handoff 继续。它不能假定 Coder report 或 Reviewer result 被保留下来。
 
 未来版本可能在 `.herdr-codex/` 下增加基于文件的 handoff：
 

@@ -7,7 +7,8 @@ PROJECT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 TEAM_LIB="$SCRIPT_DIR/lib/team.sh"
 JSON_LIB="$SCRIPT_DIR/lib/json.sh"
 DIGEST_LIB="$SCRIPT_DIR/lib/digest.sh"
-[[ -f "$TEAM_LIB" && -f "$JSON_LIB" && -f "$DIGEST_LIB" ]] || {
+SCOPE_LIB="$SCRIPT_DIR/lib/scope.sh"
+[[ -f "$TEAM_LIB" && -f "$JSON_LIB" && -f "$DIGEST_LIB" && -f "$SCOPE_LIB" ]] || {
   printf '[FAIL] Missing script helper under %s/lib.\n' "$SCRIPT_DIR" >&2
   exit 1
 }
@@ -17,6 +18,8 @@ source "$TEAM_LIB"
 source "$JSON_LIB"
 # shellcheck source=lib/digest.sh
 source "$DIGEST_LIB"
+# shellcheck source=lib/scope.sh
+source "$SCOPE_LIB"
 CODEX_DIR=${CODEX_HOME:-"$HOME/.codex"}
 case "$CODEX_DIR" in
   /*) ;;
@@ -32,6 +35,11 @@ PROJECT_POSITIONAL_SET=0
 CWD_ARG_SET=0
 TEAM_CLI_SET=0
 TEAM_CLI_PREFIX=''
+ADD_DIR_ARGS=()
+ADD_DIRS=()
+REQUESTED_DIRS=()
+REQUESTED_SCOPE_ROOTS=()
+REQUESTED_HAS_NON_GIT=0
 workspace_id=''
 START_TIMEOUT_MS=${HERDR_START_TIMEOUT_MS:-120000}
 startup_issues=0
@@ -39,13 +47,16 @@ first_issue_role=''
 
 usage() {
   printf '%s\n' \
-    'Usage: ./scripts/start.sh [--no-focus] [--team PREFIX] [--cwd PROJECT_DIR] [PROJECT_DIR]' \
+    'Usage: ./scripts/start.sh [--no-focus] [--team PREFIX] [--cwd PROJECT_DIR] [--add-dir DIR]... [PROJECT_DIR]' \
     '' \
     'Creates one Herdr workspace with three live agents.' \
     'Without --team or TEAM_PREFIX: planner, coder, reviewer (legacy mode).' \
     'With --team github: github-planner, github-coder, github-reviewer.' \
     'TEAM_PREFIX may supply the prefix when --team is omitted.' \
-    'PROJECT_DIR defaults to the current directory and must be inside a Git worktree.' \
+    'PROJECT_DIR defaults to the current directory.' \
+    'Existing Git and non-Git project directories are both supported.' \
+    'Non-Git roots start normally with explicit degraded Git-evidence warnings.' \
+    '--add-dir is repeatable and grants Planner/Coder additional writable roots; Reviewer remains read-only without writable-root grants.' \
     'Use either --cwd or the positional PROJECT_DIR, not both.' \
     '' \
     'Optional per-run model overrides:' \
@@ -105,6 +116,15 @@ while [[ $# -gt 0 ]]; do
       PROJECT_ARG=${1#--cwd=}
       shift
       ;;
+    --add-dir)
+      [[ $# -ge 2 ]] || die '--add-dir requires a directory.'
+      ADD_DIR_ARGS+=("$2")
+      shift 2
+      ;;
+    --add-dir=*)
+      ADD_DIR_ARGS+=("${1#--add-dir=}")
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -148,17 +168,69 @@ PROJECT_ARG=${PROJECT_ARG:-"$PWD"}
   die "HERDR_START_TIMEOUT_MS must be greater than the Herdr minimum of 3000: $START_TIMEOUT_MS"
 (( 10#$START_TIMEOUT_MS <= 300000 )) || \
   die "HERDR_START_TIMEOUT_MS exceeds the Herdr 0.8.2 maximum of 300000: $START_TIMEOUT_MS"
+scope_path_has_control "$PROJECT_ARG" && \
+  die 'Project directory argument contains an unsupported control character.'
 [[ -d "$PROJECT_ARG" ]] || die "Project directory does not exist: $PROJECT_ARG"
-PROJECT_DIR=$(CDPATH= cd -- "$PROJECT_ARG" && pwd -P)
+PROJECT_DIR=$(scope_physical_dir "$PROJECT_ARG") || \
+  die 'Project directory cannot be resolved safely.'
 [[ "$PROJECT_DIR" != '/' ]] || die 'Refusing to start workspace-write agents at the filesystem root.'
-git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || \
-  die "PROJECT_DIR is not inside a Git worktree: $PROJECT_DIR"
-TARGET_GIT_ROOT=$(git -C "$PROJECT_DIR" rev-parse --show-toplevel 2>/dev/null) || \
-  die "Could not resolve the Git worktree root for PROJECT_DIR: $PROJECT_DIR"
-TARGET_GIT_ROOT=$(CDPATH= cd -- "$TARGET_GIT_ROOT" && pwd -P)
+
+for add_dir_arg in ${ADD_DIR_ARGS[@]+"${ADD_DIR_ARGS[@]}"}; do
+  [[ -n "$add_dir_arg" ]] || die '--add-dir requires a non-empty directory.'
+  scope_path_has_control "$add_dir_arg" && \
+    die 'Additional directory argument contains an unsupported control character.'
+  [[ -d "$add_dir_arg" ]] || die "Additional directory does not exist or is not a directory: $add_dir_arg"
+  add_dir=$(scope_physical_dir "$add_dir_arg") || \
+    die 'Additional directory cannot be resolved safely.'
+  [[ "$add_dir" != '/' ]] || die 'Refusing to grant an agent the filesystem root through --add-dir.'
+  if scope_paths_overlap "$PROJECT_DIR" "$add_dir"; then
+    die "Additional directory overlaps PROJECT_DIR; use disjoint roots: $add_dir"
+  fi
+  for existing_add_dir in ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}; do
+    if scope_paths_overlap "$existing_add_dir" "$add_dir"; then
+      die "Additional directories overlap or resolve to the same physical path: $existing_add_dir and $add_dir"
+    fi
+  done
+  ADD_DIRS+=("$add_dir")
+done
+
+REQUESTED_DIRS+=("$PROJECT_DIR")
+for add_dir in ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}; do
+  REQUESTED_DIRS+=("$add_dir")
+done
+for requested_dir in "${REQUESTED_DIRS[@]}"; do
+  if requested_git_root=$(scope_git_root "$requested_dir"); then
+    requested_scope_root=$requested_git_root
+  else
+    git_scope_status=$?
+    if [[ $git_scope_status -eq 1 ]]; then
+      requested_scope_root=$requested_dir
+      REQUESTED_HAS_NON_GIT=1
+    else
+      die "Could not safely inspect Git scope for a requested directory: $requested_dir"
+    fi
+  fi
+  for existing_scope_root in ${REQUESTED_SCOPE_ROOTS[@]+"${REQUESTED_SCOPE_ROOTS[@]}"}; do
+    if scope_paths_overlap "$existing_scope_root" "$requested_scope_root"; then
+      die "Requested directories share or overlap one effective Git/filesystem scope: $existing_scope_root and $requested_scope_root"
+    fi
+  done
+  REQUESTED_SCOPE_ROOTS+=("$requested_scope_root")
+done
+
+if [[ $REQUESTED_HAS_NON_GIT -eq 1 ]]; then
+  printf '[WARN] Requested scope includes one or more non-Git directories. Git status/diff, rollback, and pre-existing-change attribution are unavailable for those roots.\n' >&2
+  printf '[WARN] Live full/policy tests still require a separate clean committed Git host; do not report them as passing for these roots.\n' >&2
+fi
 
 command -v codex >/dev/null 2>&1 || die 'Codex CLI was not found in PATH.'
 command -v herdr >/dev/null 2>&1 || die 'Herdr was not found in PATH.'
+if [[ ${#ADD_DIRS[@]} -gt 0 ]]; then
+  codex_help=$(codex --help 2>&1) || \
+    die 'Could not inspect the Codex CLI command surface.'
+  grep -Fq -- '--add-dir' <<<"$codex_help" || \
+    die 'This Codex CLI does not expose --add-dir. Upgrade Codex before using multi-root mode.'
+fi
 JSON_BACKEND=$(json_backend_name) || \
   die 'A real JSON parser is required: install jq or make python3 available.'
 
@@ -194,7 +266,17 @@ for role in planner coder reviewer; do
        "$CODEX_DIR/$role.config.toml" "$PROJECT_ROOT/profiles/$role.config.toml" 2>&1); then
     die "$role $policy_integrity_error. Rerun $SCRIPT_DIR/install.sh before starting a team."
   fi
-  codex --profile "$role" debug prompt-input 'profile validation' >/dev/null 2>&1 || \
+  validation_args=(
+    --profile "$role"
+    -c 'sandbox_workspace_write.writable_roots=[]'
+    --sandbox "$expected_sandbox"
+  )
+  if [[ "$role" != reviewer ]]; then
+    for add_dir in ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}; do
+      validation_args+=(--add-dir "$add_dir")
+    done
+  fi
+  codex "${validation_args[@]}" debug prompt-input 'profile validation' >/dev/null 2>&1 || \
     die "Codex cannot load $CODEX_DIR/$role.config.toml. Restore a backup or rerun $SCRIPT_DIR/install.sh."
 done
 
@@ -204,6 +286,8 @@ herdr agent prompt --help >/dev/null 2>&1 || \
   die 'Herdr does not expose `agent prompt` with the expected command surface.'
 herdr agent get --help >/dev/null 2>&1 || \
   die 'Herdr does not expose `agent get` with the expected command surface.'
+herdr pane process-info --help >/dev/null 2>&1 || \
+  die 'Herdr does not expose `pane process-info`, required for managed workspace-scope verification.'
 herdr pane split --help >/dev/null 2>&1 || \
   die 'Herdr does not expose `pane split` with the expected command surface.'
 herdr pane rename --help >/dev/null 2>&1 || \
@@ -240,9 +324,15 @@ for role in planner coder reviewer; do
   fi
 done
 
-# A second Herdr team may use different live names while still writing the
-# same checkout. Refuse that setup before workspace creation. Separate linked
-# worktrees are allowed because their physical worktree roots differ.
+# A second Herdr team may use different live names while still covering one of
+# the same primary/additional roots. Refuse that setup before workspace
+# creation. Git-backed paths compare at their physical worktree root; non-Git
+# paths compare at their physical directory root.
+if [[ $REQUESTED_HAS_NON_GIT -eq 1 ]]; then
+  scope_conflict_tag='shared_workspace_scope'
+else
+  scope_conflict_tag='shared_git_worktree'
+fi
 while IFS= read -r candidate_name; do
   [[ -n "$candidate_name" ]] || continue
   if ! team_role_from_live_name "$candidate_name" >/dev/null; then
@@ -256,50 +346,89 @@ while IFS= read -r candidate_name; do
   fi
   if ! candidate_payload=$(herdr agent get "$candidate_name" 2>&1); then
     printf '%s\n' "$candidate_payload" >&2
-    die "shared_git_worktree_unverified: could not inspect live Herdr role agent '$candidate_name'; refusing to assume its worktree is different."
+    die "${scope_conflict_tag}_unverified: could not inspect live Herdr role agent '$candidate_name'; refusing to assume its workspace scope is different."
   fi
   if ! candidate_kind=$(json_agent_required_string "$candidate_payload" agent) || \
      ! candidate_reported_name=$(json_agent_required_string "$candidate_payload" name) || \
+     ! candidate_pane_id=$(json_agent_required_string "$candidate_payload" pane_id) || \
      ! candidate_cwd=$(json_agent_optional_string "$candidate_payload" cwd) || \
      ! candidate_foreground_cwd=$(json_agent_optional_string "$candidate_payload" foreground_cwd); then
-    die "shared_git_worktree_unverified: malformed identity or cwd for live Herdr role agent '$candidate_name'."
+    die "${scope_conflict_tag}_unverified: malformed identity, pane ID, or cwd for live Herdr role agent '$candidate_name'."
   fi
   [[ "$candidate_reported_name" == "$candidate_name" ]] || \
-    die "shared_git_worktree_unverified: lookup for '$candidate_name' resolved to '${candidate_reported_name:-unknown}'."
+    die "${scope_conflict_tag}_unverified: lookup for '$candidate_name' resolved to '${candidate_reported_name:-unknown}'."
   [[ -n "$candidate_kind" ]] || \
-    die "shared_git_worktree_unverified: live Herdr role agent '$candidate_name' did not expose its agent kind."
+    die "${scope_conflict_tag}_unverified: live Herdr role agent '$candidate_name' did not expose its agent kind."
   [[ "$candidate_kind" == codex ]] || continue
+
+  candidate_role=$(team_role_from_live_name "$candidate_name") || \
+    die "${scope_conflict_tag}_unverified: could not derive the role for live Herdr agent '$candidate_name'."
+  case "$candidate_role" in
+    planner|coder) candidate_expected_sandbox=workspace-write ;;
+    reviewer) candidate_expected_sandbox=read-only ;;
+  esac
+  if ! candidate_process_payload=$(herdr pane process-info --pane "$candidate_pane_id" 2>&1); then
+    printf '%s\n' "$candidate_process_payload" >&2
+    die "${scope_conflict_tag}_unverified: could not inspect the process argv for live Herdr role agent '$candidate_name'."
+  fi
+  json_process_uses_profile "$candidate_process_payload" "$candidate_role" || \
+    die "${scope_conflict_tag}_unverified: '$candidate_name' is not verifiably using generic --profile $candidate_role."
+  json_process_has_managed_scope "$candidate_process_payload" "$candidate_expected_sandbox" || \
+    die "${scope_conflict_tag}_unverified: '$candidate_name' lacks the managed writable-roots override. Restart older teams with this start.sh before retrying."
+  if ! candidate_add_dirs=$(json_process_codex_add_dirs "$candidate_process_payload"); then
+    die "${scope_conflict_tag}_unverified: '$candidate_name' exposes malformed or unstructured --add-dir arguments."
+  fi
+
+  CANDIDATE_DIRS=()
+  CANDIDATE_SCOPE_ROOTS=()
   candidate_cwd_count=0
   for candidate_path in "$candidate_cwd" "$candidate_foreground_cwd"; do
     [[ -n "$candidate_path" ]] || continue
     candidate_cwd_count=$((candidate_cwd_count + 1))
+    scope_path_has_control "$candidate_path" && \
+      die "${scope_conflict_tag}_unverified: Codex role agent '$candidate_name' reported a cwd with unsupported control characters."
     [[ -d "$candidate_path" ]] || \
-      die "shared_git_worktree_unverified: Codex role agent '$candidate_name' reported a cwd that cannot be inspected: $candidate_path"
-    candidate_path=$(CDPATH= cd -- "$candidate_path" && pwd -P)
+      die "${scope_conflict_tag}_unverified: Codex role agent '$candidate_name' reported a cwd that cannot be inspected: $candidate_path"
+    candidate_path=$(scope_physical_dir "$candidate_path") || \
+      die "${scope_conflict_tag}_unverified: Codex role agent '$candidate_name' reported an unsafe cwd."
     [[ "$candidate_path" != '/' ]] || \
-      die "shared_git_worktree: live Herdr role agent '$candidate_name' has filesystem-root cwd and can cover requested worktree '$TARGET_GIT_ROOT'. Refusing unsafe overlap."
-    if [[ "$candidate_path" == "$TARGET_GIT_ROOT" ]]; then
-      die "shared_git_worktree: live Herdr role agent '$candidate_name' already references Git worktree '$TARGET_GIT_ROOT' (cwd evidence: $candidate_path). Use that team, close it explicitly, or start the new team in a separate linked worktree."
-    fi
-    case "$TARGET_GIT_ROOT/" in
-      "$candidate_path/"*)
-        die "shared_git_worktree: live Herdr role agent '$candidate_name' has cwd '$candidate_path', which contains requested worktree '$TARGET_GIT_ROOT'. Use a narrower separate worktree root."
-        ;;
-    esac
-    case "$candidate_path/" in
-      "$TARGET_GIT_ROOT/"*)
-        die "shared_git_worktree: live Herdr role agent '$candidate_name' has cwd '$candidate_path' inside requested worktree '$TARGET_GIT_ROOT'. Use a separate linked worktree."
-        ;;
-    esac
-    if ! candidate_git_root=$(git -C "$candidate_path" rev-parse --show-toplevel 2>/dev/null); then
-      continue
-    fi
-    candidate_git_root=$(CDPATH= cd -- "$candidate_git_root" && pwd -P)
-    [[ "$candidate_git_root" != "$TARGET_GIT_ROOT" ]] || \
-      die "shared_git_worktree: live Herdr role agent '$candidate_name' already references Git worktree '$TARGET_GIT_ROOT' (cwd evidence: $candidate_path). Use that team, close it explicitly, or start the new team in a separate linked worktree."
+      die "${scope_conflict_tag}: live Herdr role agent '$candidate_name' has filesystem-root cwd and can cover every requested root. Refusing unsafe overlap."
+    CANDIDATE_DIRS+=("$candidate_path")
   done
   (( candidate_cwd_count > 0 )) || \
-    die "shared_git_worktree_unverified: Codex role agent '$candidate_name' has no inspectable cwd."
+    die "${scope_conflict_tag}_unverified: Codex role agent '$candidate_name' has no inspectable cwd."
+
+  while IFS= read -r candidate_add_dir; do
+    [[ -n "$candidate_add_dir" ]] || continue
+    [[ -d "$candidate_add_dir" ]] || \
+      die "${scope_conflict_tag}_unverified: '$candidate_name' declared an additional directory that cannot be inspected: $candidate_add_dir"
+    candidate_add_dir=$(scope_physical_dir "$candidate_add_dir") || \
+      die "${scope_conflict_tag}_unverified: '$candidate_name' declared an unsafe additional directory."
+    [[ "$candidate_add_dir" != '/' ]] || \
+      die "${scope_conflict_tag}: '$candidate_name' declared the filesystem root through --add-dir."
+    CANDIDATE_DIRS+=("$candidate_add_dir")
+  done <<<"$candidate_add_dirs"
+
+  for candidate_path in "${CANDIDATE_DIRS[@]}"; do
+    candidate_scope_root=$(scope_effective_root "$candidate_path") || \
+      die "${scope_conflict_tag}_unverified: could not safely inspect Git scope for '$candidate_name'."
+    candidate_scope_seen=0
+    for existing_candidate_scope in ${CANDIDATE_SCOPE_ROOTS[@]+"${CANDIDATE_SCOPE_ROOTS[@]}"}; do
+      if [[ "$existing_candidate_scope" == "$candidate_scope_root" ]]; then
+        candidate_scope_seen=1
+        break
+      fi
+    done
+    [[ $candidate_scope_seen -eq 1 ]] || CANDIDATE_SCOPE_ROOTS+=("$candidate_scope_root")
+  done
+
+  for requested_scope_root in "${REQUESTED_SCOPE_ROOTS[@]}"; do
+    for candidate_scope_root in "${CANDIDATE_SCOPE_ROOTS[@]}"; do
+      if scope_paths_overlap "$requested_scope_root" "$candidate_scope_root"; then
+        die "${scope_conflict_tag}: live Herdr role agent '$candidate_name' covers '$candidate_scope_root', which overlaps requested scope '$requested_scope_root'. Reuse or explicitly close that team before retrying."
+      fi
+    done
+  done
 done <<<"$live_agent_names"
 
 extract_object_string() {
@@ -310,11 +439,41 @@ extract_object_string() {
   json_object_string "$payload" "$object_name" "$field_name" || true
 }
 
-extract_agent_field() {
+process_add_dirs_match() {
   local payload=$1
-  local field=$2
+  local role=$2
+  local actual_output
+  local actual_dir
+  local expected_count
+  local index=0
 
-  json_agent_field "$payload" "$field" || true
+  case "$role" in
+    planner|coder) expected_count=${#ADD_DIRS[@]} ;;
+    reviewer) expected_count=0 ;;
+    *) return 1 ;;
+  esac
+
+  actual_output=$(json_process_codex_add_dirs "$payload") || return 1
+  while IFS= read -r actual_dir; do
+    [[ -n "$actual_dir" ]] || continue
+    (( index < expected_count )) || return 1
+    actual_dir=$(scope_physical_dir "$actual_dir") || return 1
+    [[ "$actual_dir" == "${ADD_DIRS[$index]}" ]] || return 1
+    index=$((index + 1))
+  done <<<"$actual_output"
+  (( index == expected_count ))
+}
+
+print_doctor_command() {
+  printf '%s/doctor.sh' "$SCRIPT_DIR"
+  if [[ "$TEAM_MODE" == prefixed ]]; then
+    printf ' --team %q' "$TEAM_DISPLAY"
+  fi
+  printf ' --cwd %q' "$PROJECT_DIR"
+  for print_add_dir in ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}; do
+    printf ' --add-dir %q' "$print_add_dir"
+  done
+  printf '\n'
 }
 
 project_name=${PROJECT_DIR##*/}
@@ -357,8 +516,27 @@ start_agent() {
   local live_name=$2
   local pane_id=$3
   local model=$4
-  local native_args=(--profile "$role")
+  local expected_sandbox
+  local add_dir
+  local native_args
   local start_result
+
+  case "$role" in
+    planner|coder) expected_sandbox=workspace-write ;;
+    reviewer) expected_sandbox=read-only ;;
+    *) die "Unknown role passed to start_agent: $role" ;;
+  esac
+  native_args=(
+    --profile "$role"
+    -c 'sandbox_workspace_write.writable_roots=[]'
+    --sandbox "$expected_sandbox"
+  )
+
+  if [[ "$role" != reviewer ]]; then
+    for add_dir in ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}; do
+      native_args+=(--add-dir "$add_dir")
+    done
+  fi
 
   if [[ -n "$model" ]]; then
     native_args+=(--model "$model")
@@ -380,8 +558,15 @@ start_agent() {
     printf '       herdr agent read %s --source recent-unwrapped --lines 120\n' "$live_name" >&2
   else
     printf '       No live name was retained. After repairing the pane, retry exactly:\n' >&2
-    printf '       herdr agent start %s --kind codex --pane %s --timeout %s -- --profile %s' \
+    printf '       herdr agent start %q --kind codex --pane %q --timeout %q -- --profile %q' \
       "$live_name" "$pane_id" "$START_TIMEOUT_MS" "$role" >&2
+    printf ' -c %q --sandbox %q' \
+      'sandbox_workspace_write.writable_roots=[]' "$expected_sandbox" >&2
+    if [[ "$role" != reviewer ]]; then
+      for add_dir in ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}; do
+        printf ' --add-dir %q' "$add_dir" >&2
+      done
+    fi
     if [[ -n "$model" ]]; then
       printf ' --model %s' "$model" >&2
     fi
@@ -401,29 +586,69 @@ startup_issues=0
 for role in planner coder reviewer; do
   live_name_expected=$(team_agent_for_role "$role")
   case "$role" in
-    planner) pane_expected=$root_pane_id ;;
-    coder) pane_expected=$coder_pane_id ;;
-    reviewer) pane_expected=$reviewer_pane_id ;;
+    planner) pane_expected=$root_pane_id; expected_sandbox=workspace-write ;;
+    coder) pane_expected=$coder_pane_id; expected_sandbox=workspace-write ;;
+    reviewer) pane_expected=$reviewer_pane_id; expected_sandbox=read-only ;;
   esac
   if agent_payload=$(herdr agent get "$live_name_expected" 2>&1); then
-    live_name=$(extract_agent_field "$agent_payload" name)
-    agent_kind=$(extract_agent_field "$agent_payload" agent)
-    agent_status=$(extract_agent_field "$agent_payload" agent_status)
-    interactive_ready=$(extract_agent_field "$agent_payload" interactive_ready)
-    launch_pending=$(extract_agent_field "$agent_payload" launch_pending)
-    live_pane_id=$(extract_agent_field "$agent_payload" pane_id)
-    live_workspace_id=$(extract_agent_field "$agent_payload" workspace_id)
-    if [[ "$live_name" == "$live_name_expected" && "$agent_kind" == 'codex' && \
+    live_name=''
+    agent_kind=''
+    agent_status=''
+    interactive_ready=''
+    launch_pending=''
+    live_pane_id=''
+    live_workspace_id=''
+    identity_fields_ready=false
+    if live_name=$(json_agent_required_string "$agent_payload" name) && \
+       agent_kind=$(json_agent_required_string "$agent_payload" agent) && \
+       agent_status=$(json_agent_required_string "$agent_payload" agent_status) && \
+       interactive_ready=$(json_agent_required_boolean "$agent_payload" interactive_ready) && \
+       launch_pending=$(json_agent_required_boolean "$agent_payload" launch_pending) && \
+       live_pane_id=$(json_agent_required_string "$agent_payload" pane_id) && \
+       live_workspace_id=$(json_agent_required_string "$agent_payload" workspace_id); then
+      identity_fields_ready=true
+    fi
+    primary_scope_ready=false
+    if live_cwd=$(json_agent_optional_string "$agent_payload" cwd) && \
+       live_foreground_cwd=$(json_agent_optional_string "$agent_payload" foreground_cwd); then
+      primary_cwd_count=0
+      primary_cwd_mismatch=0
+      for live_primary_path in "$live_cwd" "$live_foreground_cwd"; do
+        [[ -n "$live_primary_path" ]] || continue
+        primary_cwd_count=$((primary_cwd_count + 1))
+        if [[ ! -d "$live_primary_path" ]] || \
+           ! live_primary_path=$(scope_physical_dir "$live_primary_path") || \
+           [[ "$live_primary_path" != "$PROJECT_DIR" ]]; then
+          primary_cwd_mismatch=1
+        fi
+      done
+      if (( primary_cwd_count > 0 && primary_cwd_mismatch == 0 )); then
+        primary_scope_ready=true
+      fi
+    fi
+    process_scope_ready=false
+    if [[ -n "$live_pane_id" ]] && \
+       process_payload=$(herdr pane process-info --pane "$live_pane_id" 2>&1) && \
+       json_process_uses_profile "$process_payload" "$role" && \
+       json_process_has_managed_scope "$process_payload" "$expected_sandbox" && \
+       process_add_dirs_match "$process_payload" "$role"; then
+      process_scope_ready=true
+    fi
+    if [[ "$identity_fields_ready" == 'true' && \
+          "$live_name" == "$live_name_expected" && "$agent_kind" == 'codex' && \
           "$live_pane_id" == "$pane_expected" && "$live_workspace_id" == "$workspace_id" && \
-          "$interactive_ready" == 'true' && "$launch_pending" != 'true' && \
+          "$interactive_ready" == 'true' && "$launch_pending" == 'false' && \
+          "$primary_scope_ready" == 'true' && \
+          "$process_scope_ready" == 'true' && \
           ( "$agent_status" == 'idle' || "$agent_status" == 'done' ) ]]; then
       printf '[OK] %s ready as %s (state: %s)\n' "$role" "$live_name_expected" "$agent_status"
       continue
     fi
-    printf '[FAIL] %s final state is not ready (expected_name=%s, name=%s, kind=%s, pane=%s, workspace=%s, state=%s, ready=%s, launch_pending=%s).\n' \
+    printf '[FAIL] %s final state is not ready (expected_name=%s, name=%s, kind=%s, pane=%s, workspace=%s, state=%s, ready=%s, launch_pending=%s, primary_scope=%s, managed_scope=%s).\n' \
       "$role" "$live_name_expected" "${live_name:-unknown}" "${agent_kind:-unknown}" \
       "${live_pane_id:-unknown}" "${live_workspace_id:-unknown}" "${agent_status:-unknown}" \
-      "${interactive_ready:-unknown}" "${launch_pending:-unknown}" >&2
+      "${interactive_ready:-unknown}" "${launch_pending:-unknown}" \
+      "$primary_scope_ready" "$process_scope_ready" >&2
   else
     printf '[FAIL] %s has no live Herdr agent after startup.\n' "$live_name_expected" >&2
   fi
@@ -440,11 +665,8 @@ if [[ $startup_issues -gt 0 ]]; then
   printf '       Coder pane:    %s\n' "$coder_pane_id" >&2
   printf '       Reviewer pane: %s\n' "$reviewer_pane_id" >&2
   printf '       Startup stopped at the first failed or mismatched role. Resolve retained agents or use the printed exact retry; no existing names were reused or renamed.\n' >&2
-  if [[ "$TEAM_MODE" == prefixed ]]; then
-    printf '       Then run: %s/doctor.sh --team %s --cwd %s\n' "$SCRIPT_DIR" "$TEAM_DISPLAY" "$PROJECT_DIR" >&2
-  else
-    printf '       Then run: %s/doctor.sh --cwd %s\n' "$SCRIPT_DIR" "$PROJECT_DIR" >&2
-  fi
+  printf '       Then run: ' >&2
+  print_doctor_command >&2
   if [[ $NO_FOCUS -eq 0 && -n "$first_issue_role" ]] && \
      herdr agent get "$first_issue_role" >/dev/null 2>&1; then
     herdr workspace focus "$workspace_id" >/dev/null 2>&1 || true
@@ -465,8 +687,9 @@ printf 'Workspace: %s\n' "$workspace_id"
 printf 'Planner:   %s (%s)\n' "$PLANNER_AGENT" "$root_pane_id"
 printf 'Coder:     %s (%s)\n' "$CODER_AGENT" "$coder_pane_id"
 printf 'Reviewer:  %s (%s)\n' "$REVIEWER_AGENT" "$reviewer_pane_id"
-if [[ "$TEAM_MODE" == prefixed ]]; then
-  printf '\nVerify with: %s/doctor.sh --team %s --cwd %s\n' "$SCRIPT_DIR" "$TEAM_DISPLAY" "$PROJECT_DIR"
-else
-  printf '\nVerify with: %s/doctor.sh --cwd %s\n' "$SCRIPT_DIR" "$PROJECT_DIR"
-fi
+printf 'Primary:   %s\n' "$PROJECT_DIR"
+for add_dir in ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}; do
+  printf 'Add dir:   %s\n' "$add_dir"
+done
+printf '\nVerify with: '
+print_doctor_command

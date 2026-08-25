@@ -76,8 +76,10 @@ Suggested selection criteria:
 Model availability and supported reasoning values change over time. Consult
 current official Codex documentation and your account rather than copying an
 identifier from an old README. If a model rejects `xhigh`, update the matching
-repository profile to the strongest supported value, run `install.sh`, restart
-the role, and re-run the communication tests.
+repository profile to the strongest supported value and run `install.sh`.
+Preserve project changes, recreate only the affected team through the current
+`start.sh` with its original root arguments, then run same-argument `doctor.sh`
+and the communication tests.
 
 The project also supports three narrowly scoped environment overrides:
 
@@ -100,7 +102,8 @@ When changing a role:
 2. inspect the matching profile template;
 3. run the repository's static checks;
 4. run `install.sh` and note the backup directory;
-5. restart the changed Codex role;
+5. recreate the affected team through the current `start.sh` with its original
+   root arguments;
 6. run `test.sh static`, then run at least the team-aware `ping` and
    `communication` modes against the intended live Herdr session.
 
@@ -112,16 +115,21 @@ Codex reads the selected profile at session startup. It does not automatically
 reload the file into an existing session. After changing the repository
 `profiles/planner.config.toml` and running `install.sh`, for example:
 
-1. preserve any task context and working-tree changes;
-2. exit the old Planner session;
-3. start `codex --profile planner` again in the intended Herdr pane;
-4. confirm the live name is either legacy `planner` or the expected
-   `<team-prefix>-planner`;
-5. recover the task from the real diff and a self-contained handoff.
+1. preserve the task context, startup root arguments, and all project changes;
+2. exit only the requested team's three old sessions or close only its Herdr
+   workspace;
+3. recreate that team through the current `start.sh`, using its original
+   `--team`, `--cwd`, and ordered `--add-dir` arguments;
+4. run `doctor.sh` with those same root arguments and confirm the three exact
+   live names;
+5. recover the task from available Git diffs or reported non-Git touched paths,
+   preserve every evidence limitation, and use a self-contained handoff.
 
-Restarting an agent can clear its Herdr live name because the name belongs to
-the pane occupant. Run `doctor.sh --team <prefix>` (or unprefixed `doctor.sh`
-for legacy mode) and `herdr agent list` after every role restart.
+Do not restart with plain `codex --profile <role>`. That omits the managed empty
+inherited-writable-roots override, explicit sandbox, role-specific additional
+roots, and managed launch evidence required by `doctor.sh`. Restarting a team
+can clear its Herdr live names because each name belongs to the pane occupant.
+Do not stop or rename an unrelated team.
 
 Never repair a restart by assigning a name from another team. A profile match
 does not establish team membership.
@@ -129,6 +137,14 @@ does not establish team membership.
 ## Approval and sandbox settings
 
 `approval_policy = "never"` means Codex does not pause at ordinary approval points. It does not grant filesystem access that the sandbox forbids. Conversely, `workspace-write` still grants meaningful write capability even when the prompt says not to use it.
+
+Managed startup also supplies
+`-c 'sandbox_workspace_write.writable_roots=[]'` before any explicit writable
+roots. This neutralizes writable roots inherited from the base configuration or
+role profile so they cannot silently broaden a team's managed scope. Planner
+and Coder receive the primary cwd plus each repeatable `--add-dir` under
+`workspace-write`. Reviewer is forced back to `read-only` and receives no
+`--add-dir`; it can inspect the requested roots without a writable-root grant.
 
 Keep these two mechanisms conceptually separate:
 
@@ -173,8 +189,12 @@ Do not set `CODEX_HOME` only for installation and then start agents without it; 
 Team identity is runtime input rather than installed configuration:
 
 ```bash
-./scripts/start.sh --team github --cwd /path/to/project
-./scripts/doctor.sh --team github --cwd /path/to/project
+./scripts/start.sh --team github \
+  --cwd /path/to/primary-project \
+  --add-dir /path/to/second-project
+./scripts/doctor.sh --team github \
+  --cwd /path/to/primary-project \
+  --add-dir /path/to/second-project
 ./scripts/test.sh --team github communication
 ```
 
@@ -186,10 +206,21 @@ The prefix must produce valid unique Herdr names for all three roles. Startup
 checks the exact generated names before workspace creation and stops on a
 collision; it does not rename, replace, or delete an existing live agent.
 
-`--cwd` selects the Git worktree for startup and the optional doctor cwd check.
-It does not create a worktree. Use separate `--cwd` values for different
-repositories, and separate Git worktrees when two teams work concurrently on
-one repository. See [Multi-team isolation](multi-team.md).
+`--cwd` selects the primary Herdr workspace/pane directory. `--add-dir` is
+repeatable and selects additional writable roots for Planner and Coder;
+Reviewer remains `read-only` and receives none. Diagnostics require `--cwd`
+when any `--add-dir` is supplied and validate role-specific argv: the exact
+ordered list for Planner/Coder and no `--add-dir` for Reviewer. All requested
+directories must already exist, must not be the filesystem root, and must be
+mutually disjoint after physical-path and Git-worktree resolution.
+
+Membership in a Git worktree is evidence, not a launch requirement: both
+single-root and multi-root startup permit existing non-Git directories. The Git
+CLI remains required for conservative worktree-scope discovery. A non-Git
+root's baseline, complete diff, untracked-file scope, rollback point, and
+pre-existing-change attribution are `NOT AVAILABLE`. Use disjoint complete root
+sets for different teams, and separate Git worktrees when two teams work
+concurrently on one repository. See [Multi-team isolation](multi-team.md).
 
 ## Runtime timeouts and test retention
 
@@ -226,4 +257,4 @@ HERDR_TEST_PROJECT_DIR=/path/to/project \
   /path/to/herdr-codex-team/scripts/test.sh --team github full
 ```
 
-The host must be inside a Git-clean worktree with a committed `HEAD`. This placement keeps the nested fixture inside the `workspace-write` root of the live Planner and Coder, while the baseline check rejects Git-visible outside changes, commits, and branch switches. Git status does not audit ignored files, so use a disposable worktree without sensitive ignored content; choosing an unrelated, unborn, or dirty directory fails safely.
+The host must be inside a Git-clean worktree with a committed `HEAD`. This placement keeps the nested fixture inside the `workspace-write` root of the live Planner and Coder, while the baseline check rejects Git-visible outside changes, commits, and branch switches. Git status does not audit ignored files, so use a disposable worktree without sensitive ignored content; choosing an unrelated, unborn, or dirty directory fails safely. A team whose primary cwd is non-Git must record `full` and `policy` as `NOT RUN`; a fixture result under a Git-backed primary does not cover any non-Git additional root.

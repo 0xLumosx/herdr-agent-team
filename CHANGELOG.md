@@ -22,6 +22,11 @@ All notable changes to this project are documented here.
 - Adversarial live `policy` mode for bounded role-boundary evidence.
 - Multi-round `full` evidence contracts that validate consecutive correlated
   `CHANGES_REQUIRED` rounds followed by one final `PASS` through round 4.
+- Repeatable `--add-dir` startup and doctor support for one Team working across
+  multiple disjoint project roots, including explicit degraded-evidence support
+  for non-Git directories.
+- Complete managed-root-set collision checks across primary and additional
+  Git-backed or non-Git scopes.
 
 ### Changed
 
@@ -33,6 +38,18 @@ All notable changes to this project are documented here.
   keeping model selection user-configurable and workflow-independent.
 - Normal Coder and Reviewer responses now echo `TASK_ID`, `ROUND`, and
   `HANDOFF_ID`; Planner fails closed before interpreting a mismatched response.
+- Managed role launches clear inherited
+  `sandbox_workspace_write.writable_roots` and apply the role's explicit
+  sandbox. Planner/Coder receive only the requested additional writable roots;
+  read-only Reviewer receives no `--add-dir`. Doctor verifies this role-specific
+  policy from foreground process arguments.
+- Git worktrees are no longer a startup prerequisite. Existing non-Git
+  directories work in both single-root and multi-root mode with explicit
+  degraded-evidence warnings.
+- Non-Git roots now use best-effort touched-path evidence with explicit
+  `Git evidence: NOT AVAILABLE` limits. Git-hosted `full` and `policy` remain
+  `NOT RUN` when the primary cwd is non-Git; routing-only modes do not claim
+  filesystem or Git isolation.
 
 ### Backward compatibility
 

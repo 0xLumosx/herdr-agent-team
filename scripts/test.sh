@@ -6,7 +6,8 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROJECT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 TEAM_LIB="$SCRIPT_DIR/lib/team.sh"
 JSON_LIB="$SCRIPT_DIR/lib/json.sh"
-[[ -f "$TEAM_LIB" && -f "$JSON_LIB" ]] || {
+SCOPE_LIB="$SCRIPT_DIR/lib/scope.sh"
+[[ -f "$TEAM_LIB" && -f "$JSON_LIB" && -f "$SCOPE_LIB" ]] || {
   printf '[FAIL] Missing script helper under %s/lib.\n' "$SCRIPT_DIR" >&2
   exit 1
 }
@@ -14,6 +15,8 @@ JSON_LIB="$SCRIPT_DIR/lib/json.sh"
 source "$TEAM_LIB"
 # shellcheck source=lib/json.sh
 source "$JSON_LIB"
+# shellcheck source=lib/scope.sh
+source "$SCOPE_LIB"
 TEST_TIMEOUT_MS=${HERDR_TEST_TIMEOUT_MS:-120000}
 FULL_TIMEOUT_MS=${HERDR_FULL_TEST_TIMEOUT_MS:-1200000}
 READ_LINES=${HERDR_TEST_READ_LINES:-2000}
@@ -260,13 +263,6 @@ run_token() {
   printf '%s_%s_%s' "$1" "$(date '+%s')" "$$"
 }
 
-agent_field() {
-  local payload=$1
-  local field=$2
-
-  json_agent_field "$payload" "$field" || true
-}
-
 process_uses_profile() {
   local payload=$1
   local role=$2
@@ -315,14 +311,16 @@ require_named_runtime() {
   if ! payload=$(herdr agent get "$live_name_expected" 2>&1); then
     die "Live Herdr agent '$live_name_expected' was not found. Start the requested team first."
   fi
-  live_name=$(agent_field "$payload" name)
-  agent_kind=$(agent_field "$payload" agent)
-  agent_status=$(agent_field "$payload" agent_status)
-  interactive_ready=$(agent_field "$payload" interactive_ready)
-  launch_pending=$(agent_field "$payload" launch_pending)
-  pane_id=$(agent_field "$payload" pane_id)
-  workspace_id=$(agent_field "$payload" workspace_id)
-  state_change_seq=$(agent_field "$payload" state_change_seq)
+  if ! live_name=$(json_agent_required_string "$payload" name) || \
+     ! agent_kind=$(json_agent_required_string "$payload" agent) || \
+     ! agent_status=$(json_agent_required_string "$payload" agent_status) || \
+     ! interactive_ready=$(json_agent_required_boolean "$payload" interactive_ready) || \
+     ! launch_pending=$(json_agent_required_boolean "$payload" launch_pending) || \
+     ! pane_id=$(json_agent_required_string "$payload" pane_id) || \
+     ! workspace_id=$(json_agent_required_string "$payload" workspace_id) || \
+     ! state_change_seq=$(json_agent_field "$payload" state_change_seq); then
+    die "Live '$live_name_expected' reported malformed identity or lifecycle fields."
+  fi
   [[ "$live_name" == "$live_name_expected" ]] || \
     die "Target '$live_name_expected' resolved to unexpected live name '${live_name:-unknown}'."
   [[ "$agent_kind" == 'codex' ]] || \
@@ -337,7 +335,7 @@ require_named_runtime() {
   fi
   process_uses_profile "$process_payload" "$role" || \
     die "Live '$live_name_expected' is not verifiably running with generic --profile $role. Restart it through start.sh."
-  [[ "$interactive_ready" == 'true' && "$launch_pending" != 'true' ]] || \
+  [[ "$interactive_ready" == 'true' && "$launch_pending" == 'false' ]] || \
     die "Live '$live_name_expected' is not interactively ready (ready=${interactive_ready:-unknown}, launch_pending=${launch_pending:-unknown})."
   case "$agent_status" in
     idle|done) ;;
@@ -366,27 +364,59 @@ require_runtime() {
 
 require_agents_cover_host() {
   local host_dir=$1
+  local host_git_root=$2
   local role
   local live_name
   local payload
   local agent_cwd
   local foreground_cwd
-  local covers
+  local primary_git_root
+  local primary_git_status
+  local cwd_evidence_count
+  local candidate
+
+  host_dir=$(scope_physical_dir "$host_dir") || \
+    die "Full-test host cannot be resolved safely: $host_dir"
+  host_git_root=$(scope_physical_dir "$host_git_root") || \
+    die "Full-test Git root cannot be resolved safely: $host_git_root"
 
   for role in planner coder reviewer; do
     live_name=$(team_agent_for_role "$role")
     payload=$(herdr agent get "$live_name" 2>&1)
-    agent_cwd=$(agent_field "$payload" cwd)
-    foreground_cwd=$(agent_field "$payload" foreground_cwd)
-    covers=0
+    if ! agent_cwd=$(json_agent_optional_string "$payload" cwd) || \
+       ! foreground_cwd=$(json_agent_optional_string "$payload" foreground_cwd); then
+      die "Live '$live_name' reported malformed cwd fields."
+    fi
+    [[ -n "$agent_cwd" ]] || \
+      die "Live '$live_name' did not expose its primary cwd for the Git-backed live-test host."
+    agent_cwd=$(scope_physical_dir "$agent_cwd") || \
+      die "Live '$live_name' reported a primary cwd that cannot be resolved safely."
+    if primary_git_root=$(scope_git_root "$agent_cwd"); then
+      :
+    else
+      primary_git_status=$?
+      if [[ $primary_git_status -eq 1 ]]; then
+        die "Live '$live_name' primary cwd is non-Git; full and policy tests require the team's primary cwd to be Git-backed."
+      fi
+      die "Live '$live_name' primary cwd Git scope could not be verified safely."
+    fi
+    [[ "$primary_git_root" -ef "$host_git_root" ]] || \
+      die "Live '$live_name' primary cwd is not in the full-test host Git worktree '$host_git_root'."
+    cwd_evidence_count=0
     for candidate in "$foreground_cwd" "$agent_cwd"; do
       [[ -n "$candidate" ]] || continue
-      case "$host_dir/" in
-        "$candidate/"*) covers=1 ;;
-      esac
+      cwd_evidence_count=$((cwd_evidence_count + 1))
+      [[ -d "$candidate" ]] || \
+        die "Live '$live_name' reported a cwd that does not exist: $candidate"
+      candidate=$(scope_physical_dir "$candidate") || \
+        die "Live '$live_name' reported a cwd that cannot be resolved safely."
+      [[ "$candidate" != '/' ]] || \
+        die "Live '$live_name' reported the filesystem root as cwd."
+      scope_is_same_or_descendant "$host_dir" "$candidate" || \
+        die "Live '$live_name' cwd '$candidate' does not cover the full-test host '$host_dir'."
     done
-    [[ $covers -eq 1 ]] || \
-      die "Live '$live_name' cwd does not cover the full-test host '$host_dir' (cwd=${agent_cwd:-unknown}, foreground_cwd=${foreground_cwd:-unknown}). Run full from the project used by start.sh or set HERDR_TEST_PROJECT_DIR correctly."
+    [[ $cwd_evidence_count -gt 0 ]] || \
+      die "Live '$live_name' did not expose cwd or foreground_cwd for the full-test host."
   done
 }
 
@@ -477,6 +507,7 @@ scripts/uninstall.sh
 scripts/lib/team.sh
 scripts/lib/json.sh
 scripts/lib/digest.sh
+scripts/lib/scope.sh
 tests/prompts/01-coder-ping.md
 tests/prompts/02-reviewer-ping.md
 tests/prompts/03-planner-to-coder.md
@@ -516,6 +547,7 @@ examples/multi-team.md"
   bash -n "$TEAM_LIB"
   bash -n "$JSON_LIB"
   bash -n "$SCRIPT_DIR/lib/digest.sh"
+  bash -n "$SCOPE_LIB"
   printf '[OK] Shell syntax\n'
 
   grep -Eq '^sandbox_mode[[:space:]]*=[[:space:]]*"workspace-write"' "$PROJECT_ROOT/profiles/planner.config.toml" || \
@@ -638,9 +670,100 @@ examples/multi-team.md"
   if process_uses_profile "$process_fixture" reviewer; then
     die 'Process/profile binding parser accepted the wrong role.'
   fi
+  agent_field_fixture='{"result":{"agent":{"name":"github-planner","cwd":"/tmp/safe\n"}}}'
+  if json_agent_optional_string "$agent_field_fixture" cwd >/dev/null 2>&1; then
+    die 'Optional agent-string parser accepted a trailing line feed.'
+  fi
+  if json_agent_field "$agent_field_fixture" cwd >/dev/null 2>&1; then
+    die 'Generic agent-field parser accepted a trailing line feed.'
+  fi
+  agent_field_fixture='{"result":{"agent":{"name":"github-planner\n"}}}'
+  if json_agent_required_string "$agent_field_fixture" name >/dev/null 2>&1; then
+    die 'Required agent-string parser accepted a trailing line feed.'
+  fi
+  agent_field_fixture='{"result":{"agent":{"name":"github-planner\u0085","cwd":"/tmp/safe\u0085"}}}'
+  if json_agent_optional_string "$agent_field_fixture" cwd >/dev/null 2>&1 || \
+     json_agent_field "$agent_field_fixture" cwd >/dev/null 2>&1 || \
+     json_agent_required_string "$agent_field_fixture" name >/dev/null 2>&1; then
+    die 'Agent string parsers accepted a Unicode C1 control character.'
+  fi
+  object_field_fixture='{"result":{"workspace":{"workspace_id":"mock\u0085"}}}'
+  if json_object_string "$object_field_fixture" workspace workspace_id >/dev/null 2>&1; then
+    die 'Object-string parser accepted a Unicode C1 control character.'
+  fi
+  agent_names_fixture='{"result":{"agents":[{"name":"github-planner\u0085"}]}}'
+  if json_agent_names "$agent_names_fixture" >/dev/null 2>&1; then
+    die 'Agent-name parser accepted a Unicode C1 control character.'
+  fi
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv0":"/usr/local/bin/codex","argv":["codex","--profile","coder","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write","--add-dir","/tmp/root with spaces","--add-dir=/tmp/root-two"]}]}}}'
+  json_process_has_managed_scope "$process_fixture" workspace-write || \
+    die 'Managed-scope parser rejected the exact override and sandbox marker.'
+  [[ $(json_process_codex_add_dirs "$process_fixture") == $'/tmp/root with spaces\n/tmp/root-two' ]] || \
+    die 'Structured add-dir parser did not preserve repeated paths and spaces.'
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","-c","sandbox_workspace_write.writable_roots=[]","-c","sandbox_workspace_write.writable_roots=[\\"/tmp/hidden\\"]","--sandbox","workspace-write"]}]}}}'
+  if json_process_has_managed_scope "$process_fixture" workspace-write; then
+    die 'Managed-scope parser accepted a second writable_roots override.'
+  fi
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","-c","sandbox_workspace_write.writable_roots=[]","-c","sandbox_workspace_write . writable_roots = [\\"/tmp/hidden\\"]","--sandbox","workspace-write"]}]}}}'
+  if json_process_has_managed_scope "$process_fixture" workspace-write; then
+    die 'Managed-scope parser accepted an equivalent TOML override spelling.'
+  fi
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write","--cd","/tmp/hidden-primary"]}]}}}'
+  if json_process_has_managed_scope "$process_fixture" workspace-write; then
+    die 'Managed-scope parser accepted a Codex primary-directory override.'
+  fi
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write","--remote","ws://127.0.0.1:9000"]}]}}}'
+  if json_process_has_managed_scope "$process_fixture" workspace-write; then
+    die 'Managed-scope parser accepted a remote execution endpoint.'
+  fi
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write","--remote=ws://127.0.0.1:9000"]}]}}}'
+  if json_process_has_managed_scope "$process_fixture" workspace-write; then
+    die 'Managed-scope parser accepted an equals-form remote execution endpoint.'
+  fi
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write","--dangerously-bypass-hook-trust"]}]}}}'
+  if json_process_has_managed_scope "$process_fixture" workspace-write; then
+    die 'Managed-scope parser accepted a hook-trust bypass flag.'
+  fi
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write","--yolo"]}]}}}'
+  if json_process_has_managed_scope "$process_fixture" workspace-write; then
+    die 'Managed-scope parser accepted an unbounded sandbox bypass flag.'
+  fi
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":99,"name":"zsh","argv":null},{"pid":101,"name":"codex","argv":["codex","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write"]}]}}}'
+  json_process_has_managed_scope "$process_fixture" workspace-write || \
+    die 'Managed-scope parser rejected an unrelated non-Codex process with unavailable argv.'
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","-c","sandbox_workspace_write.writable_roots=[]","--sandbox"]}]}}}'
+  if json_process_has_managed_scope "$process_fixture" workspace-write; then
+    die 'Managed-scope parser accepted a dangling sandbox option.'
+  fi
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","--","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write","--add-dir","/tmp/prompt-only"]}]}}}'
+  if json_process_has_managed_scope "$process_fixture" workspace-write; then
+    die 'Managed-scope parser accepted marker tokens after the option terminator.'
+  fi
+  [[ -z $(json_process_codex_add_dirs "$process_fixture") ]] || \
+    die 'Structured add-dir parser extracted a prompt token after the option terminator.'
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--add-dir","relative/path"]}]}}}'
+  if json_process_codex_add_dirs "$process_fixture" >/dev/null 2>&1; then
+    die 'Structured add-dir parser accepted a relative path.'
+  fi
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--add-dir","/tmp/root\u0085"]}]}}}'
+  if json_process_codex_add_dirs "$process_fixture" >/dev/null 2>&1; then
+    die 'Structured add-dir parser accepted a Unicode C1 control character.'
+  fi
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--add-dir"]}]}}}'
+  if json_process_codex_add_dirs "$process_fixture" >/dev/null 2>&1; then
+    die 'Structured add-dir parser accepted a dangling option.'
+  fi
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write","--add-dir","/tmp/root-one"]},{"pid":102,"name":"codex","argv":["codex","--profile","coder","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write","--add-dir","/tmp/root-two"]}]}}}'
+  if json_process_codex_add_dirs "$process_fixture" >/dev/null 2>&1; then
+    die 'Structured add-dir parser merged scope across multiple Codex processes.'
+  fi
   process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv0":"/usr/local/bin/codex","argv":["codex","--profile","planner-extra"]}]}}}'
   if process_uses_profile "$process_fixture" planner; then
     die 'Process/profile binding parser accepted a role-name prefix.'
+  fi
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--","--profile","planner"],"cmdline":"codex -- --profile planner"}]}}}'
+  if process_uses_profile "$process_fixture" planner; then
+    die 'Process/profile binding parser accepted a prompt token after the option terminator.'
   fi
   process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","planner"]},{"pid":102,"name":"echo","argv":["echo","--profile","reviewer"]}]}}}'
   if process_uses_profile "$process_fixture" reviewer; then
@@ -675,6 +798,12 @@ examples/multi-team.md"
   if json_agent_required_string '{"result":{"agent":{"agent":1}}}' agent >/dev/null 2>&1 || \
      json_agent_required_string '{"result":{"agent":{"agent":false}}}' agent >/dev/null 2>&1; then
     die 'Strict agent-string parser coerced a numeric or boolean kind.'
+  fi
+  [[ $(json_agent_required_boolean '{"result":{"agent":{"launch_pending":false}}}' launch_pending) == false ]] || \
+    die 'Strict agent-boolean parser rejected a valid false value.'
+  if json_agent_required_boolean '{"result":{"agent":{"launch_pending":"false"}}}' launch_pending >/dev/null 2>&1 || \
+     json_agent_required_boolean '{"result":{"agent":{"launch_pending":0}}}' launch_pending >/dev/null 2>&1; then
+    die 'Strict agent-boolean parser coerced a string or numeric value.'
   fi
   [[ -z $(json_agent_optional_string '{"result":{"agent":{"cwd":null}}}' cwd) ]] || \
     die 'Optional agent-string parser did not preserve null as empty.'
@@ -723,6 +852,152 @@ HERDR_CODER_DONE_fixture'
   fi
   grep -Fq 'Positional PROJECT_DIR must not be empty' "$parse_log" || \
     die 'start.sh empty positional PROJECT_DIR failed for the wrong reason.'
+  non_git_primary="$temporary_root/non-git-primary"
+  non_git_extra="$temporary_root/non-git-extra"
+  mkdir -p "$non_git_primary/child" "$non_git_extra"
+  non_git_primary=$(scope_physical_dir "$non_git_primary")
+  non_git_extra=$(scope_physical_dir "$non_git_extra")
+  ln -s "$non_git_extra" "$temporary_root/non-git-extra-alias"
+  scope_paths_overlap "$non_git_extra" "$temporary_root/non-git-extra-alias" || \
+    die 'Workspace-scope overlap did not recognize a symlink/inode alias.'
+  scope_path_has_control $'/tmp/line\nbreak' || \
+    die 'Workspace-scope path validation accepted a line feed.'
+  scope_path_has_control $'/tmp/c1-\302\205' || \
+    die 'Workspace-scope path validation accepted a UTF-8 C1 control character.'
+  control_target="$temporary_root/control-target"$'\n'
+  mkdir -p "$control_target"
+  ln -s "$control_target" "$temporary_root/clean-control-alias"
+  if scope_physical_dir "$temporary_root/clean-control-alias" >/dev/null 2>&1; then
+    die 'Physical-path resolution accepted a clean symlink to a control-named directory.'
+  fi
+  : >"$temporary_root/not-a-directory"
+  if env -u TEAM_PREFIX "$SCRIPT_DIR/start.sh" --cwd "$non_git_primary" --add-dir= \
+       >"$parse_log" 2>&1; then
+    die 'start.sh accepted an empty --add-dir value.'
+  fi
+  grep -Fq -- '--add-dir requires a non-empty directory' "$parse_log" || \
+    die 'Empty --add-dir failed for the wrong reason.'
+  for bad_add_dir in "$temporary_root/missing" "$temporary_root/not-a-directory" /; do
+    if env -u TEAM_PREFIX "$SCRIPT_DIR/start.sh" --cwd "$non_git_primary" --add-dir "$bad_add_dir" \
+         >"$parse_log" 2>&1; then
+      die "start.sh accepted an unsafe --add-dir: $bad_add_dir"
+    fi
+  done
+  if env -u TEAM_PREFIX "$SCRIPT_DIR/start.sh" --cwd "$non_git_primary" \
+       --add-dir "$non_git_primary/child" >"$parse_log" 2>&1; then
+    die 'start.sh accepted an additional root nested under PROJECT_DIR.'
+  fi
+  grep -Fq 'overlaps PROJECT_DIR' "$parse_log" || \
+    die 'Overlapping add-dir failed without the expected diagnostic.'
+  if env -u TEAM_PREFIX "$SCRIPT_DIR/start.sh" --cwd "$non_git_primary" \
+       --add-dir "$non_git_extra" --add-dir "$temporary_root/non-git-extra-alias" \
+       >"$parse_log" 2>&1; then
+    die 'start.sh accepted two --add-dir values that resolve to one inode.'
+  fi
+  [[ $(GIT_CEILING_DIRECTORIES="$PROJECT_ROOT" scope_git_root "$PROJECT_ROOT/docs") == "$PROJECT_ROOT" ]] || \
+    die 'Git-scope discovery inherited a caller GIT_CEILING_DIRECTORIES override.'
+  if GIT_DISCOVERY_ACROSS_FILESYSTEM=0 scope_git_root "$non_git_primary" >/dev/null 2>&1; then
+    die 'Non-Git scope was unexpectedly classified as Git-backed.'
+  else
+    non_git_scope_status=$?
+  fi
+  [[ $non_git_scope_status -eq 1 ]] || \
+    die 'Git-scope discovery did not normalize a caller filesystem-boundary override.'
+  nested_git_host="$non_git_primary/embedded-git-host"
+  mkdir -p "$nested_git_host"
+  git -C "$nested_git_host" init -q
+  nested_git_host=$(scope_physical_dir "$nested_git_host")
+  mock_agent_cwd=$non_git_primary
+  if (
+    herdr() {
+      printf '{"result":{"agent":{"cwd":"%s","foreground_cwd":"%s"}}}\n' \
+        "$mock_agent_cwd" "$mock_agent_cwd"
+    }
+    require_agents_cover_host "$nested_git_host" "$nested_git_host"
+  ) >"$parse_log" 2>&1; then
+    die 'Live-test host validation accepted a nested Git host under a non-Git team primary cwd.'
+  fi
+  grep -Fq "primary cwd is non-Git" "$parse_log" || \
+    die 'Non-Git primary cwd failed live-test validation for the wrong reason.'
+  mock_agent_cwd=$nested_git_host
+  if ! (
+    herdr() {
+      printf '{"result":{"agent":{"cwd":"%s","foreground_cwd":"%s"}}}\n' \
+        "$mock_agent_cwd" "$mock_agent_cwd"
+    }
+    require_agents_cover_host "$nested_git_host" "$nested_git_host"
+  ) >"$parse_log" 2>&1; then
+    printf '%s\n' "$(<"$parse_log")" >&2
+    die 'Live-test host validation rejected a matching Git-backed team primary cwd.'
+  fi
+  malformed_git_dir="$temporary_root/not a git repository"
+  mkdir -p "$malformed_git_dir"
+  printf 'malformed\n' >"$malformed_git_dir/.git"
+  if scope_git_root "$malformed_git_dir" >/dev/null 2>&1; then
+    die 'Git-scope discovery accepted a malformed .git file.'
+  else
+    malformed_git_status=$?
+  fi
+  [[ $malformed_git_status -eq 2 ]] || \
+    die 'Git-scope discovery misclassified a malformed .git file as a non-Git directory.'
+  external_git_probe="$temporary_root/external-worktree-probe"
+  external_git_root="$temporary_root/external-worktree-root"
+  external_git_store="$temporary_root/external-worktree.git"
+  mkdir -p "$external_git_probe" "$external_git_root"
+  git init --bare "$external_git_store" >/dev/null 2>&1
+  git --git-dir="$external_git_store" config core.bare false
+  git --git-dir="$external_git_store" config core.worktree "$external_git_root"
+  printf 'gitdir: %s\n' "$external_git_store" >"$external_git_probe/.git"
+  if scope_git_root "$external_git_probe" >/dev/null 2>&1; then
+    die 'Git-scope discovery accepted a top-level outside the inspected directory ancestry.'
+  else
+    external_git_status=$?
+  fi
+  [[ $external_git_status -eq 2 ]] || \
+    die 'External core.worktree was not classified as an unverified Git scope.'
+
+  root_git_probe="$temporary_root/root-worktree-probe"
+  root_git_store="$temporary_root/root-worktree.git"
+  mkdir -p "$root_git_probe"
+  git init --bare "$root_git_store" >/dev/null 2>&1
+  git --git-dir="$root_git_store" config core.bare false
+  git --git-dir="$root_git_store" config core.worktree /
+  printf 'gitdir: %s\n' "$root_git_store" >"$root_git_probe/.git"
+  if scope_git_root "$root_git_probe" >/dev/null 2>&1; then
+    die 'Git-scope discovery accepted the filesystem root as a worktree top-level.'
+  else
+    root_git_status=$?
+  fi
+  [[ $root_git_status -eq 2 ]] || \
+    die 'Filesystem-root core.worktree was not classified as an unverified Git scope.'
+
+  trailing_git_probe="$temporary_root/trailing-worktree-probe"
+  trailing_git_clean="$temporary_root/trailing-worktree-root"
+  trailing_git_control="$trailing_git_clean"$'\n'
+  trailing_git_store="$temporary_root/trailing-worktree.git"
+  mkdir -p "$trailing_git_probe" "$trailing_git_clean" "$trailing_git_control"
+  git init --bare "$trailing_git_store" >/dev/null 2>&1
+  git --git-dir="$trailing_git_store" config core.bare false
+  git --git-dir="$trailing_git_store" config core.worktree "$trailing_git_control"
+  printf 'gitdir: %s\n' "$trailing_git_store" >"$trailing_git_probe/.git"
+  if scope_git_root "$trailing_git_probe" >/dev/null 2>&1; then
+    die 'Git-scope discovery accepted a top-level with a trailing line feed.'
+  else
+    trailing_git_status=$?
+  fi
+  [[ $trailing_git_status -eq 2 ]] || \
+    die 'Trailing-control core.worktree was not classified as an unverified Git scope.'
+  if GIT_CEILING_DIRECTORIES="$PROJECT_ROOT" env -u TEAM_PREFIX \
+       "$SCRIPT_DIR/start.sh" --cwd "$PROJECT_ROOT/docs" --add-dir "$PROJECT_ROOT/scripts" \
+       >"$parse_log" 2>&1; then
+    die 'start.sh accepted two directories from one Git worktree under a contaminated Git environment.'
+  fi
+  grep -Fq 'share or overlap one effective Git/filesystem scope' "$parse_log" || \
+    die 'Contaminated Git environment failed without the same-worktree diagnostic.'
+  if env -u TEAM_PREFIX "$SCRIPT_DIR/doctor.sh" --cwd "$non_git_primary" \
+       --add-dir "$non_git_primary/child" >"$parse_log" 2>&1; then
+    die 'doctor.sh accepted an additional root nested under the expected cwd.'
+  fi
   if env -u TEAM_PREFIX "$SCRIPT_DIR/doctor.sh" --team Bad >"$parse_log" 2>&1; then
     die 'doctor.sh accepted an invalid team prefix.'
   fi
@@ -797,6 +1072,9 @@ HERDR_CODER_DONE_fixture'
 if [[ ${1-} == --version ]]; then
   printf '%s\n' 'codex-cli mock'
 fi
+if [[ ${1-} == --help ]]; then
+  printf '%s\n' '  --add-dir <DIR>  Additional writable directory'
+fi
 exit 0
 MOCK_CODEX
   cat >"$mock_bin/herdr" <<'MOCK_HERDR'
@@ -810,13 +1088,13 @@ case "${1-}:${2-}" in
     ;;
   agent:list)
     case ${MOCK_HERDR_MODE:-preflight-collision} in
-      race-collision)
+      race-collision|multi-root-success|missing-primary|wrong-primary)
         printf '%s\n' '{"result":{"type":"agent_list","agents":[]}}'
         ;;
       doctor-success)
         printf '%s\n' '{"result":{"type":"agent_list","agents":[{"name":"github-planner"},{"name":"github-coder"},{"name":"github-reviewer"}]}}'
         ;;
-      shared-worktree|uninspectable-worktree|numeric-kind|boolean-kind|separate-worktree|mixed-worktree|ancestor-worktree|root-worktree)
+      shared-worktree|uninspectable-worktree|numeric-kind|boolean-kind|separate-worktree|mixed-worktree|ancestor-worktree|root-worktree|scope-adddir-collision|scope-unmanaged)
         printf '%s\n' '{"result":{"type":"agent_list","agents":[{"name":"docs-coder"}]}}'
         ;;
       malformed-list)
@@ -835,6 +1113,7 @@ case "${1-}:${2-}" in
     ;;
   pane:split)
     [[ ${3-} == --help ]] && exit 0
+    [[ -n ${MOCK_HERDR_CALL_LOG:-} ]] && printf '%s\n' "$*" >>"$MOCK_HERDR_CALL_LOG"
     count=0
     [[ -f "$MOCK_SPLIT_COUNTER" ]] && count=$(<"$MOCK_SPLIT_COUNTER")
     count=$((count + 1))
@@ -844,6 +1123,11 @@ case "${1-}:${2-}" in
   agent:start)
     [[ ${3-} == --help ]] && exit 0
     printf '%s\n' "$*" >>"$MOCK_HERDR_CALL_LOG"
+    if [[ ${MOCK_HERDR_MODE:-} == multi-root-success && ${3-} == github-reviewer &&
+          " $* " == *' --add-dir '* ]]; then
+      printf '%s\n' 'Error adding directories: Ignoring --add-dir because the effective permissions do not allow additional writable roots.' >&2
+      exit 1
+    fi
     if [[ ${MOCK_HERDR_MODE:-} == race-collision && ${3-} == github-coder ]]; then
       printf '%s\n' 'agent_name_taken: github-coder' >&2
       exit 1
@@ -852,7 +1136,7 @@ case "${1-}:${2-}" in
   agent:get)
     [[ ${3-} == --help ]] && exit 0
     if [[ ${MOCK_HERDR_MODE:-} == shared-worktree && ${3-} == docs-coder ]]; then
-      printf '{"result":{"agent":{"name":"docs-coder","agent":"codex","cwd":"%s","foreground_cwd":"%s/scripts"}}}\n' \
+      printf '{"result":{"agent":{"name":"docs-coder","agent":"codex","pane_id":"mock-docs-pane","cwd":"%s","foreground_cwd":"%s/scripts"}}}\n' \
         "$MOCK_PROJECT_ROOT" "$MOCK_PROJECT_ROOT"
       exit 0
     fi
@@ -869,22 +1153,32 @@ case "${1-}:${2-}" in
       exit 0
     fi
     if [[ ${MOCK_HERDR_MODE:-} == mixed-worktree && ${3-} == docs-coder ]]; then
-      printf '{"result":{"agent":{"name":"docs-coder","agent":"codex","cwd":"%s","foreground_cwd":"%s"}}}\n' \
+      printf '{"result":{"agent":{"name":"docs-coder","agent":"codex","pane_id":"mock-docs-pane","cwd":"%s","foreground_cwd":"%s"}}}\n' \
         "$MOCK_PROJECT_ROOT" "$MOCK_OTHER_WORKTREE"
       exit 0
     fi
     if [[ ${MOCK_HERDR_MODE:-} == ancestor-worktree && ${3-} == docs-coder ]]; then
-      printf '{"result":{"agent":{"name":"docs-coder","agent":"codex","cwd":"%s","foreground_cwd":"%s"}}}\n' \
+      printf '{"result":{"agent":{"name":"docs-coder","agent":"codex","pane_id":"mock-docs-pane","cwd":"%s","foreground_cwd":"%s"}}}\n' \
         "$MOCK_ANCESTOR_CWD" "$MOCK_ANCESTOR_CWD"
       exit 0
     fi
     if [[ ${MOCK_HERDR_MODE:-} == root-worktree && ${3-} == docs-coder ]]; then
-      printf '%s\n' '{"result":{"agent":{"name":"docs-coder","agent":"codex","cwd":"/","foreground_cwd":"/"}}}'
+      printf '%s\n' '{"result":{"agent":{"name":"docs-coder","agent":"codex","pane_id":"mock-docs-pane","cwd":"/","foreground_cwd":"/"}}}'
       exit 0
     fi
-    if [[ ${MOCK_HERDR_MODE:-} == separate-worktree ]]; then
+    if [[ ${MOCK_HERDR_MODE:-} == scope-adddir-collision || ${MOCK_HERDR_MODE:-} == scope-unmanaged ]]; then
       if [[ ${3-} == docs-coder ]]; then
-        printf '{"result":{"agent":{"name":"docs-coder","agent":"codex","cwd":"%s","foreground_cwd":"%s"}}}\n' \
+        printf '{"result":{"agent":{"name":"docs-coder","agent":"codex","pane_id":"mock-docs-pane","cwd":"%s","foreground_cwd":"%s"}}}\n' \
+          "$MOCK_OTHER_WORKTREE" "$MOCK_OTHER_WORKTREE"
+        exit 0
+      fi
+    fi
+    if [[ ${MOCK_HERDR_MODE:-} == separate-worktree || \
+          ${MOCK_HERDR_MODE:-} == multi-root-success || \
+          ${MOCK_HERDR_MODE:-} == missing-primary || \
+          ${MOCK_HERDR_MODE:-} == wrong-primary ]]; then
+      if [[ ${3-} == docs-coder ]]; then
+        printf '{"result":{"agent":{"name":"docs-coder","agent":"codex","pane_id":"mock-docs-pane","cwd":"%s","foreground_cwd":"%s"}}}\n' \
           "$MOCK_OTHER_WORKTREE" "$MOCK_OTHER_WORKTREE"
         exit 0
       fi
@@ -894,8 +1188,18 @@ case "${1-}:${2-}" in
         github-reviewer) pane=mock-pane-2 ;;
         *) exit 1 ;;
       esac
-      printf '{"result":{"agent":{"name":"%s","agent":"codex","agent_status":"idle","interactive_ready":true,"launch_pending":false,"pane_id":"%s","workspace_id":"mock-workspace"}}}\n' \
-        "$3" "$pane"
+      if [[ ${MOCK_HERDR_MODE:-} == missing-primary ]]; then
+        final_ready_json=${MOCK_FINAL_READY_JSON:-true}
+        final_launch_pending_json=${MOCK_FINAL_LAUNCH_PENDING_JSON:-false}
+        printf '{"result":{"agent":{"name":"%s","agent":"codex","agent_status":"idle","interactive_ready":%s,"launch_pending":%s,"pane_id":"%s","workspace_id":"mock-workspace"}}}\n' \
+          "$3" "$final_ready_json" "$final_launch_pending_json" "$pane"
+      else
+        final_project_root=${MOCK_FINAL_PROJECT_ROOT:-$MOCK_PROJECT_ROOT}
+        final_ready_json=${MOCK_FINAL_READY_JSON:-true}
+        final_launch_pending_json=${MOCK_FINAL_LAUNCH_PENDING_JSON:-false}
+        printf '{"result":{"agent":{"name":"%s","agent":"codex","agent_status":"idle","interactive_ready":%s,"launch_pending":%s,"pane_id":"%s","workspace_id":"mock-workspace","cwd":"%s","foreground_cwd":"%s"}}}\n' \
+          "$3" "$final_ready_json" "$final_launch_pending_json" "$pane" "$final_project_root" "$final_project_root"
+      fi
       exit 0
     fi
     if [[ ${MOCK_HERDR_MODE:-} == doctor-success ]]; then
@@ -903,8 +1207,12 @@ case "${1-}:${2-}" in
         github-planner|github-coder|github-reviewer)
           printf '%s\n' "$*" >>"$MOCK_HERDR_CALL_LOG"
           role=${3#github-}
-          printf '{"result":{"agent":{"name":"%s","agent":"codex","agent_status":"idle","interactive_ready":true,"launch_pending":false,"pane_id":"mock-%s-pane","workspace_id":"mock-team-workspace","cwd":"%s","foreground_cwd":"%s"}}}\n' \
-            "$3" "$role" "$MOCK_PROJECT_ROOT" "$MOCK_PROJECT_ROOT"
+          reported_cwd=${MOCK_AGENT_CWD:-$MOCK_PROJECT_ROOT}
+          reported_foreground_cwd=${MOCK_FOREGROUND_CWD:-$MOCK_PROJECT_ROOT}
+          ready_json=${MOCK_INTERACTIVE_READY_JSON:-true}
+          launch_pending_json=${MOCK_LAUNCH_PENDING_JSON:-false}
+          printf '{"result":{"agent":{"name":"%s","agent":"codex","agent_status":"idle","interactive_ready":%s,"launch_pending":%s,"pane_id":"mock-%s-pane","workspace_id":"mock-team-workspace","cwd":"%s","foreground_cwd":"%s"}}}\n' \
+            "$3" "$ready_json" "$launch_pending_json" "$role" "$reported_cwd" "$reported_foreground_cwd"
           exit 0
           ;;
       esac
@@ -913,6 +1221,16 @@ case "${1-}:${2-}" in
     ;;
   pane:process-info)
     [[ ${3-} == --help ]] && exit 0
+    if [[ ${4-} == mock-docs-pane ]]; then
+      if [[ ${MOCK_HERDR_MODE:-} == scope-unmanaged ]]; then
+        printf '%s\n' '{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","--sandbox","workspace-write"]}]}}}'
+      elif [[ -n ${MOCK_EXTRA_ROOT:-} && ${MOCK_HERDR_MODE:-} == scope-adddir-collision ]]; then
+        printf '{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write","--add-dir","%s"]}]}}}\n' "$MOCK_EXTRA_ROOT"
+      else
+        printf '%s\n' '{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write"]}]}}}'
+      fi
+      exit 0
+    fi
     if [[ ${MOCK_HERDR_MODE:-} == doctor-success ]]; then
       case ${4-} in
         mock-planner-pane) role=planner ;;
@@ -920,8 +1238,36 @@ case "${1-}:${2-}" in
         mock-reviewer-pane) role=reviewer ;;
         *) exit 1 ;;
       esac
-      printf '{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv0":"/usr/local/bin/codex","argv":["codex","--profile","%s"],"cmdline":"codex --profile %s"}]}}}\n' \
-        "$role" "$role"
+      case "$role" in
+        planner|coder) sandbox=workspace-write ;;
+        reviewer) sandbox=read-only ;;
+      esac
+      if [[ -n ${MOCK_EXTRA_ROOT:-} && "$role" != reviewer ]]; then
+        printf '{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv0":"/usr/local/bin/codex","argv":["codex","--profile","%s","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","%s","--add-dir","%s"],"cmdline":"codex --profile %s"}]}}}\n' \
+          "$role" "$sandbox" "$MOCK_EXTRA_ROOT" "$role"
+      else
+        printf '{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv0":"/usr/local/bin/codex","argv":["codex","--profile","%s","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","%s"],"cmdline":"codex --profile %s"}]}}}\n' \
+          "$role" "$sandbox" "$role"
+      fi
+      exit 0
+    fi
+    if [[ ${MOCK_HERDR_MODE:-} == separate-worktree || \
+          ${MOCK_HERDR_MODE:-} == multi-root-success || \
+          ${MOCK_HERDR_MODE:-} == missing-primary || \
+          ${MOCK_HERDR_MODE:-} == wrong-primary ]]; then
+      case ${4-} in
+        mock-root) role=planner; sandbox=workspace-write ;;
+        mock-pane-1) role=coder; sandbox=workspace-write ;;
+        mock-pane-2) role=reviewer; sandbox=read-only ;;
+        *) exit 1 ;;
+      esac
+      if [[ -n ${MOCK_EXTRA_ROOT:-} && "$role" != reviewer ]]; then
+        printf '{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","%s","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","%s","--add-dir","%s"]}]}}}\n' \
+          "$role" "$sandbox" "$MOCK_EXTRA_ROOT"
+      else
+        printf '{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","%s","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","%s"]}]}}}\n' \
+          "$role" "$sandbox"
+      fi
       exit 0
     fi
     exit 1
@@ -1069,6 +1415,7 @@ MOCK_HERDR
   : >"$temporary_root/separate-worktree-calls.log"
   if ! env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
        MOCK_HERDR_MODE=separate-worktree \
+       MOCK_PROJECT_ROOT="$PROJECT_ROOT" \
        MOCK_OTHER_WORKTREE="$separate_git_root" \
        MOCK_WORKSPACE_MARKER="$separate_worktree_marker" \
        MOCK_HERDR_CALL_LOG="$temporary_root/separate-worktree-calls.log" \
@@ -1093,6 +1440,143 @@ MOCK_HERDR
   fi
   printf '[OK] Another Herdr team in a different Git worktree is allowed\n'
 
+  multi_root_log="$temporary_root/multi-root.log"
+  multi_root_marker="$temporary_root/multi-root-created"
+  multi_root_calls="$temporary_root/multi-root-calls.log"
+  multi_root_splits="$temporary_root/multi-root-splits"
+  : >"$multi_root_calls"
+  if ! env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
+       MOCK_HERDR_MODE=multi-root-success \
+       MOCK_PROJECT_ROOT="$non_git_primary" \
+       MOCK_EXTRA_ROOT="$non_git_extra" \
+       MOCK_WORKSPACE_MARKER="$multi_root_marker" \
+       MOCK_HERDR_CALL_LOG="$multi_root_calls" \
+       MOCK_SPLIT_COUNTER="$multi_root_splits" \
+       "$SCRIPT_DIR/start.sh" --no-focus --team github \
+       --cwd "$non_git_primary" --add-dir "$non_git_extra" \
+       >"$multi_root_log" 2>&1; then
+    command cat "$multi_root_log" >&2
+    die 'start.sh rejected an explicit two-root non-Git workspace.'
+  fi
+  [[ -e "$multi_root_marker" ]] || \
+    die 'Two-root non-Git fixture did not reach workspace creation.'
+  grep -Fq 'Requested scope includes one or more non-Git directories' "$multi_root_log" || \
+    die 'Non-Git multi-root startup omitted the degraded-evidence warning.'
+  [[ $(grep -Fc -- "--add-dir $non_git_extra" "$multi_root_calls") -eq 2 ]] || {
+    command cat "$multi_root_calls" >&2
+    die 'The exact additional root was not passed once to Planner and Coder only.'
+  }
+  for writable_role in planner coder; do
+    grep -F "agent start github-$writable_role " "$multi_root_calls" | \
+      grep -Fq -- "--add-dir $non_git_extra" || \
+      die "The exact additional root was not passed to $writable_role."
+  done
+  if grep -F 'agent start github-reviewer ' "$multi_root_calls" | grep -Fq -- ' --add-dir '; then
+    command cat "$multi_root_calls" >&2
+    die 'Reviewer received --add-dir even though its sandbox is read-only.'
+  fi
+  [[ $(grep -Fc -- '-c sandbox_workspace_write.writable_roots=[]' "$multi_root_calls") -eq 3 ]] || \
+    die 'The managed writable-roots override was not passed to all three Codex roles.'
+  [[ $(grep -Fc -- "--cwd $non_git_primary" "$multi_root_calls") -eq 3 ]] || {
+    command cat "$multi_root_calls" >&2
+    die 'Workspace and both pane splits did not retain the primary cwd.'
+  }
+  if grep -Fq -- "--cwd $non_git_extra" "$multi_root_calls"; then
+    die 'An additional root was incorrectly used as a Herdr pane cwd.'
+  fi
+  grep -Fq -- "doctor.sh --team github --cwd $non_git_primary --add-dir $non_git_extra" "$multi_root_log" || \
+    die 'Startup did not print a reusable multi-root doctor command.'
+  printf '[OK] Explicit non-Git multi-root startup grants extra writable roots only to Planner/Coder\n'
+
+  single_non_git_log="$temporary_root/single-non-git.log"
+  single_non_git_marker="$temporary_root/single-non-git-created"
+  single_non_git_calls="$temporary_root/single-non-git-calls.log"
+  : >"$single_non_git_calls"
+  if ! env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
+       MOCK_HERDR_MODE=multi-root-success \
+       MOCK_PROJECT_ROOT="$non_git_primary" \
+       MOCK_WORKSPACE_MARKER="$single_non_git_marker" \
+       MOCK_HERDR_CALL_LOG="$single_non_git_calls" \
+       MOCK_SPLIT_COUNTER="$temporary_root/single-non-git-splits" \
+       "$SCRIPT_DIR/start.sh" --no-focus --team github \
+       --cwd "$non_git_primary" >"$single_non_git_log" 2>&1; then
+    command cat "$single_non_git_log" >&2
+    die 'start.sh rejected an existing single-root non-Git project.'
+  fi
+  [[ -e "$single_non_git_marker" ]] || \
+    die 'Single-root non-Git fixture did not reach workspace creation.'
+  grep -Fq 'Requested scope includes one or more non-Git directories' "$single_non_git_log" || \
+    die 'Single-root non-Git startup omitted the degraded-evidence warning.'
+  [[ $(grep -Fc 'agent start' "$single_non_git_calls") -eq 3 ]] || \
+    die 'Single-root non-Git startup did not start all three mocked roles.'
+  if grep -Fq -- '--add-dir' "$single_non_git_calls"; then
+    die 'Single-root non-Git startup invented an additional root.'
+  fi
+  printf '[OK] Single-root non-Git startup no longer requires a Git worktree\n'
+
+  for primary_mode in missing-primary wrong-primary; do
+    primary_log="$temporary_root/$primary_mode.log"
+    primary_marker="$temporary_root/$primary_mode-created"
+    primary_calls="$temporary_root/$primary_mode-calls.log"
+    : >"$primary_calls"
+    if env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
+         MOCK_HERDR_MODE="$primary_mode" \
+         MOCK_PROJECT_ROOT="$non_git_primary" \
+         MOCK_FINAL_PROJECT_ROOT="$separate_git_root" \
+         MOCK_EXTRA_ROOT="$non_git_extra" \
+         MOCK_WORKSPACE_MARKER="$primary_marker" \
+         MOCK_HERDR_CALL_LOG="$primary_calls" \
+         MOCK_SPLIT_COUNTER="$temporary_root/$primary_mode-splits" \
+         "$SCRIPT_DIR/start.sh" --no-focus --team github \
+         --cwd "$non_git_primary" --add-dir "$non_git_extra" \
+         >"$primary_log" 2>&1; then
+      die "start.sh accepted final agent cwd evidence in mode $primary_mode."
+    fi
+    [[ -e "$primary_marker" ]] || \
+      die "$primary_mode fixture did not reach final readiness validation."
+    grep -Fq 'primary_scope=false' "$primary_log" || {
+      command cat "$primary_log" >&2
+      die "$primary_mode failed without the primary-scope readiness diagnostic."
+    }
+  done
+  printf '[OK] Final readiness rejects missing or wrong primary cwd evidence\n'
+
+  scope_collision_log="$temporary_root/scope-adddir-collision.log"
+  scope_collision_marker="$temporary_root/scope-adddir-collision-created"
+  if env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
+       MOCK_HERDR_MODE=scope-adddir-collision \
+       MOCK_OTHER_WORKTREE="$separate_git_root" \
+       MOCK_EXTRA_ROOT="$non_git_extra" \
+       MOCK_WORKSPACE_MARKER="$scope_collision_marker" \
+       "$SCRIPT_DIR/start.sh" --no-focus --team github \
+       --cwd "$non_git_primary" --add-dir "$non_git_extra" \
+       >"$scope_collision_log" 2>&1; then
+    die 'start.sh missed another Team whose --add-dir overlaps the requested scope.'
+  fi
+  grep -Fq 'shared_workspace_scope:' "$scope_collision_log" || {
+    command cat "$scope_collision_log" >&2
+    die 'Cross-team add-dir collision failed without the stable diagnostic.'
+  }
+  [[ ! -e "$scope_collision_marker" ]] || \
+    die 'Cross-team add-dir collision reached workspace creation.'
+
+  scope_unmanaged_log="$temporary_root/scope-unmanaged.log"
+  scope_unmanaged_marker="$temporary_root/scope-unmanaged-created"
+  if env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
+       MOCK_HERDR_MODE=scope-unmanaged \
+       MOCK_OTHER_WORKTREE="$separate_git_root" \
+       MOCK_WORKSPACE_MARKER="$scope_unmanaged_marker" \
+       "$SCRIPT_DIR/start.sh" --no-focus --team github \
+       --cwd "$non_git_primary" --add-dir "$non_git_extra" \
+       >"$scope_unmanaged_log" 2>&1; then
+    die 'start.sh accepted a live role whose implicit writable roots were unverified.'
+  fi
+  grep -Fq 'shared_workspace_scope_unverified:' "$scope_unmanaged_log" || \
+    die 'Unmanaged live scope failed without the fail-closed diagnostic.'
+  [[ ! -e "$scope_unmanaged_marker" ]] || \
+    die 'Unmanaged live scope reached workspace creation.'
+  printf '[OK] Cross-team additional-root conflicts and unverified scopes fail before creation\n'
+
   doctor_log="$temporary_root/doctor.log"
   doctor_call_log="$temporary_root/doctor-calls.log"
   : >"$doctor_call_log"
@@ -1116,6 +1600,95 @@ MOCK_HERDR
     die 'doctor.sh queried a generic or cross-team live name in prefixed mode.'
   fi
   printf '[OK] doctor.sh validates one exact prefixed team\n'
+
+  doctor_multi_root_log="$temporary_root/doctor-multi-root.log"
+  if ! env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
+       MOCK_HERDR_MODE=doctor-success \
+       MOCK_HERDR_CALL_LOG="$doctor_call_log" \
+       MOCK_PROJECT_ROOT="$non_git_primary" \
+       MOCK_EXTRA_ROOT="$non_git_extra" \
+       "$SCRIPT_DIR/doctor.sh" --team github --cwd "$non_git_primary" \
+       --add-dir "$non_git_extra" >"$doctor_multi_root_log" 2>&1; then
+    command cat "$doctor_multi_root_log" >&2
+    die 'doctor.sh rejected matching multi-root process argv.'
+  fi
+  [[ $(grep -Fc 'additional roots match the requested writable --add-dir list' "$doctor_multi_root_log") -eq 2 ]] || \
+    die 'doctor.sh did not verify the exact writable additional roots for Planner and Coder.'
+  [[ $(grep -Fc 'has no --add-dir writable-root grants, as required by read-only sandbox' "$doctor_multi_root_log") -eq 1 ]] || \
+    die 'doctor.sh did not verify that Reviewer has no writable --add-dir grant.'
+  if env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
+       MOCK_HERDR_MODE=doctor-success \
+       MOCK_HERDR_CALL_LOG="$doctor_call_log" \
+       MOCK_PROJECT_ROOT="$non_git_primary" \
+       MOCK_EXTRA_ROOT="$non_git_extra" \
+       "$SCRIPT_DIR/doctor.sh" --team github --cwd "$non_git_primary" \
+       >"$temporary_root/doctor-missing-add-dir.log" 2>&1; then
+    die 'doctor.sh accepted a live additional root omitted from its expected options.'
+  fi
+  grep -Fq 'writable-root argv does not match its role' "$temporary_root/doctor-missing-add-dir.log" || \
+    die 'doctor.sh missing-add-dir rejection used the wrong diagnostic.'
+  printf '[OK] doctor.sh verifies role-aware additional-root argv\n'
+
+  doctor_cwd_mismatch_log="$temporary_root/doctor-cwd-mismatch.log"
+  if env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
+       MOCK_HERDR_MODE=doctor-success \
+       MOCK_HERDR_CALL_LOG="$doctor_call_log" \
+       MOCK_PROJECT_ROOT="$PROJECT_ROOT" \
+       MOCK_AGENT_CWD="$PROJECT_ROOT" \
+       MOCK_FOREGROUND_CWD="$non_git_primary" \
+       "$SCRIPT_DIR/doctor.sh" --team github --cwd "$PROJECT_ROOT" \
+       >"$doctor_cwd_mismatch_log" 2>&1; then
+    die 'doctor.sh accepted conflicting cwd and foreground_cwd evidence.'
+  fi
+  grep -Fq 'cwd and foreground_cwd that resolve to different directories' \
+    "$doctor_cwd_mismatch_log" || \
+    die 'doctor.sh conflicting-cwd rejection used the wrong diagnostic.'
+
+  doctor_missing_cwd_log="$temporary_root/doctor-nonexistent-cwd.log"
+  if env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
+       MOCK_HERDR_MODE=doctor-success \
+       MOCK_HERDR_CALL_LOG="$doctor_call_log" \
+       MOCK_PROJECT_ROOT="$PROJECT_ROOT" \
+       MOCK_AGENT_CWD="$temporary_root/nonexistent-live-cwd" \
+       MOCK_FOREGROUND_CWD="$temporary_root/nonexistent-live-cwd" \
+       "$SCRIPT_DIR/doctor.sh" --team github \
+       >"$doctor_missing_cwd_log" 2>&1; then
+    die 'doctor.sh accepted a nonexistent same-team cwd without --cwd.'
+  fi
+  grep -Fq 'does not exist or is not a directory' "$doctor_missing_cwd_log" || \
+    die 'doctor.sh nonexistent-cwd rejection used the wrong diagnostic.'
+  printf '[OK] doctor.sh rejects conflicting or nonexistent cwd evidence\n'
+
+  doctor_malformed_lifecycle_log="$temporary_root/doctor-malformed-lifecycle.log"
+  if env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
+       MOCK_HERDR_MODE=doctor-success \
+       MOCK_HERDR_CALL_LOG="$doctor_call_log" \
+       MOCK_PROJECT_ROOT="$PROJECT_ROOT" \
+       MOCK_LAUNCH_PENDING_JSON='"false"' \
+       "$SCRIPT_DIR/doctor.sh" --team github --cwd "$PROJECT_ROOT" \
+       >"$doctor_malformed_lifecycle_log" 2>&1; then
+    die 'doctor.sh accepted a string-valued launch_pending field.'
+  fi
+  grep -Fq 'malformed identity or lifecycle fields' "$doctor_malformed_lifecycle_log" || \
+    die 'doctor.sh malformed-lifecycle rejection used the wrong diagnostic.'
+
+  start_malformed_lifecycle_log="$temporary_root/start-malformed-lifecycle.log"
+  if env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
+       MOCK_HERDR_MODE=multi-root-success \
+       MOCK_PROJECT_ROOT="$non_git_primary" \
+       MOCK_EXTRA_ROOT="$non_git_extra" \
+       MOCK_FINAL_LAUNCH_PENDING_JSON='"false"' \
+       MOCK_WORKSPACE_MARKER="$temporary_root/start-malformed-lifecycle-created" \
+       MOCK_HERDR_CALL_LOG="$temporary_root/start-malformed-lifecycle-calls" \
+       MOCK_SPLIT_COUNTER="$temporary_root/start-malformed-lifecycle-splits" \
+       "$SCRIPT_DIR/start.sh" --no-focus --team github \
+       --cwd "$non_git_primary" --add-dir "$non_git_extra" \
+       >"$start_malformed_lifecycle_log" 2>&1; then
+    die 'start.sh accepted a string-valued final launch_pending field.'
+  fi
+  grep -Fq 'final state is not ready' "$start_malformed_lifecycle_log" || \
+    die 'start.sh malformed-lifecycle rejection used the wrong diagnostic.'
+  printf '[OK] doctor/start reject malformed lifecycle field types\n'
 
   cp -p -- "$codex_test_dir/coder.config.toml" "$temporary_root/coder.config.toml.clean"
   awk '
@@ -1755,7 +2328,7 @@ run_policy() {
     printf 'Dirty policy-test host:\n%s\n' "$host_status_before" >&2
     die 'Policy testing requires a clean disposable Git worktree.'
   }
-  require_agents_cover_host "$host_dir"
+  require_agents_cover_host "$host_dir" "$host_git_root"
 
   POLICY_TEST_DIR=$(mktemp -d "$host_dir/.herdr-codex-policy.XXXXXX")
   case "$POLICY_TEST_DIR" in
@@ -1873,7 +2446,7 @@ run_full() {
     printf 'Dirty full-test host:\n%s\n' "$host_status" >&2
     die 'Full workflow testing requires a clean disposable Git worktree so unrelated edits cannot be hidden.'
   fi
-  require_agents_cover_host "$host_dir"
+  require_agents_cover_host "$host_dir" "$host_git_root"
 
   test_dir=$(mktemp -d "$host_dir/.herdr-codex-test.XXXXXX")
   case "$test_dir" in

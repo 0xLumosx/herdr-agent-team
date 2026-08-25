@@ -4,7 +4,7 @@
 
 ## Security posture
 
-Herdr Codex Team coordinates agents that can execute commands and, for two roles, write inside a repository. It reduces ambiguity through visible routing, least-role permissions, bounded review, and Git evidence. It does not turn language-model prompts into a hardened security boundary.
+Herdr Codex Team coordinates agents that can execute commands and, for two roles, write inside one or more project roots. It reduces ambiguity through visible routing, least-role permissions, bounded review, and Git evidence where available. It does not turn language-model prompts into a hardened security boundary.
 
 Use the project only after understanding the effective authority of each layer:
 
@@ -14,7 +14,7 @@ Team prefix      which exact same-team names Planner may address
 Codex sandbox    what tool operations can access
 Approval policy  whether Codex pauses at ordinary approval points
 Role prompt      what behavior the model is instructed to follow
-Git review       what actually changed
+Change evidence  Git diff, or non-Git touched paths plus explicit gaps
 ```
 
 ## `approval_policy = "never"`
@@ -39,7 +39,19 @@ See the [official Codex configuration reference](https://developers.openai.com/c
 | Coder | `workspace-write` | implementation requires repository writes | can make destructive or unrelated changes within allowed roots |
 | Reviewer | `read-only` | independent inspection requires no writes | can still expose sensitive content in its output or call allowed read-only services |
 
-The statement “only Coder writes source” is fully sandbox-enforced for Reviewer, but only policy-enforced for Planner. A model can violate a prompt. Planner's final diff inspection helps detect that violation after the fact; it does not prevent it.
+The statement “only Coder writes source” is fully sandbox-enforced for Reviewer, but only policy-enforced for Planner. A model can violate a prompt. Planner's final inspection of the available Git/non-Git change evidence helps detect that violation after the fact; it does not prevent it, and non-Git evidence is not complete.
+
+Every repeatable `--add-dir` expands the managed writable path set for Planner
+and Coder. They can technically write the primary cwd and each additional root
+under `workspace-write`; Planner's no-edit rule remains prompt policy. Reviewer
+is explicitly launched with `--sandbox read-only` and no `--add-dir`, so it can
+inspect the requested roots without receiving an additional writable-root
+grant. Startup first supplies `sandbox_workspace_write.writable_roots=[]` to
+neutralize additional writable roots inherited from user or profile
+configuration, then adds the requested roots only to Planner and Coder.
+`doctor.sh` verifies that role-specific launch argv when called with the same
+`--cwd` and ordered `--add-dir` list, but argv evidence is not proof that a
+particular read or write occurred.
 
 `danger-full-access` is not a project default. Do not enable it to work around `Operation not permitted`, missing hooks, a wrong `CODEX_HOME`, or an incompatible CLI. Diagnose the specific boundary instead.
 
@@ -47,18 +59,24 @@ The statement “only Coder writes source” is fully sandbox-enforced for Revie
 
 - **Prompt injection from the repository:** source files, issues, generated logs, or tests can contain instructions intended to redirect an agent.
 - **Unsafe commands inside allowed roots:** Coder and Planner can remove or corrupt writable files even without full host access.
+- **Degraded non-Git evidence:** a non-Git root has no authoritative baseline,
+  complete diff, untracked-file inventory, rollback point, or reliable way to
+  separate pre-existing changes from task changes. A best-effort touched-path
+  list is not a substitute.
 - **Untrusted hooks or integrations:** a hook executes outside the semantic role contract and can change when software is updated.
 - **Secret disclosure:** agents can read accessible credentials, `.env` files, proprietary source, or logs and reproduce them in terminals or reports.
-- **False reports:** an agent can claim tests passed or another agent responded; verify against process state, command output, and Git.
+- **False reports:** an agent can claim tests passed or another agent responded; verify against process state, command output, Git where available, and direct inspection of reported non-Git touched paths otherwise.
 - **Profile-source authenticity:** SHA-256 markers detect installed prompt or
   policy drift relative to the current checkout. They are not signatures: a
   writer that can change the checkout and installed files can change both, so
   the markers do not establish trusted provenance or resist a malicious local
   writer.
-- **Shared-worktree races:** startup refuses an already visible, inspectable
-  Herdr Codex role in the same physical worktree, but the preflight is not an
-  atomic lock. Humans, external tools, post-check races, or agents outside the
-  recognized naming scheme can still make attribution and review unreliable.
+- **Shared-scope races:** startup compares each team's complete managed root
+  set. Git-backed paths use their physical worktree root and non-Git paths use
+  their physical directory root; same, ancestor, or descendant overlaps fail
+  closed. The preflight is not an atomic lock. Humans, external tools,
+  post-check races, or agents outside the recognized naming scheme can still
+  make attribution and review unreliable.
 - **Cross-team prompt failure:** prefixes create explicit routes, but a
   compromised or incorrectly configured Planner can still attempt to address
   another live team; fail-closed prompts and isolation tests reduce rather than
@@ -84,13 +102,15 @@ isolation design beyond the current project.
 
 Before starting:
 
-1. use a clean branch or disposable worktree; give every concurrent team a
-   separate worktree and `--cwd`;
+1. use a clean branch or disposable worktree when possible; give every
+   concurrent team a disjoint complete root set, and use a separate worktree
+   and `--cwd` for concurrent tasks in one repository;
 2. commit or safely preserve the baseline;
 3. remove secrets that the task does not need;
 4. inspect repository-level agent instructions and scripts;
 5. review Codex profile overrides and Herdr hooks;
-6. run team-aware `doctor.sh`, then the matching communication tests;
+6. run team-aware `doctor.sh` with the same `--cwd` and every `--add-dir`, then
+   the matching communication tests;
 7. confirm Reviewer remains `read-only`.
 
 During work:
@@ -103,7 +123,7 @@ During work:
 - keep Coder and Reviewer from bypassing Planner;
 - treat test output and external-service changes according to their actual risk.
 
-Before merging:
+Before merging a Git-backed change:
 
 ```bash
 git status --short
@@ -112,6 +132,13 @@ git diff --staged
 ```
 
 Review every changed file, rerun critical validation in a trusted shell, and check for credentials or generated artifacts. `APPROVED` is an agent decision, not a substitute for repository ownership controls or human review required by your organization.
+
+For every non-Git root, record `Git evidence: NOT AVAILABLE`, inspect the
+reported touched paths directly, and retain the limitation that change-set
+completeness and pre-existing attribution remain unproved. If the primary cwd
+is non-Git, report the Git-hosted `full` and `policy` modes as `NOT RUN`.
+`ping`, `communication`, and `isolation` remain only bounded routing evidence;
+they do not repair the missing filesystem history.
 
 ## Hooks and trust
 
@@ -146,9 +173,10 @@ that exposes only the Herdr communication endpoint and read-only repository
 view, or do not use this workflow for that repository.
 
 Team prefixes do not change that boundary and do not isolate the filesystem.
-Two name-isolated teams sharing one checkout can still race. For concurrent
-tasks on one repository, create independent branches and Git worktrees before
-starting the teams. This project deliberately does not automate worktree
+Two name-isolated teams whose primary or additional roots overlap can still
+race. For concurrent tasks on one repository, create independent branches and
+Git worktrees before starting the teams, and keep every additional root
+disjoint as well. This project deliberately does not automate worktree
 creation, merge, removal, or conflict resolution.
 
 ## Reporting a vulnerability

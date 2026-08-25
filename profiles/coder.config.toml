@@ -1,4 +1,4 @@
-# The inspected Codex CLI 0.147.0 layers this file over the user's base config when started
+# The inspected Codex CLI 0.149.1 layers this file over the user's base config when started
 # with `codex --profile coder`. The installer appends prompts/coder.md as
 # `developer_instructions`. This is a reusable role profile; live Herdr names may
 # be `coder` or `<team-prefix>-coder`.

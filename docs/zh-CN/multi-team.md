@@ -83,6 +83,18 @@ TEAM_PREFIX=auth \
 
 它会生成精确名称 `planner`、`coder` 和 `reviewer`。Legacy 模式只能有一个这样的 Team；启动其他 Team 前要先使用前缀。
 
+一个 Team 可以有意覆盖多个互不重叠的项目 root：
+
+```bash
+/path/to/herdr-codex-team/scripts/start.sh \
+  --team integration \
+  --cwd /path/to/primary-project \
+  --add-dir /path/to/second-project \
+  --add-dir /path/to/third-project
+```
+
+`--add-dir` 可重复。主 cwd 仍是 Herdr workspace/pane 目录。Planner 和 Coder 会获得有序的额外可写 root 列表；Reviewer 保持 `read-only`，不接收 `--add-dir`。
+
 ## Planner 如何推导路由
 
 Planner 不会从 Codex profile 获得固定的下游名称。Runtime 中，它获取当前 Herdr 实时身份，并只应用以下两条闭合规则之一：
@@ -113,10 +125,13 @@ Planner 不得寻找模糊匹配的 Coder、使用另一个 Team 的 Agent，或
 诊断和测试应使用同一个前缀：
 
 ```bash
-/path/to/herdr-codex-team/scripts/doctor.sh --team auth
+/path/to/herdr-codex-team/scripts/doctor.sh \
+  --team auth --cwd /path/to/backend
 /path/to/herdr-codex-team/scripts/test.sh --team auth ping
 /path/to/herdr-codex-team/scripts/test.sh --team auth communication
 ```
+
+对 multi-root Team，运行 doctor 时必须按相同顺序重复 startup 的每个 `--add-dir`。它会验证受管的空继承-writable-roots 覆盖、角色 sandbox 和角色专属 process argv：Planner/Coder 必须携带精确列表，Reviewer 必须不携带 `--add-dir`。这是 launch 证据，不是文件访问或变更归属证明。
 
 还要使用已安装 Herdr 版本提供的命令直接检查 runtime：
 
@@ -146,10 +161,11 @@ herdr agent get auth-reviewer
 如果没有对真实 Agent 运行，应报告 `NOT RUN`；字符串构造或三个可见 pane 不是 live-routing evidence。本次更新所在环境没有运行 live isolation，不能声称它已通过。
 
 Harness 将 Coder 保留终端中的 challenge-derived standalone token、lifecycle sequence 变化和 peer transcript 不变组合为行为证据。这不是带角色标签或密码学意义上的审计记录；仅靠 retained terminal 不能证明屏幕中 token 的作者。
+它也不证明任一 Team 各 root 之间的文件系统隔离。
 
 ## 工作目录隔离
 
-精确名称路由配合 fail-closed prompt contract，在各 Agent 遵守约定时可降低误发跨 Team 消息的风险；它不是 ACL 或安全边界，也不能隔离文件。两个使用同一工作树启动的 Coder 仍可能竞态修改同一文件、覆盖变更，或让审查证据变得有歧义。
+精确名称路由配合 fail-closed prompt contract，在各 Agent 遵守约定时可降低误发跨 Team 消息的风险；它不是 ACL 或安全边界。`start.sh` 会为请求 Team 和其他可核实 Herdr Codex 角色构建完整 effective scope：主/foreground cwd 加受管 process argv 中所有结构化 `--add-dir` 值。Git-backed 目录映射到物理 worktree root，non-Git 目录映射到物理目录。两个完整 root set 间任何相等、祖先或后代重叠都会被拒绝。无法检查的角色、malformed add-dir argv 或缺少受管空 writable-roots 覆盖的旧 process 都会 fail closed。这仍是非原子 preflight；它不能防止检查后竞态或 Herdr 外部 writer。
 
 不同仓库可以用独立 `--cwd` 并发运行：
 
@@ -181,14 +197,18 @@ myapp
     └── ui-planner / ui-coder / ui-reviewer
 ```
 
-这样每个 Coder 都有独立 working tree、branch 和 diff。`start.sh` 会检查符合本项目角色命名规则的其他 live Agent 之 `cwd` 与 `foreground_cwd`：若任一路径解析到同一物理 Git worktree、包含目标 root，或位于目标 root 内，则拒绝启动；匹配角色无法核实时也 fail-closed。不同 linked worktree 只有在这些 cwd scope 不与目标 root 重叠时才允许并存。这仍是非原子的启动前检查，不能防止检查后的竞态或 Herdr 外部 writer。本项目刻意不自动创建 branch、merge 工作、移除 worktree 或解决 conflict。
+这样每个 Coder 都有独立 working tree、branch 和 diff。本项目记录这一边界，但刻意不自动创建 branch、merge 工作、移除 worktree 或解决 conflict。
+
+Non-Git root 在 single-root 与显式 multi-root 模式中都允许。它们没有 Git baseline、完整 diff、rollback point 或完整的预存变更归属。必须在 Team 之间保持这些 root 互不重叠，并将其 Git 证据记为 `NOT AVAILABLE`；名称隔离无法弥补该证据损失。
 
 ## 常见故障
 
 - **`agent_name_taken`：**另一个 live agent 已占用某个精确名称。请选择唯一前缀；不要覆盖或重命名现有 Team。
 - **Planner 路由到错误 Coder：**检查 `SELF_AGENT`、`TEAM_PREFIX`、`CODER_AGENT` 和 `REVIEWER_AGENT`。仍 hard-code `coder` 的 stale prompt 会破坏前缀路由。
 - **`shared_git_worktree`：**另一个可核实的 Herdr Codex 角色已经使用请求的物理 worktree。复用或关闭该 Team，或改用独立 Git worktree；不要绕过 guard。
-- **启动前检查后仍有两个 writer：**这是 filesystem/Git 竞态或外部 writer，不是路由隔离证明。停止两条工作流并人工恢复 diff。
+- **`shared_workspace_scope`：**包含 non-Git scope 的请求 root set 与另一受管 Team 的主 root 或额外 root 重叠。复用或关闭该 Team，或选择互不重叠的目录；不要绕过 guard。
+- **`*_unverified`：**startup 无法证明另一角色的受管 sandbox 或完整 root set。尝试并发前，先用当前 `start.sh` 重启该旧 Team。
+- **启动前检查后仍有两个 writer：**这是 filesystem/Git 竞态或外部 writer，不是路由隔离证明。停止两条工作流，并人工恢复全部可用 Git diff 与所报 non-Git touched-path inventory。
 - **只有另一个 Team 的 Coder 存在：**以 `HERDR_COMMUNICATION_FAILED` 停止。另一个 Team 的可用性永远不能修复同 Team Agent 缺失。
 
 证据收集命令和恢复边界见[故障排查](troubleshooting.md)。

@@ -7,7 +7,8 @@ PROJECT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 TEAM_LIB="$SCRIPT_DIR/lib/team.sh"
 JSON_LIB="$SCRIPT_DIR/lib/json.sh"
 DIGEST_LIB="$SCRIPT_DIR/lib/digest.sh"
-[[ -f "$TEAM_LIB" && -f "$JSON_LIB" && -f "$DIGEST_LIB" ]] || {
+SCOPE_LIB="$SCRIPT_DIR/lib/scope.sh"
+[[ -f "$TEAM_LIB" && -f "$JSON_LIB" && -f "$DIGEST_LIB" && -f "$SCOPE_LIB" ]] || {
   printf '[FAIL] Missing script helper under %s/lib.\n' "$SCRIPT_DIR" >&2
   exit 1
 }
@@ -17,6 +18,8 @@ source "$TEAM_LIB"
 source "$JSON_LIB"
 # shellcheck source=lib/digest.sh
 source "$DIGEST_LIB"
+# shellcheck source=lib/scope.sh
+source "$SCOPE_LIB"
 CODEX_DIR=${CODEX_HOME:-"$HOME/.codex"}
 case "$CODEX_DIR" in
   /*) ;;
@@ -32,6 +35,11 @@ TEAM_CLI_SET=0
 TEAM_CLI_PREFIX=''
 EXPECTED_CWD_ARG=''
 CWD_ARG_SET=0
+ADD_DIR_ARGS=()
+ADD_DIRS=()
+EXPECTED_DIRS=()
+EXPECTED_SCOPE_ROOTS=()
+EXPECTED_HAS_NON_GIT=0
 
 ok() {
   printf '[OK] %s\n' "$*"
@@ -49,12 +57,13 @@ fail() {
 
 usage() {
   printf '%s\n' \
-    'Usage: ./scripts/doctor.sh [--team PREFIX] [--cwd PROJECT_DIR]' \
+    'Usage: ./scripts/doctor.sh [--team PREFIX] [--cwd PROJECT_DIR] [--add-dir DIR]...' \
     '' \
     'Without --team or TEAM_PREFIX, checks legacy planner/coder/reviewer names.' \
     'With --team github, checks github-planner/github-coder/github-reviewer.' \
     'TEAM_PREFIX may supply the prefix when --team is omitted.' \
-    '--cwd additionally requires all three agents to use that exact directory.'
+    '--cwd requires all three agents to use that exact primary directory.' \
+    '--add-dir is repeatable; Planner/Coder must expose those writable roots, while read-only Reviewer must expose none.'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -85,6 +94,15 @@ while [[ $# -gt 0 ]]; do
       EXPECTED_CWD_ARG=${1#--cwd=}
       shift
       ;;
+    --add-dir)
+      [[ $# -ge 2 ]] || { usage >&2; fail '--add-dir requires a directory.'; exit 2; }
+      ADD_DIR_ARGS+=("$2")
+      shift 2
+      ;;
+    --add-dir=*)
+      ADD_DIR_ARGS+=("${1#--add-dir=}")
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -105,22 +123,88 @@ if ! team_configure "$REQUESTED_TEAM_PREFIX"; then
   fail "Invalid team prefix '$REQUESTED_TEAM_PREFIX'. It must match [a-z][a-z0-9_-]* and be at most 23 characters."
   exit 2
 fi
+if [[ ${#ADD_DIR_ARGS[@]} -gt 0 && $CWD_ARG_SET -eq 0 ]]; then
+  fail '--add-dir requires --cwd so primary and additional roots can be validated together.'
+  exit 2
+fi
 
 EXPECTED_CWD=''
 if [[ $CWD_ARG_SET -eq 1 ]]; then
+  if scope_path_has_control "$EXPECTED_CWD_ARG"; then
+    fail 'Expected cwd contains an unsupported control character.'
+    exit 2
+  fi
   [[ -n "$EXPECTED_CWD_ARG" && -d "$EXPECTED_CWD_ARG" ]] || {
     fail "Expected cwd does not exist or is not a directory: $EXPECTED_CWD_ARG"
     exit 2
   }
-  EXPECTED_CWD=$(CDPATH= cd -- "$EXPECTED_CWD_ARG" && pwd -P)
+  EXPECTED_CWD=$(scope_physical_dir "$EXPECTED_CWD_ARG") || {
+    fail 'Expected cwd contains an unsupported control character or cannot be resolved.'
+    exit 2
+  }
+  [[ "$EXPECTED_CWD" != '/' ]] || {
+    fail 'Refusing to verify a workspace rooted at the filesystem root.'
+    exit 2
+  }
 fi
 
-extract_agent_field() {
-  local payload=$1
-  local field=$2
+for add_dir_arg in ${ADD_DIR_ARGS[@]+"${ADD_DIR_ARGS[@]}"}; do
+  if scope_path_has_control "$add_dir_arg"; then
+    fail 'Expected additional directory contains an unsupported control character.'
+    exit 2
+  fi
+  [[ -n "$add_dir_arg" && -d "$add_dir_arg" ]] || {
+    fail "Expected additional directory does not exist or is not a directory: $add_dir_arg"
+    exit 2
+  }
+  add_dir=$(scope_physical_dir "$add_dir_arg") || {
+    fail 'Expected additional directory contains an unsupported control character or cannot be resolved.'
+    exit 2
+  }
+  [[ "$add_dir" != '/' ]] || {
+    fail 'Refusing to verify the filesystem root as an additional directory.'
+    exit 2
+  }
+  if [[ -n "$EXPECTED_CWD" ]] && scope_paths_overlap "$EXPECTED_CWD" "$add_dir"; then
+    fail "Expected additional directory overlaps the primary cwd: $add_dir"
+    exit 2
+  fi
+  for existing_add_dir in ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}; do
+    if scope_paths_overlap "$existing_add_dir" "$add_dir"; then
+      fail "Expected additional directories overlap or resolve to the same physical path: $existing_add_dir and $add_dir"
+      exit 2
+    fi
+  done
+  ADD_DIRS+=("$add_dir")
+done
 
-  json_agent_field "$payload" "$field" || true
-}
+if [[ -n "$EXPECTED_CWD" ]]; then
+  EXPECTED_DIRS+=("$EXPECTED_CWD")
+  for add_dir in ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}; do
+    EXPECTED_DIRS+=("$add_dir")
+  done
+  for expected_dir in "${EXPECTED_DIRS[@]}"; do
+    if expected_git_root=$(scope_git_root "$expected_dir"); then
+      expected_scope_root=$expected_git_root
+    else
+      git_scope_status=$?
+      if [[ $git_scope_status -eq 1 ]]; then
+        expected_scope_root=$expected_dir
+        EXPECTED_HAS_NON_GIT=1
+      else
+        fail "Could not safely inspect Git scope for an expected directory: $expected_dir"
+        exit 2
+      fi
+    fi
+    for existing_scope_root in ${EXPECTED_SCOPE_ROOTS[@]+"${EXPECTED_SCOPE_ROOTS[@]}"}; do
+      if scope_paths_overlap "$existing_scope_root" "$expected_scope_root"; then
+        fail "Expected directories share or overlap one effective Git/filesystem scope: $existing_scope_root and $expected_scope_root"
+        exit 2
+      fi
+    done
+    EXPECTED_SCOPE_ROOTS+=("$expected_scope_root")
+  done
+fi
 
 process_uses_profile() {
   local payload=$1
@@ -129,10 +213,46 @@ process_uses_profile() {
   json_process_uses_profile "$payload" "$role"
 }
 
+process_add_dirs_match() {
+  local payload=$1
+  local role=$2
+  local actual_output
+  local actual_dir
+  local expected_count
+  local index=0
+
+  case "$role" in
+    planner|coder) expected_count=${#ADD_DIRS[@]} ;;
+    reviewer) expected_count=0 ;;
+    *) return 1 ;;
+  esac
+
+  actual_output=$(json_process_codex_add_dirs "$payload") || return 1
+  while IFS= read -r actual_dir; do
+    [[ -n "$actual_dir" ]] || continue
+    (( index < expected_count )) || return 1
+    actual_dir=$(scope_physical_dir "$actual_dir") || return 1
+    [[ "$actual_dir" == "${ADD_DIRS[$index]}" ]] || return 1
+    index=$((index + 1))
+  done <<<"$actual_output"
+  (( index == expected_count ))
+}
+
 printf 'Herdr Codex Team doctor (team: %s)\n\n' "$TEAM_DISPLAY"
+
+if [[ $EXPECTED_HAS_NON_GIT -eq 1 ]]; then
+  warn 'Expected scope includes non-Git roots; launch identity can be checked, but complete Git diff/baseline evidence is unavailable.'
+fi
 
 if command -v codex >/dev/null 2>&1; then
   ok "Codex found: $(codex --version 2>&1 | head -n 1)"
+  if [[ ${#ADD_DIRS[@]} -gt 0 ]]; then
+    if codex_help=$(codex --help 2>&1) && grep -Fq -- '--add-dir' <<<"$codex_help"; then
+      ok 'Codex exposes --add-dir.'
+    else
+      fail 'This Codex CLI does not expose --add-dir.'
+    fi
+  fi
 else
   fail 'Codex not found. Install Codex CLI and make sure `codex` is in PATH.'
 fi
@@ -179,7 +299,21 @@ for role in planner coder reviewer; do
     fail "$role $policy_integrity_error. Rerun ./scripts/install.sh."
   fi
   if command -v codex >/dev/null 2>&1; then
-    if codex --profile "$role" debug prompt-input 'profile validation' >/dev/null 2>&1; then
+    case "$role" in
+      planner|coder) expected_sandbox=workspace-write ;;
+      reviewer) expected_sandbox=read-only ;;
+    esac
+    validation_args=(
+      --profile "$role"
+      -c 'sandbox_workspace_write.writable_roots=[]'
+      --sandbox "$expected_sandbox"
+    )
+    if [[ "$role" != reviewer ]]; then
+      for add_dir in ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}; do
+        validation_args+=(--add-dir "$add_dir")
+      done
+    fi
+    if codex "${validation_args[@]}" debug prompt-input 'profile validation' >/dev/null 2>&1; then
       ok "$role profile loads in Codex"
     else
       fail "$role profile cannot be loaded by Codex. Restore a backup or rerun ./scripts/install.sh."
@@ -250,18 +384,64 @@ if [[ $server_running -eq 1 ]]; then
   for role in planner coder reviewer; do
     live_name_expected=$(team_agent_for_role "$role")
     if agent_payload=$(herdr agent get "$live_name_expected" 2>&1); then
-      live_name=$(extract_agent_field "$agent_payload" name)
-      state=$(extract_agent_field "$agent_payload" agent_status)
-      agent_kind=$(extract_agent_field "$agent_payload" agent)
-      interactive_ready=$(extract_agent_field "$agent_payload" interactive_ready)
-      launch_pending=$(extract_agent_field "$agent_payload" launch_pending)
-      pane_id=$(extract_agent_field "$agent_payload" pane_id)
-      workspace_id=$(extract_agent_field "$agent_payload" workspace_id)
-      agent_cwd=$(extract_agent_field "$agent_payload" cwd)
-      foreground_cwd=$(extract_agent_field "$agent_payload" foreground_cwd)
-      effective_cwd=${foreground_cwd:-$agent_cwd}
-      if [[ -n "$effective_cwd" && -d "$effective_cwd" ]]; then
-        effective_cwd=$(CDPATH= cd -- "$effective_cwd" && pwd -P)
+      if ! live_name=$(json_agent_required_string "$agent_payload" name) || \
+         ! state=$(json_agent_required_string "$agent_payload" agent_status) || \
+         ! agent_kind=$(json_agent_required_string "$agent_payload" agent) || \
+         ! interactive_ready=$(json_agent_required_boolean "$agent_payload" interactive_ready) || \
+         ! launch_pending=$(json_agent_required_boolean "$agent_payload" launch_pending) || \
+         ! pane_id=$(json_agent_required_string "$agent_payload" pane_id) || \
+         ! workspace_id=$(json_agent_required_string "$agent_payload" workspace_id); then
+        fail "$live_name_expected reported malformed identity or lifecycle fields."
+        continue
+      fi
+      if ! agent_cwd=$(json_agent_optional_string "$agent_payload" cwd) || \
+         ! foreground_cwd=$(json_agent_optional_string "$agent_payload" foreground_cwd); then
+        fail "$live_name_expected reported malformed cwd fields."
+        continue
+      fi
+      effective_cwd=''
+      cwd_evidence_count=0
+      cwd_evidence_invalid=0
+      for cwd_field in cwd foreground_cwd; do
+        case "$cwd_field" in
+          cwd) reported_cwd=$agent_cwd ;;
+          foreground_cwd) reported_cwd=$foreground_cwd ;;
+        esac
+        [[ -n "$reported_cwd" ]] || continue
+        cwd_evidence_count=$((cwd_evidence_count + 1))
+        if scope_path_has_control "$reported_cwd"; then
+          fail "$live_name_expected reported $cwd_field with unsupported control characters."
+          cwd_evidence_invalid=1
+          continue
+        fi
+        if [[ ! -d "$reported_cwd" ]]; then
+          fail "$live_name_expected reported $cwd_field that does not exist or is not a directory: $reported_cwd"
+          cwd_evidence_invalid=1
+          continue
+        fi
+        if ! resolved_cwd=$(scope_physical_dir "$reported_cwd"); then
+          fail "$live_name_expected reported $cwd_field that cannot be resolved safely."
+          cwd_evidence_invalid=1
+          continue
+        fi
+        if [[ "$resolved_cwd" == '/' ]]; then
+          fail "$live_name_expected reported the filesystem root as $cwd_field."
+          cwd_evidence_invalid=1
+          continue
+        fi
+        if [[ -z "$effective_cwd" ]]; then
+          effective_cwd=$resolved_cwd
+        elif [[ "$resolved_cwd" != "$effective_cwd" ]]; then
+          fail "$live_name_expected reported cwd and foreground_cwd that resolve to different directories."
+          cwd_evidence_invalid=1
+        fi
+      done
+      if [[ $cwd_evidence_count -eq 0 ]]; then
+        fail "$live_name_expected did not expose cwd or foreground_cwd."
+        continue
+      fi
+      if [[ $cwd_evidence_invalid -ne 0 ]]; then
+        continue
       fi
       if [[ "$live_name" != "$live_name_expected" ]]; then
         fail "$live_name_expected target resolved to unexpected live name '${live_name:-unknown}'."
@@ -272,6 +452,10 @@ if [[ $server_running -eq 1 ]]; then
         continue
       fi
       identity_failures_before=$failures
+      case "$role" in
+        planner|coder) expected_sandbox=workspace-write ;;
+        reviewer) expected_sandbox=read-only ;;
+      esac
       if [[ -z "$pane_id" ]]; then
         fail "$live_name_expected did not expose a pane ID, so its active profile cannot be verified."
       elif [[ "$seen_panes" == *"|$pane_id|"* ]]; then
@@ -281,6 +465,20 @@ if [[ $server_running -eq 1 ]]; then
           ok "$live_name_expected foreground process uses generic --profile $role"
         else
           fail "$live_name_expected is not verifiably running with --profile $role. Restart it through start.sh."
+        fi
+        if json_process_has_managed_scope "$process_payload" "$expected_sandbox"; then
+          ok "$live_name_expected uses the managed writable-roots override and --sandbox $expected_sandbox"
+        else
+          fail "$live_name_expected lacks the exact managed scope/sandbox argv. Restart it through the current start.sh."
+        fi
+        if process_add_dirs_match "$process_payload" "$role"; then
+          if [[ "$role" == reviewer ]]; then
+            ok "$live_name_expected has no --add-dir writable-root grants, as required by read-only sandbox"
+          else
+            ok "$live_name_expected additional roots match the requested writable --add-dir list"
+          fi
+        else
+          fail "$live_name_expected writable-root argv does not match its role: Planner/Coder require the requested --add-dir list and Reviewer requires none. Rerun doctor with the same options used by start.sh."
         fi
       else
         fail "$live_name_expected foreground process could not be inspected: $process_payload"
@@ -293,9 +491,7 @@ if [[ $server_running -eq 1 ]]; then
       elif [[ "$workspace_id" != "$team_workspace_id" ]]; then
         fail "$live_name_expected is in workspace $workspace_id, not same-team workspace $team_workspace_id."
       fi
-      if [[ -z "$effective_cwd" ]]; then
-        fail "$live_name_expected did not expose cwd or foreground_cwd."
-      elif [[ -n "$EXPECTED_CWD" && "$effective_cwd" != "$EXPECTED_CWD" ]]; then
+      if [[ -n "$EXPECTED_CWD" && "$effective_cwd" != "$EXPECTED_CWD" ]]; then
         fail "$live_name_expected cwd is '$effective_cwd', expected '$EXPECTED_CWD'."
       elif [[ -z "$team_cwd" ]]; then
         team_cwd=$effective_cwd
@@ -305,7 +501,7 @@ if [[ $server_running -eq 1 ]]; then
       if [[ $failures -eq $identity_failures_before ]]; then
         ok "$live_name_expected identity: pane=$pane_id workspace=$workspace_id cwd=$effective_cwd"
       fi
-      if [[ "$launch_pending" == 'true' ]]; then
+      if [[ "$launch_pending" != 'false' ]]; then
         fail "$live_name_expected launch is still pending. Inspect with: herdr agent get $live_name_expected"
         continue
       fi
@@ -341,6 +537,9 @@ if [[ $server_running -eq 1 ]]; then
   if [[ -n "$team_cwd" ]]; then
     ok "Team cwd: $team_cwd"
   fi
+  for add_dir in ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}; do
+    ok "Team additional root: $add_dir (launch argv evidence)"
+  done
 
   printf '\nCurrent Herdr agent list:\n'
   herdr agent list 2>&1 || fail 'Unable to read the current Herdr agent list.'

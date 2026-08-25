@@ -1,7 +1,32 @@
 # Multi-team examples
 
-These examples assume the three generic Codex profiles are already installed
-and the target paths are Git worktrees.
+These examples assume the three generic Codex profiles are already installed.
+Target paths may be existing Git worktrees or non-Git project directories;
+Git-backed examples provide stronger diff and rollback evidence.
+
+## One team, two projects
+
+Use one primary project as the Herdr workspace cwd and repeat `--add-dir` for
+every additional project:
+
+```bash
+/path/to/herdr-codex-team/scripts/start.sh \
+  --team product \
+  --cwd /projects/api \
+  --add-dir /projects/web
+
+/path/to/herdr-codex-team/scripts/doctor.sh \
+  --team product \
+  --cwd /projects/api \
+  --add-dir /projects/web
+```
+
+Neither directory has to be a Git worktree. Planner and Coder receive both
+roots under `workspace-write`; role policy still forbids Planner from editing.
+Reviewer remains `read-only` and is launched without the writable-root
+`--add-dir` grant, but can inspect both absolute paths. For every non-Git root,
+record `Git evidence: NOT AVAILABLE` and inspect reported touched paths
+directly; this does not prove the change set is complete.
 
 ## Two teams, two repositories
 
@@ -38,8 +63,10 @@ The teams can run at the same time. `backend-planner` must only address
 Check each one explicitly:
 
 ```bash
-/path/to/herdr-codex-team/scripts/doctor.sh --team backend
-/path/to/herdr-codex-team/scripts/doctor.sh --team docs
+/path/to/herdr-codex-team/scripts/doctor.sh \
+  --team backend --cwd /projects/backend-api
+/path/to/herdr-codex-team/scripts/doctor.sh \
+  --team docs --cwd /projects/product-docs
 
 /path/to/herdr-codex-team/scripts/test.sh --team backend communication
 /path/to/herdr-codex-team/scripts/test.sh --team docs communication

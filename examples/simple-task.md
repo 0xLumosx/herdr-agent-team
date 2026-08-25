@@ -29,9 +29,12 @@ Acceptance criteria
    bound cases.
 2. Existing relevant tests still pass.
 3. Only the live Herdr Coder modifies application source or tests.
-4. The live Herdr Reviewer independently inspects the real diff and returns
-   PASS or CHANGES_REQUIRED.
-5. Planner checks the final diff and validation evidence before APPROVED.
+4. The live Herdr Reviewer independently inspects the available change
+   evidence: real status/diff for every Git-backed root, or the reported
+   touched paths plus explicit evidence gaps for every non-Git root. It then
+   returns PASS or CHANGES_REQUIRED.
+5. Planner checks the same available change evidence and validation results
+   before APPROVED.
 
 Required workflow
 

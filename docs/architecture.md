@@ -66,7 +66,7 @@ with `HERDR_COMMUNICATION_FAILED`. An agent in another team is never a fallback.
               │     │    Coder     │                │
               │     │ only writer  │                │
               │     └──────┬───────┘                │
-              │            │ result + real diff     │
+              │            │ result + evidence       │
               └────────────┘                       │
                            │ review brief            │
                            ▼                         │
@@ -108,10 +108,13 @@ The Markdown files under `prompts/` are the readable source of each role contrac
 - `install.sh` validates prerequisites, backs up conflicts, and installs profiles.
 - `doctor.sh` checks binaries, installed profiles, Herdr runtime, exact legacy
   or prefixed live names, state, workspace/pane/cwd association, and foreground
-  `--profile <role>` binding.
+  profile, sandbox, managed writable-root override, and role-specific
+  additional-root argv binding.
 - `start.sh` prepares one legacy or prefixed three-pane team using only CLI
   capabilities exposed by the installed Herdr. It rejects name collisions and
-  does not rename or delete existing agents.
+  does not rename or delete existing agents. It also rejects complete-root-set
+  overlaps; repeatable Codex `--add-dir` values apply only to the
+  `workspace-write` Planner and Coder roles.
 - `test.sh` exercises team-aware direct pings, Planner-mediated communication,
   the full loop, and—when two real teams are available—routing isolation.
 - `uninstall.sh` moves only project-managed profile files into a recoverable dated backup.
@@ -125,6 +128,7 @@ live same-team route and inspects the peer team's downstream evidence for the
 run-specific challenge. Both teams must be real and settled; static name
 construction alone cannot establish cross-team isolation, and an unavailable
 live check must be reported as `NOT RUN`.
+It is routing evidence, not proof of filesystem isolation between root sets.
 
 The full-loop harness requires a Git-clean host worktree with a committed
 `HEAD` and creates a disposable nested Git repository under the project used
@@ -139,6 +143,11 @@ modifications to ignored host files. It also cannot provide writer attribution:
 Planner has `workspace-write`, and the project installs no operating-system
 audit mechanism. “Only Coder writes” is hard-enforced for Reviewer but remains
 prompt/workflow policy for Planner.
+
+The harness requires a Git-backed primary host. If the team's primary cwd is
+non-Git, `full` and `policy` are `NOT RUN`. A result under a Git-backed primary
+does not establish a non-Git additional root's baseline, complete diff,
+rollback, or writer attribution.
 
 ## Identity: profile, kind, and live name are different
 
@@ -177,14 +186,14 @@ must never be embedded as permanent team identity.
 | Address another team | no | no | no |
 | Modify application source by policy | no | yes | no |
 | Filesystem sandbox | `workspace-write` | `workspace-write` | `read-only` |
-| Inspect Git diff | required | required for own report | required |
+| Inspect available change evidence | Git diff per Git root; touched-path limits per non-Git root | same for own report | independently inspect both and preserve gaps |
 | Declare final approval | yes | no | no |
 
-The Planner's no-write boundary is a prompt and workflow rule, not a hard filesystem restriction. `workspace-write` is retained because a read-only Planner has previously produced `Operation not permitted` while attempting Herdr communication. This tradeoff must be understood rather than described as perfect isolation.
+The Planner's no-write boundary is a prompt and workflow rule, not a hard filesystem restriction. `workspace-write` is retained because a read-only Planner has previously produced `Operation not permitted` while attempting Herdr communication. Coder has the same technical write scope and is the only intended implementation writer. Reviewer is forced to `read-only` and launched without `--add-dir`; it can inspect the requested roots without an additional writable-root grant. Managed startup clears inherited `sandbox_workspace_write.writable_roots`, then passes the exact additional writable-root set only to Planner and Coder. This tradeoff must be understood rather than described as perfect isolation.
 
 ## Handoff contracts
 
-Every Planner-to-Coder message includes the goal, relevant context, constraints, acceptance criteria, expected validation, and explicit prohibition on changing unrelated code. Every Planner-to-Reviewer message includes the original requirement, acceptance criteria, current round, Coder report, validation evidence, and the exact diff/revision scope to inspect.
+Every Planner-to-Coder message includes the goal, relevant context, constraints, acceptance criteria, expected validation, and explicit prohibition on changing unrelated code. Every Planner-to-Reviewer message includes the original requirement, acceptance criteria, current round, Coder report, validation evidence, and the exact change-evidence scope to inspect: diff/revision evidence for Git-backed roots, or reported touched paths and explicit evidence gaps for non-Git roots.
 
 The Coder returns either `IMPLEMENTATION_DONE` with factual details or `BLOCKED`. The Reviewer returns only `PASS` or `CHANGES_REQUIRED`. The Planner accepts neither report at face value: it reads the working tree before the next decision.
 
@@ -214,25 +223,29 @@ There are five distinct boundaries:
 4. **Role prompt:** constrains behavior semantically. It is useful policy, not
    a security primitive.
 5. **Git and validation:** provide the objective record used for final
-   decisions. Reports without matching diff/test evidence are unverified
-   claims.
+   decisions where Git history exists. A non-Git touched-path inventory is
+   best-effort evidence and cannot prove a complete change set or baseline.
 
 Two teams can be perfectly separated by Herdr name and still corrupt each
-other's work if both Coders share one checkout. Different repositories require
-different `--cwd` values; concurrent tasks in one repository require separate
-Git worktrees and branches. This project documents but does not automate that
-lifecycle.
+other's work if any primary or additional scope overlaps. Startup compares the
+complete managed root sets: Git-backed paths at their physical worktree root,
+and non-Git paths at their physical directory root. Concurrent tasks in one
+repository require separate Git worktrees and branches, and every additional
+root must remain disjoint. This preflight is not an operating-system lock.
 
 ## Restart and future persistence
 
-The project keeps no workflow database. If Planner restarts, preserve all files
-and begin recovery with:
+The project keeps no workflow database. If Planner restarts, preserve all files.
+For each Git-backed root, begin recovery with:
 
 ```bash
 git status --short
 git diff
 git diff --staged
 ```
+
+For each non-Git root, record `Git evidence: NOT AVAILABLE` and inspect the last
+reported touched paths directly; this cannot reconstruct a complete baseline.
 
 The new Planner reconstructs the goal and current state, re-derives its current
 team identity, verifies the exact same-team live Herdr agents, and resumes at

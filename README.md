@@ -53,8 +53,8 @@ failures are honest. This project addresses four common failures:
 - a Planner from one team routes to a Coder or Reviewer from another team;
 - multiple agents edit the same working tree and make attribution or review
   unreliable;
-- a Reviewer reports success without independently reading the real diff and
-  validation evidence.
+- a Reviewer reports success without independently reading the available
+  Git/non-Git change evidence and validation evidence.
 
 Herdr supplies the visible runtime, unique live names, and communication.
 Codex CLI supplies three role-specific sessions. This repository supplies
@@ -104,13 +104,13 @@ The compatibility contract is command capability, not an exact version pin.
 
 | Component | Required capability |
 | --- | --- |
-| Codex CLI | separate profile files at `$CODEX_HOME/<name>.config.toml`, `--profile`, `workspace-write`, `read-only`, and `approval_policy = "never"` |
+| Codex CLI | separate profile files at `$CODEX_HOME/<name>.config.toml`, `--profile`, repeatable `--add-dir`, `workspace-write`, `read-only`, and `approval_policy = "never"` |
 | Herdr | status, workspace/pane inspection and creation, named agent start/list/get/prompt/wait, and valid unique live names |
 | Shell | Bash on macOS or a common Linux distribution |
-| Git | required for diff inspection and the full workflow test |
+| Git | CLI required for conservative worktree-scope discovery; a Git worktree is required only for diff-backed evidence and the `full`/`policy` live tests |
 
 The implementation was inspected against **Herdr 0.8.2** and **Codex CLI
-0.147.0** on 2026-08-24. This is a local verification baseline, not an exact
+0.149.1** on 2026-08-25. This is a local verification baseline, not an exact
 pin. The scripts probe required capabilities and fail with a repair hint when
 one is missing.
 
@@ -134,7 +134,8 @@ Start a prefixed team from a Herdr-managed shell:
 ```bash
 /path/to/herdr-codex-team/scripts/start.sh \
   --team github \
-  --cwd /absolute/path/to/project
+  --cwd /absolute/path/to/primary-project \
+  --add-dir /absolute/path/to/second-project
 ```
 
 That creates these live Herdr names while selecting the generic profiles:
@@ -153,14 +154,26 @@ Start another isolated team without stopping the first:
   --cwd /absolute/path/to/another-project
 ```
 
-Check each team explicitly:
+`--add-dir` is repeatable. The primary `--cwd` remains the Herdr workspace and
+pane directory. Planner and Coder receive every additional directory as a
+writable root under `workspace-write`, although Planner is forbidden by its
+role policy to edit project files. Reviewer stays `read-only` and is
+deliberately launched without `--add-dir`; it can inspect the requested roots
+without receiving an additional writable-root grant.
+
+Check each team explicitly, repeating the same root arguments used at startup:
 
 ```bash
-/path/to/herdr-codex-team/scripts/doctor.sh --team github
+/path/to/herdr-codex-team/scripts/doctor.sh \
+  --team github \
+  --cwd /absolute/path/to/primary-project \
+  --add-dir /absolute/path/to/second-project
 /path/to/herdr-codex-team/scripts/test.sh --team github ping
 /path/to/herdr-codex-team/scripts/test.sh --team github communication
 
-/path/to/herdr-codex-team/scripts/doctor.sh --team auth
+/path/to/herdr-codex-team/scripts/doctor.sh \
+  --team auth \
+  --cwd /absolute/path/to/another-project
 ```
 
 `TEAM_PREFIX=github` is an environment alternative to `--team github`. For
@@ -169,7 +182,7 @@ legacy compatibility, omit the team prefix to create one team named exactly
 
 ```bash
 /path/to/herdr-codex-team/scripts/start.sh --cwd /absolute/path/to/project
-/path/to/herdr-codex-team/scripts/doctor.sh
+/path/to/herdr-codex-team/scripts/doctor.sh --cwd /absolute/path/to/project
 ```
 
 `start.sh` also retains the legacy positional project-directory form. Use
@@ -193,15 +206,19 @@ Run diagnostics and live tests, and watch the exact named panes receive work.
 
 Exact-name routing plus the fail-closed prompt contract reduces accidental
 cross-team messages when followed. Before creating a workspace, `start.sh`
-also refuses another inspectable Herdr Codex role agent when either reported
-cwd resolves to the same physical Git worktree or its path contains/is inside
-the requested root. Separate worktrees are allowed only when their cwd scopes
-do not overlap this way. This is a preflight guard, not an atomic reservation
-or ACL; a post-check race or a writer outside Herdr remains possible.
+compares the complete requested root set—primary `--cwd` plus every
+`--add-dir`—with the managed primary and additional roots exposed by other
+inspectable Herdr Codex role agents. Git-backed paths compare at their physical
+worktree roots; non-Git paths compare at their physical directory roots. Any
+same, ancestor, or descendant scope overlap fails closed. This is a preflight
+guard, not an atomic reservation or ACL; a post-check race or a writer outside
+Herdr remains possible.
 
 - Different repositories can run concurrently with different `--cwd` values.
 - Concurrent tasks in one repository should use one Git worktree and branch per
   team.
+- All primary and additional roots assigned to concurrent teams must be
+  disjoint after physical-path and Git-worktree resolution.
 
 ```bash
 cd /projects/myapp
@@ -244,9 +261,9 @@ three installed files. The installer does not delete or rewrite the base
 
 | Role | Authority | Must do | Must not do |
 | --- | --- | --- | --- |
-| Planner | orchestrate its own team and make the final decision | derive its live identity, verify exact same-team targets, define acceptance criteria, inspect the real diff, triage review | implement source, address another team, guess a target, replace Herdr agents with native/internal subagents |
+| Planner | orchestrate its own team and make the final decision | derive its live identity, verify exact same-team targets, define acceptance criteria, inspect available change evidence and its limits, triage review | implement source, address another team, guess a target, replace Herdr agents with native/internal subagents |
 | Coder | sole implementation engineer for its team | make focused changes, run relevant validation, report facts and blockers | approve its own work, contact Reviewer, orchestrate agents |
-| Reviewer | independent verification | inspect requirements, diff, related code, and tests; report consequence-backed findings | modify files, implement fixes, command Coder, orchestrate agents |
+| Reviewer | independent verification | inspect requirements, available Git/non-Git change evidence, related code, and tests; report consequence-backed findings | modify files, implement fixes, command Coder, orchestrate agents |
 
 Reviewer returns only `PASS` or `CHANGES_REQUIRED`. A blocking finding states
 severity, location, problem, consequence, and recommended correction. `LOW`
@@ -283,9 +300,10 @@ cryptographic proof of who authored a token; watch the named panes and inspect
 task artifacts for consequential runs.
 
 For live tests, watch the exact named panes. A Planner's text-only claim is not
-evidence that the intended target moved. Invoke the absolute `test.sh` path
-while the shell is in the same Git worktree passed to `start.sh`, or set
-`HERDR_TEST_PROJECT_DIR` explicitly.
+evidence that the intended target moved. `ping` and `communication` establish
+bounded transport behavior, while `isolation` establishes bounded transcript
+and lifecycle non-contact evidence; none of those modes proves filesystem
+changes or Git isolation.
 
 The `full` and `policy` tests require a clean, committed, disposable host
 worktree and create nested fixtures under it. They check routing and resulting
@@ -294,6 +312,16 @@ Planner has a `workspace-write` sandbox, “Coder is the only writer” remains
 prompt/workflow policy for Planner. Policy mode also checks unchanged peer
 transcripts, lifecycle sequences, and visible Herdr agent names; it cannot
 prove that no hidden native worker ever existed.
+
+Startup accepts existing non-Git directories in both single-root and
+multi-root form, but those roots have no
+Git baseline, complete diff, untracked-file inventory, rollback point, or
+reliable separation of pre-existing and task changes. Record Git evidence for
+each such root as `NOT AVAILABLE`. If the primary `--cwd` is non-Git, `full`
+and `policy` cannot use it as their required host and must be reported as
+`NOT RUN`; never extend a result from a separate Git-backed fixture to the
+non-Git roots. `static`, `ping`, `communication`, and the bounded routing
+`isolation` mode remain available subject to their own prerequisites.
 
 No live multi-team routing result is implied by this repository's static test
 suite. If two suitable teams are unavailable, report the isolation test as
@@ -338,13 +366,15 @@ This is a default recommendation, not a routing dependency. The workflow is
 model-agnostic. Choose models available to your Codex account and CLI with
 `PLANNER_MODEL`, `CODER_MODEL`, and `REVIEWER_MODEL` at install or startup, or
 edit only the top-level `model = ...` assignment in an installed role file.
-Restart a role after changing its model.
+After changing a model, recreate the affected team through the current
+`start.sh` with its original root arguments.
 
 Planner and Reviewer use `xhigh` reasoning defaults; Coder uses `high`.
 Reasoning, sandbox, approval, and role instructions are managed policy: change
 them in the matching repository template under `profiles/` or `prompts/`, run
-`install.sh`, and restart the affected role. Use only values supported by the
-selected model. See
+`install.sh`, and recreate the affected team through the current `start.sh`
+with its original root arguments. Use only values supported by the selected
+model. See
 [Configuration](docs/configuration.md) and the
 [official Codex configuration reference](https://developers.openai.com/codex/config-reference/).
 
@@ -393,15 +423,23 @@ Read [Workflow](docs/workflow.md) for handoff contracts and recovery.
 Start with the exact team:
 
 ```bash
-./scripts/doctor.sh --team github
+./scripts/doctor.sh \
+  --team github \
+  --cwd /absolute/path/to/primary-project \
+  --add-dir /absolute/path/to/second-project
 herdr agent list
 ```
+
+Use the exact `--cwd` and ordered `--add-dir` list from startup; omitting them
+does not validate a multi-root team and can correctly report an argv mismatch.
 
 If Herdr reports `agent_name_taken`, do not overwrite or continue a partial
 team; choose a unique team prefix. If Planner addresses the wrong Coder, inspect
 its derived `SELF_AGENT`, `TEAM_PREFIX`, `CODER_AGENT`, and `REVIEWER_AGENT`.
-If two Coders changed the same checkout, fix the `--cwd`/Git-worktree collision;
-that is not a routing problem.
+If two Coders changed an overlapping primary or additional root, fix the
+complete root-set collision. Use disjoint directories, or separate Git
+worktrees for concurrent tasks in one repository; this is not a routing
+problem.
 
 The most important symptom remains: Planner says Coder is working while the
 expected same-team Coder pane is idle. Treat that as failed communication, not
@@ -415,8 +453,10 @@ a hard boundary against a compromised model, malicious repository instructions,
 unsafe hooks, shared filesystems, or destructive commands allowed by the
 sandbox.
 
-Use clean branches or disposable worktrees, keep secrets out of repositories
-and prompts, review hooks, and inspect every diff before merging. Read
+Use clean branches or disposable worktrees when possible, keep secrets out of
+repositories and prompts, review hooks, and inspect every available Git diff
+before merging; for non-Git roots, inspect reported touched paths directly and
+preserve the evidence gaps. Read
 [Security](docs/security.md) before using the team on sensitive code.
 
 ## Uninstall

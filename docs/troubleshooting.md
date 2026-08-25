@@ -4,14 +4,18 @@
 
 ## Start with evidence
 
-Run diagnostics from the project checkout:
+Run diagnostics with the same roots used at startup:
 
 ```bash
-./scripts/doctor.sh --team <prefix> --cwd /path/to/team-worktree
+./scripts/doctor.sh --team <prefix> \
+  --cwd /path/to/primary-project \
+  --add-dir /path/to/second-project
 ```
 
 Omit `--team` for the legacy `planner`/`coder`/`reviewer` team. Omit `--cwd`
 only when you do not need diagnostics to verify the team's working directory.
+Every diagnostic `--add-dir` requires `--cwd`; repeat the exact ordered list
+used by `start.sh`.
 
 Inside a Herdr-managed pane, also inspect:
 
@@ -70,20 +74,24 @@ or a hard-coded pane ID. If derivation or exact-target verification fails, the
 correct response is `HERDR_COMMUNICATION_FAILED`, even when another team's
 Coder is idle and available.
 
-Reinstall the current role prompts, restart the requested team, run
-`doctor.sh --team github`, and then run the team-aware communication test. Do
-not accept or merge work produced by the wrong team without independently
-inspecting and reconciling its Git diff.
+Reinstall the current role prompts, recreate only the requested team through
+the current `start.sh`, then run `doctor.sh --team github --cwd <primary>
+--add-dir <extra> ...` with the exact ordered startup roots before the
+team-aware communication test. Do not accept or merge work produced by the
+wrong team without independently inspecting and reconciling all available Git
+diffs and reported non-Git touched paths.
 
-## Two Coders changed the same working tree
+## Two Coders changed the same working tree or root
 
-This is a filesystem/Git working-tree collision, not a Herdr routing failure.
+This is a filesystem/Git workspace-scope collision, not a Herdr routing failure.
 Exact-name routing and the prompt contract reduce accidental cross-team
 messages; they are not an ACL. They also do not prevent `auth-coder` and
-`ui-coder` from writing the same checkout when both teams use one cwd.
+`ui-coder` from writing the same files when either team's primary or additional
+root overlaps the other team's scope.
 
-Stop issuing new work and preserve both agents' reports and the current diff.
-For different repositories, restart the teams with different `--cwd` values.
+Stop issuing new work and preserve both agents' reports plus every available
+Git diff and reported non-Git touched-path inventory. For different
+repositories, restart the teams with disjoint complete root sets.
 For concurrent tasks in one repository, prepare a separate branch and Git
 worktree for each team:
 
@@ -149,6 +157,13 @@ field in the installed file is rejected by the profile-policy digest.
 
 If the error persists, do not broaden to `danger-full-access`. Inspect the exact denied path, verify that the Herdr integration and hooks are current, and run `herdr agent explain <expected-team-agent>` or the diagnostics printed by the current Herdr version.
 
+For a required second project, restart the team through `start.sh` with an
+explicit `--add-dir`; do not add a private machine-wide writable root as a
+workaround. Managed startup clears inherited
+`sandbox_workspace_write.writable_roots`, applies the explicit role sandbox,
+passes the additional writable-root list to Planner/Coder, and deliberately
+omits it from read-only Reviewer.
+
 ## All agents appear as `codex`
 
 Agent kind and live name are different. `codex` may correctly describe the executable while the required unique names are absent.
@@ -176,9 +191,12 @@ resolve a collision. Use unprefixed role names only for intentional legacy mode.
 
 In the inspected Herdr 0.8.2 behavior, a live name follows the current pane occupant. It is cleared when the agent exits, is released, or is replaced. A Codex profile does not permanently assign the Herdr name.
 
-Run `start.sh` again or use `herdr agent rename` after the replacement agent is
-detected. Then run `doctor.sh --team <prefix>` before resuming a task. This is
-expected runtime lifecycle, not proof that the profile was lost.
+After preserving context and project changes, recreate only the requested team
+through the current `start.sh` with its original `--team`, `--cwd`, and ordered
+`--add-dir` arguments. Then run `doctor.sh` with the same arguments before
+resuming. A plain profile launch followed by `herdr agent rename` does not
+reproduce the managed sandbox/root argv. This is expected runtime lifecycle,
+not proof that the profile was lost.
 
 ## Profile changes have no effect
 
@@ -197,8 +215,11 @@ selection remains configurable; reasoning, sandbox, approval, and other
 policy/template fields are managed. Edit source under `prompts/` or `profiles/`
 and rerun `scripts/install.sh`; direct installed-policy edits are rejected by
 `doctor.sh` and `start.sh`. An existing Codex session
-does not automatically reload a freshly installed profile. Exit the affected
-session and start it again, then restore its Herdr live name.
+does not automatically reload a freshly installed profile. Preserve context
+and project changes, close only the requested team's old sessions, then
+recreate that team through the current `start.sh` with its original root
+arguments. Verify it with `doctor.sh` using the same arguments; do not use a
+plain profile launch plus rename as a managed restart.
 
 Also check whether `CODEX_HOME` was set differently during installation and startup. A mismatch can make Codex read a different directory.
 
@@ -277,6 +298,12 @@ The full test needs a live three-agent Herdr team, Git, and Python 3 because it 
 
 The script copies its bundled fixture into `.herdr-codex-test.*` under `${HERDR_TEST_PROJECT_DIR:-$PWD}`, initializes an isolated Git repository there, and removes it after success. Invoke the absolute `test.sh` path while the current directory is the same Git project used by `start.sh`, or set `HERDR_TEST_PROJECT_DIR` to that project explicitly. The script rejects a host outside a Git worktree, without a committed `HEAD`, or whose full worktree is not clean.
 
+If the team's primary cwd is non-Git, this precondition cannot be met for that
+team: record `full` as `NOT RUN`. A separate fixture does not create a baseline
+or complete diff for the team's non-Git roots. If only an additional root is
+non-Git, a full-test pass under the Git-backed primary still says nothing about
+the additional root's complete change scope.
+
 The host placement matters: the disposable path must remain inside the live team's workspace-write root. The script preserves the directory after failure for diagnosis; set `KEEP_TEST_WORKSPACE=1` to retain a successful run. Use a clean disposable worktree. If the harness reports a dirty host, inspect and preserve that work yourself; do not ask the test to ignore it.
 
 A pass verifies challenge-derived Coder completion and Reviewer pass responses,
@@ -322,6 +349,10 @@ cleanup preserves the fixture. A pass is bounded behavioral evidence, not an ACL
 that no hidden native worker ever existed. If the intended live team cannot be
 safely addressed, record this mode as `NOT RUN`.
 
+The same Git-host requirement applies here. A team whose primary cwd is
+non-Git must record `policy` as `NOT RUN`; do not extrapolate a different
+Git-backed fixture's policy result to non-Git project roots.
+
 ## Isolation test cannot run
 
 The isolation mode needs two different prefixed teams that are both live,
@@ -336,14 +367,20 @@ Run both directional checks when possible. If the current shell cannot safely
 address two real teams, record the live isolation check as `NOT RUN` with that
 reason. Passing static name construction, doctor, or a one-team communication
 test is not proof that one Planner cannot control the other team's Coder.
+It is also not filesystem-isolation evidence for either team's root set.
 
 ## `start.sh` rejects the project directory
 
 The startup interface is `start.sh [--no-focus] [--team PREFIX] [--cwd
-PROJECT_DIR] [PROJECT_DIR]`. `PROJECT_DIR` defaults to the current directory and
-must resolve inside a Git worktree so every handoff has an objective `git
-status` and `git diff` surface. Do not combine `--cwd` with the legacy
-positional path.
+PROJECT_DIR] [--add-dir DIR]... [PROJECT_DIR]`. `PROJECT_DIR` defaults to the
+current directory. Do not combine `--cwd` with the legacy positional path.
+
+A Git worktree is not required in either single-root or multi-root mode; the Git
+CLI is still required for conservative scope discovery. Every requested
+directory must exist, resolve safely, must not be `/`, and must be disjoint from
+the others. Equal, ancestor/descendant, symlink-equivalent, or same-effective-
+worktree roots are rejected. Malformed or ambiguous Git metadata also fails
+closed instead of being treated as ordinary non-Git evidence.
 
 Check:
 
@@ -351,7 +388,31 @@ Check:
 git -C /path/to/project rev-parse --show-toplevel
 ```
 
-Choose the intended repository root or initialize a disposable test repository. Do not bypass the check for a directory whose ownership or uncommitted state you have not inspected.
+The command above is optional evidence diagnosis, not a startup prerequisite.
+For a non-Git project, accept the printed evidence warning. If multiple
+existing project directories are intentional, pass each extra one with a
+repeatable `--add-dir`. Do not initialize an unrelated directory merely to
+silence the warning.
+
+## Doctor reports an additional-root mismatch
+
+Run doctor with the same primary path and additional roots, in the same order,
+that started the team:
+
+```bash
+./scripts/doctor.sh --team <prefix> \
+  --cwd /path/to/primary-project \
+  --add-dir /path/to/second-project
+```
+
+Doctor compares each role's structured process argv, including the generic
+profile, explicit sandbox, empty inherited-writable-roots override, and
+role-specific additional-root policy. Planner/Coder must carry the exact
+ordered list; Reviewer must carry none. A missing, extra, reordered, malformed,
+or stale writable root is a failure. Restart all three roles through the
+current `start.sh`; do not edit private global configuration to make the
+mismatch disappear. A passing doctor proves launch arguments only, not actual
+file access or change attribution.
 
 ## Doctor reports a missing command on a newer version
 

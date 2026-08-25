@@ -10,10 +10,10 @@
 
 ```text
 herdr 0.8.2
-codex-cli 0.147.0
+codex-cli 0.149.1
 ```
 
-这些版本是截至 2026-08-24 已知的检查基线，不是精确锁定。`doctor.sh` 和 `start.sh` 还会验证其依赖的命令，因此不兼容的新版本会尽早失败。
+这些版本是截至 2026-08-25 已知的检查基线，不是精确锁定。`doctor.sh` 和 `start.sh` 还会验证其依赖的命令，因此不兼容的新版本会尽早失败。
 
 ## 1. 验证基础工具
 
@@ -22,9 +22,10 @@ codex --version
 codex --help
 herdr --version
 herdr --help
+git --version
 ```
 
-Codex 必须支持 `$CODEX_HOME/<name>.config.toml` 中的 `--profile` 文件。Herdr 必须公开 `status`、`workspace`、`pane` 和 `agent` command group。启动 Team 前，先通过 Codex 正常支持的 login 流程完成身份验证。`doctor.sh` 和 `start.sh` 执行详细 command-surface 检查；`install.sh` 首先确认两个 binary 存在并报告版本。
+Codex 必须支持 `$CODEX_HOME/<name>.config.toml` 中的 `--profile` 文件。Herdr 必须公开 `status`、`workspace`、`pane` 和 `agent` command group。即使请求的项目目录是 non-Git，仍需要 Git CLI 做保守 scope discovery。启动 Team 前，先通过 Codex 正常支持的 login 流程完成身份验证。`doctor.sh` 和 `start.sh` 执行详细 command-surface 检查；`install.sh` 首先确认 Codex 和 Herdr binary 存在并报告版本。
 
 Startup、诊断和 live test 还需要真实 JSON 解析器：可安装 `jq`，也可保留 Python 3 作为标准库 fallback。Full workflow demo 会运行独立 assertion，因此无论是否安装 `jq` 都需要 Python 3。
 
@@ -113,7 +114,7 @@ Team 尚未存在时，binary 和 profile 检查应通过，而 live-agent 检�
 
 ## 启动 Team
 
-### 1. 通过 Herdr 进入目标仓库
+### 1. 通过 Herdr 进入主项目目录
 
 ```bash
 cd /absolute/path/to/your-project
@@ -135,16 +136,19 @@ Startup 脚本使用明确返回的 identifier 创建新 workspace，不依赖 U
 ```bash
 /absolute/path/to/herdr-codex-team/scripts/start.sh \
   --team github \
-  --cwd "$PWD"
+  --cwd /absolute/path/to/primary-project \
+  --add-dir /absolute/path/to/second-project
 ```
 
 接口为：
 
 ```text
-start.sh [--no-focus] [--team PREFIX] [--cwd PROJECT_DIR] [PROJECT_DIR]
+start.sh [--no-focus] [--team PREFIX] [--cwd PROJECT_DIR] [--add-dir DIR]... [PROJECT_DIR]
 ```
 
-`PROJECT_DIR` 默认为当前目录，并且必须位于 Git worktree 中。位置参数形式为向后兼容而保留；不要与 `--cwd` 同时提供。`--no-focus` 要求 startup 保留当前 focus。`--team github` 生成 `github-planner`、`github-coder` 和 `github-reviewer`；省略后保留 legacy 名称 `planner`、`coder` 和 `reviewer`。
+`PROJECT_DIR` 默认为当前目录，并成为 Herdr workspace 和 pane 的主 cwd。位置参数形式为向后兼容而保留；不要与 `--cwd` 同时提供。`--add-dir` 可重复，并为 Planner 和 Coder 提供请求的额外可写 root。Reviewer 保持 `read-only`，启动时不传 `--add-dir`。每个目录都必须存在、能安全解析、不是 `/`，且与其他请求 root 物理上互不重叠。`--no-focus` 要求 startup 保留当前 focus。`--team github` 生成 `github-planner`、`github-coder` 和 `github-reviewer`；省略后保留 legacy 名称 `planner`、`coder` 和 `reviewer`。
+
+位于 Git worktree 中不再是 startup 前置条件。Single-root 与 multi-root 模式都允许使用现有 non-Git 目录；Git CLI 仍用于保守识别 worktree scope。对每个 non-Git root，`git status`、完整 diff、untracked-file enumeration、rollback 和预存变更归属都不可用。Agent 必须把该 Git 证据标为 `NOT AVAILABLE`，不得从直接文件检查中推断。
 
 `TEAM_PREFIX=github` 是环境变量替代方式。如果环境变量和 `--team` 均指定值，则必须一致。Startup 会验证三个生成名称，并在创建 workspace 前检查所有名称是否冲突。如果出现 `agent_name_taken` 等冲突，它会停止，不会重命名、删除或替换现有 Team。
 
@@ -156,7 +160,7 @@ start.sh [--no-focus] [--team PREFIX] [--cwd PROJECT_DIR] [PROJECT_DIR]
   --cwd /absolute/path/to/another-project
 ```
 
-不同仓库可以安全使用不同 `--cwd`。同一仓库中的两个任务应在 startup 前使用独立 branch 和 Git worktree；脚本不会创建、merge 或移除 worktree。详见[多 Team 隔离](multi-team.md)。
+不同仓库可以安全使用不同 root set。并发 Team 的每个主 root 和额外 root 在物理路径与 Git-worktree 解析后都必须互不重叠。同一仓库中的两个任务应在 startup 前使用独立 branch 和 Git worktree；脚本不会创建、merge 或移除 worktree。详见[多 Team 隔离](multi-team.md)。
 
 对单次运行，可以用模型环境变量为相应角色添加 Codex `--model` 覆盖，而不重写已安装文件：
 
@@ -176,7 +180,7 @@ herdr agent list
 
 对于 `--team github`，这三个名称是 `github-planner`、`github-coder` 和 `github-reviewer`；legacy 模式中是 `planner`、`coder` 和 `reviewer`。三个 pane 仅仅包含 kind 为 `codex` 的 process，不能满足名称要求。
 
-这只确认进程已启动，并不确认完整安全姿态。发出工作前，运行 Team-aware doctor，以验证已安装 sandbox/approval 设置、profile load、integration、精确身份、readiness、lifecycle state、workspace/pane/cwd 关联和前台 `--profile <role>` 参数。Working agent 会报告为 warning；communication 测试要求所有相关目标都 settled 为 `idle` 或 `done`，并绑定匹配的通用角色 profile。
+这只确认进程已启动，并不确认完整安全姿态。发出工作前，使用同样的 `--cwd` 和有序 `--add-dir` 列表运行 Team-aware doctor。它会验证已安装 sandbox/approval 设置、profile load、integration、精确身份、readiness、lifecycle state、workspace/pane/cwd 关联、前台 `--profile <role>` 绑定、受管的空 `sandbox_workspace_write.writable_roots` 覆盖、显式 sandbox 和角色专属额外 root argv。Working agent 会报告为 warning；communication 测试要求所有相关目标都 settled 为 `idle` 或 `done`，并绑定匹配的通用角色 profile。
 
 ### 已验证的手动原语
 
@@ -187,6 +191,9 @@ live Agent 名称和 `--cwd` 仍分别保留角色与项目身份。Legacy 模�
 `codex-team:<project>`。
 
 ```bash
+# Planner 和 Coder 使用这个可写 root；Reviewer 有意不使用。
+EXTRA_ROOT=/absolute/path/to/second-project
+
 # 创建隔离 workspace，并从 JSON 响应读取 root pane ID。
 herdr workspace create --cwd "$PWD" --label "codex-team:github" \
   --env "CODEX_HOME=${CODEX_HOME:-$HOME/.codex}" --no-focus
@@ -197,10 +204,16 @@ herdr pane split <root-pane-id> --direction right --ratio 0.5 --cwd "$PWD" \
 herdr pane split <right-pane-id> --direction down --ratio 0.5 --cwd "$PWD" \
   --env "CODEX_HOME=${CODEX_HOME:-$HOME/.codex}" --no-focus
 
-# 在现有 shell pane 中启动受支持 Codex process。
-herdr agent start github-planner --kind codex --pane <planner-pane-id> -- --profile planner
-herdr agent start github-coder --kind codex --pane <coder-pane-id> -- --profile coder
-herdr agent start github-reviewer --kind codex --pane <reviewer-pane-id> -- --profile reviewer
+# 使用精确受管 root set 启动 Codex process。
+herdr agent start github-planner --kind codex --pane <planner-pane-id> -- \
+  --profile planner -c 'sandbox_workspace_write.writable_roots=[]' \
+  --sandbox workspace-write --add-dir "$EXTRA_ROOT"
+herdr agent start github-coder --kind codex --pane <coder-pane-id> -- \
+  --profile coder -c 'sandbox_workspace_write.writable_roots=[]' \
+  --sandbox workspace-write --add-dir "$EXTRA_ROOT"
+herdr agent start github-reviewer --kind codex --pane <reviewer-pane-id> -- \
+  --profile reviewer -c 'sandbox_workspace_write.writable_roots=[]' \
+  --sandbox read-only
 ```
 
 `agent start` 要求目标 pane 正处在 interactive shell prompt；它不会创建 pane。Agent 原生参数应放在 `--` 之后。
@@ -218,16 +231,17 @@ herdr agent rename <agent-name-or-pane-id> github-planner
 接口为：
 
 ```text
-doctor.sh [--team PREFIX] [--cwd PROJECT_DIR]
+doctor.sh [--team PREFIX] [--cwd PROJECT_DIR] [--add-dir DIR]...
 ```
 
 ```bash
 /absolute/path/to/herdr-codex-team/scripts/doctor.sh \
   --team github \
-  --cwd "$PWD"
+  --cwd /absolute/path/to/primary-project \
+  --add-dir /absolute/path/to/second-project
 ```
 
-此时，binary、on-disk profile、前台 profile 绑定、runtime、name 和 state 检查应该都有足够 live data 可供评估。如果平台无法公开前台 process arguments，诊断会 fail closed，而不是把 renamed stale session 当作有效角色。
+必须按 `start.sh` 使用的相同顺序传入同一组额外 root；在诊断中，`--add-dir` 要求同时传入 `--cwd`。Doctor 会验证角色专属 argv：Planner/Coder 必须携带精确的有序列表，Reviewer 必须不携带 `--add-dir`。此时 binary、on-disk profile、前台 profile/sandbox/root 绑定、runtime、name 和 state 检查应该都有足够 live data 可供评估。这只证明 launch argv，不证明实际读写成功或 Git 历史。如果平台无法公开前台 process arguments，诊断会 fail closed，而不是把 renamed stale session 当作有效角色。
 
 ### 4. 建立通信证据
 
@@ -242,7 +256,7 @@ test.sh [--team PREFIX] [--against-team PREFIX] static|ping|communication|full|p
 /absolute/path/to/herdr-codex-team/scripts/test.sh --team github communication
 ```
 
-请在传给 `start.sh` 的同一 Git project 中调用这些命令。测试期间观察 live pane。即使 Planner 声称 Coder 已回复，只要 Herdr Coder pane 从未收到输入或 lifecycle state 未发生变化，就不足以作为证据。
+`ping` 和 `communication` 不要求 Git root；它们只提供有界的传输证据。测试期间观察 live pane。即使 Planner 声称 Coder 已回复，只要 Herdr Coder pane 从未收到输入或 lifecycle state 未发生变化，就不足以作为证据。
 
 对于 `full` 和 `policy` 测试，当前目录也是各自 nested disposable fixture 的默认 host：
 
@@ -253,6 +267,8 @@ test.sh [--team PREFIX] [--against-team PREFIX] static|ping|communication|full|p
 
 如果 shell 必须位于别处，设置 `HERDR_TEST_PROJECT_DIR=/absolute/path/to/the-project-used-by-start.sh`。脚本在创建 nested fixture 前，会验证整个 host Git worktree 有 committed `HEAD` 且 clean；请使用 disposable worktree，不要仅为满足测试而隐藏或 stash 变更。
 
+当主 `--cwd` 为 non-Git 时，它不能成为该 host；必须把这个 Team 的 `full` 和 `policy` 记为 `NOT RUN`。如果 Git-backed 主 root 与 non-Git 额外 root 组合使用，主 root 下 fixture 的通过不能建立 non-Git root 的 baseline、完整变更 scope、rollback 或 writer attribution。
+
 当两个带前缀 Team 都处于 live 且 settled 状态时，从两个方向测试跨 Team 隔离：
 
 ```bash
@@ -262,19 +278,26 @@ test.sh [--team PREFIX] [--against-team PREFIX] static|ping|communication|full|p
   --team auth --against-team github isolation
 ```
 
-`--against-team` 只在 `isolation` 中必需。若两个真实 Team 不可用，应把此检查报告为 `NOT RUN`；静态名称解析不是 live 路由证据。本次更新所在环境没有运行 live isolation。单次命令只验证一个方向；要验证反方向，必须交换 `--team` 和 `--against-team` 后再次运行。
+`--against-team` 只在 `isolation` 中必需。若两个真实 Team 不可用，应把此检查报告为 `NOT RUN`；静态名称解析不是 live 路由证据。本次更新所在环境没有运行 live isolation。单次命令只验证一个方向；要验证反方向，必须交换 `--team` 和 `--against-team` 后再次运行。Isolation 只检查具名 Agent 的 transcript 与 lifecycle sequence，不建立各 root 间的文件系统非干扰证据。
 
 ## 更新 Profile
 
 仅修改模型时，优先使用文档中的 `PLANNER_MODEL`、`CODER_MODEL` 或 `REVIEWER_MODEL` 覆盖。若直接编辑已安装文件，只支持顶层 `model = ...` 赋值；它不纳入受管 policy digest。
 
-修改 reasoning、sandbox、approval 或角色指令时，必须编辑 `profiles/` 或 `prompts/` 下的对应 source，运行 `test.sh static`，再运行 `install.sh`。`doctor.sh` 和 `start.sh` 会拒绝这些受管字段在已安装文件中的直接漂移。两类持久变更后都只退出并重启受影响的 Codex session：
+修改 reasoning、sandbox、approval 或角色指令时，必须编辑 `profiles/` 或 `prompts/` 下的对应 source，运行 `test.sh static`，再运行 `install.sh`。`doctor.sh` 和 `start.sh` 会拒绝这些受管字段在已安装文件中的直接漂移。两类持久变更后，都要先保留任务 context 和项目变更，只关闭请求 Team 的三个旧 session，再使用当前 `start.sh` 和原来的 root 参数重建该 Team：
 
 ```bash
-codex --profile planner
+/path/to/herdr-codex-team/scripts/start.sh \
+  --team github \
+  --cwd /absolute/path/to/primary-project \
+  --add-dir /absolute/path/to/second-project
+/path/to/herdr-codex-team/scripts/doctor.sh \
+  --team github \
+  --cwd /absolute/path/to/primary-project \
+  --add-dir /absolute/path/to/second-project
 ```
 
-已经运行的 session 不会自动重新加载 profile 变化。重新运行 `install.sh` 会在备份后替换三个已安装角色文件。
+Legacy 模式下，两条命令都省略 `--team`。普通 `codex --profile <role>` 不会复现受管 sandbox/root argv，因此无法通过受管 process 检查。已经运行的 session 不会自动重新加载 profile 变化。重新运行 `install.sh` 会在备份后替换三个已安装角色文件。
 
 ## 静态验证与卸载
 
@@ -283,7 +306,7 @@ cd /path/to/herdr-codex-team
 ./scripts/test.sh static
 ```
 
-Static 模式检查必需文件、shell 语法、角色 guardrail、安装渲染和备份行为、可恢复卸载行为，以及当前 Codex 是否能在不访问 live agent 的情况下加载每个渲染 profile。在 Codex CLI 0.147.0 上，load smoke test 使用 `codex --profile <role> debug prompt-input`；它是 configuration-load check，不是 live agent/model 测试，也不严格保证所有 unknown field 都会被拒绝。
+Static 模式检查必需文件、shell 语法、角色 guardrail、安装渲染和备份行为、可恢复卸载行为，以及当前 Codex 是否能在不访问 live agent 的情况下加载每个渲染 profile。在 Codex CLI 0.149.1 上，load smoke test 使用 `codex --profile <role> debug prompt-input`；它是 configuration-load check，不是 live agent/model 测试，也不严格保证所有 unknown field 都会被拒绝。
 
 卸载 profile：
 

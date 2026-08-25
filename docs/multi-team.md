@@ -101,6 +101,20 @@ Legacy single-team startup remains available:
 It produces the exact names `planner`, `coder`, and `reviewer`. Legacy mode is
 for one such team only; use a prefix before starting another team.
 
+One team may intentionally cover multiple disjoint project roots:
+
+```bash
+/path/to/herdr-codex-team/scripts/start.sh \
+  --team integration \
+  --cwd /path/to/primary-project \
+  --add-dir /path/to/second-project \
+  --add-dir /path/to/third-project
+```
+
+`--add-dir` is repeatable. The primary cwd remains the Herdr workspace/pane
+directory. Planner and Coder receive the ordered additional writable-root
+list; Reviewer remains `read-only` and receives no `--add-dir`.
+
 ## How Planner derives its route
 
 Planner does not receive a fixed downstream name from its Codex profile. At
@@ -138,10 +152,17 @@ or fall back to a native/internal subagent.
 Use the same prefix for diagnostics and tests:
 
 ```bash
-/path/to/herdr-codex-team/scripts/doctor.sh --team auth
+/path/to/herdr-codex-team/scripts/doctor.sh \
+  --team auth --cwd /path/to/backend
 /path/to/herdr-codex-team/scripts/test.sh --team auth ping
 /path/to/herdr-codex-team/scripts/test.sh --team auth communication
 ```
+
+For a multi-root team, repeat every startup `--add-dir` in the same order when
+running doctor. It validates the managed empty inherited-writable-roots
+override, role sandbox, and role-specific process argv: the exact list on
+Planner/Coder and none on Reviewer. That is launch evidence, not proof of file
+access or change attribution.
 
 Also inspect the runtime directly with the commands exposed by the installed
 Herdr version:
@@ -173,18 +194,21 @@ The harness combines a challenge-derived standalone token in the retained
 Coder terminal with lifecycle-sequence changes and unchanged peer transcripts.
 That is behavioral evidence, not a role-tagged or cryptographic audit record;
 the retained terminal alone cannot prove who authored a displayed token.
+It also does not prove filesystem isolation between either team's roots.
 
 ## Working-directory isolation
 
 Exact-name routing plus the fail-closed prompt contract reduces accidental
 cross-team messaging when followed; it is not an ACL or security boundary.
-`start.sh` now inspects other live names that match this project's role naming
-scheme and checks both its reported cwd and foreground cwd. Startup refuses a
-matching Codex role when either path resolves to the same physical Git
-worktree, contains the requested root, or sits inside it. An uninspectable
-matching role fails closed. A different linked worktree is allowed only when
-those cwd scopes do not overlap the requested root. This remains a non-atomic
-preflight: a race after the check and writers outside Herdr are not prevented.
+`start.sh` builds a complete effective scope for the requested team and every
+other inspectable Herdr Codex role: primary/foreground cwd plus all structured
+`--add-dir` values from the managed process argv. Git-backed directories map to
+their physical worktree root; non-Git directories map to their physical
+directory. Startup refuses any equal, ancestor, or descendant overlap between
+the two complete root sets. An uninspectable role, malformed add-dir argv, or
+older process without the managed empty writable-roots override fails closed.
+This remains a non-atomic preflight: a race after the check and writers outside
+Herdr are not prevented.
 
 Different repositories may run concurrently with separate `--cwd` values:
 
@@ -221,6 +245,12 @@ Each Coder then has an independent working tree, branch, and diff. This project
 documents that boundary but deliberately does not create branches, merge work,
 remove worktrees, or resolve conflicts automatically.
 
+Non-Git roots are accepted in both single-root and explicit multi-root mode.
+They have no Git baseline, complete diff, rollback point, or complete
+pre-existing-change attribution. Keep them disjoint across teams and record
+their Git evidence as `NOT AVAILABLE`; name isolation does not compensate for
+that loss.
+
 ## Common failures
 
 - **`agent_name_taken`:** another live agent already owns one of the exact
@@ -231,9 +261,16 @@ remove worktrees, or resolve conflicts automatically.
 - **`shared_git_worktree`:** another inspectable Herdr Codex role already uses
   the requested physical worktree. Reuse/close that team or choose a separate
   Git worktree; do not bypass the guard.
+- **`shared_workspace_scope`:** a requested root set containing non-Git scope
+  overlaps another managed team's primary or additional root. Reuse/close that
+  team or choose disjoint directories; do not bypass the guard.
+- **`*_unverified`:** startup could not prove another role's managed sandbox or
+  complete root set. Restart that older team through the current `start.sh`
+  before attempting concurrency.
 - **Two Coders changed one checkout despite preflight:** this is a
   filesystem/Git race or an external writer, not proof of routing isolation.
-  Stop both workflows and recover the diff manually.
+  Stop both workflows and recover every available Git diff and reported
+  non-Git touched-path inventory manually.
 - **Only the other team's Coder exists:** stop with
   `HERDR_COMMUNICATION_FAILED`. Another team's availability is never a repair
   for a missing same-team agent.

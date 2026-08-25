@@ -10,10 +10,10 @@ The compatibility contract is the required CLI surface. The development host was
 
 ```text
 herdr 0.8.2
-codex-cli 0.147.0
+codex-cli 0.149.1
 ```
 
-These versions are a known inspection baseline as of 2026-08-24, not exact pins. `doctor.sh` and `start.sh` also verify the commands they rely on so an incompatible newer binary fails early.
+These versions are a known inspection baseline as of 2026-08-25, not exact pins. `doctor.sh` and `start.sh` also verify the commands they rely on so an incompatible newer binary fails early.
 
 ## 1. Verify the base tools
 
@@ -22,9 +22,10 @@ codex --version
 codex --help
 herdr --version
 herdr --help
+git --version
 ```
 
-Codex must support `--profile` files at `$CODEX_HOME/<name>.config.toml`. Herdr must expose its `status`, `workspace`, `pane`, and `agent` command groups. Authenticate Codex using its normal supported login flow before starting the team. `doctor.sh` and `start.sh` perform the detailed command-surface checks; `install.sh` first confirms that both binaries exist and reports their versions.
+Codex must support `--profile` files at `$CODEX_HOME/<name>.config.toml`. Herdr must expose its `status`, `workspace`, `pane`, and `agent` command groups. Git CLI is required for conservative scope discovery even when the requested project directories are non-Git. Authenticate Codex using its normal supported login flow before starting the team. `doctor.sh` and `start.sh` perform the detailed command-surface checks; `install.sh` first confirms that Codex and Herdr exist and reports their versions.
 
 Startup, diagnostics, and live tests also require a real JSON parser. Install
 `jq`, or keep Python 3 available as the standard-library fallback. The full
@@ -128,7 +129,7 @@ expected missing team from a binary, profile, or integration problem.
 
 ## Start the team
 
-### 1. Enter the target repository through Herdr
+### 1. Enter the primary project directory through Herdr
 
 ```bash
 cd /absolute/path/to/your-project
@@ -150,21 +151,33 @@ For a prefixed team:
 ```bash
 /absolute/path/to/herdr-codex-team/scripts/start.sh \
   --team github \
-  --cwd "$PWD"
+  --cwd /absolute/path/to/primary-project \
+  --add-dir /absolute/path/to/second-project
 ```
 
 The interface is:
 
 ```text
-start.sh [--no-focus] [--team PREFIX] [--cwd PROJECT_DIR] [PROJECT_DIR]
+start.sh [--no-focus] [--team PREFIX] [--cwd PROJECT_DIR] [--add-dir DIR]... [PROJECT_DIR]
 ```
 
-`PROJECT_DIR` defaults to the current directory and must be inside a Git
-worktree. The positional form remains for backward compatibility; do not supply
-it together with `--cwd`. `--no-focus` asks startup to preserve the current
-focus. `--team github` produces `github-planner`, `github-coder`, and
+`PROJECT_DIR` defaults to the current directory and becomes the primary Herdr
+workspace and pane cwd. The positional form remains for backward compatibility;
+do not supply it together with `--cwd`. `--add-dir` is repeatable and gives
+Planner and Coder the requested additional writable roots. Reviewer remains
+`read-only` and is launched without `--add-dir`. Every supplied directory must
+exist, resolve safely, differ from `/`, and be physically disjoint from every
+other requested root. `--no-focus` asks startup to preserve the current focus.
+`--team github` produces `github-planner`, `github-coder`, and
 `github-reviewer`. Omitting it preserves legacy `planner`, `coder`, and
 `reviewer` names.
+
+A Git worktree is not a startup prerequisite. Existing non-Git directories are
+accepted in both single-root and multi-root mode. The Git CLI remains required
+for conservative worktree-scope discovery. For each non-Git root, `git status`,
+complete diffs, untracked-file enumeration, rollback, and pre-existing-change
+attribution are unavailable. The agents must label that Git evidence
+`NOT AVAILABLE` rather than infer it from direct file inspection.
 
 `TEAM_PREFIX=github` is an environment alternative. If the environment and
 `--team` both specify a value, they must agree. Startup validates the three
@@ -180,10 +193,11 @@ Run another unique prefix to create a concurrent team:
   --cwd /absolute/path/to/another-project
 ```
 
-Different repositories can safely use different `--cwd` paths. Two tasks in
-one repository should use separate branches and Git worktrees before startup;
-the helper does not create, merge, or remove them. See
-[Multi-team isolation](multi-team.md).
+Different repositories can safely use different root sets. Every primary and
+additional root of concurrent teams must be disjoint after physical path and
+Git-worktree resolution. Two tasks in one repository should use separate
+branches and Git worktrees before startup; the helper does not create, merge,
+or remove them. See [Multi-team isolation](multi-team.md).
 
 For one run, model environment variables add a Codex `--model` override for the corresponding role without rewriting installed files:
 
@@ -207,12 +221,14 @@ shows the three exact requested live names. For `--team github`, those are
 kind `codex` do not satisfy the naming requirement.
 
 This confirms process startup, not the whole security posture. Before sending
-work, run the team-aware doctor to verify installed sandbox/approval settings,
-profile load, integration, exact identity, readiness, lifecycle state,
-workspace/pane/cwd association, and foreground `--profile <role>` arguments. A
-working agent is reported as a warning; communication tests require all
-relevant targets to be settled at `idle` or `done` and bound to the matching
-generic role profile.
+work, run the team-aware doctor with the same `--cwd` and ordered `--add-dir`
+list. It verifies installed sandbox/approval settings, profile load,
+integration, exact identity, readiness, lifecycle state, workspace/pane/cwd
+association, the foreground `--profile <role>` binding, the managed empty
+`sandbox_workspace_write.writable_roots` override, the explicit sandbox, and
+the role-specific additional-root argv. A working agent is reported as a warning;
+communication tests require all relevant targets to be settled at `idle` or
+`done` and bound to the matching generic role profile.
 
 ### Verified manual primitives
 
@@ -223,6 +239,9 @@ For prefixed teams, the workspace label is intentionally kept short as
 identity. Legacy mode continues to use `codex-team:<project>`.
 
 ```bash
+# Planner and Coder use this writable root; Reviewer deliberately does not.
+EXTRA_ROOT=/absolute/path/to/second-project
+
 # Create an isolated workspace and read its root pane ID from the JSON response.
 herdr workspace create --cwd "$PWD" --label "codex-team:github" \
   --env "CODEX_HOME=${CODEX_HOME:-$HOME/.codex}" --no-focus
@@ -233,10 +252,16 @@ herdr pane split <root-pane-id> --direction right --ratio 0.5 --cwd "$PWD" \
 herdr pane split <right-pane-id> --direction down --ratio 0.5 --cwd "$PWD" \
   --env "CODEX_HOME=${CODEX_HOME:-$HOME/.codex}" --no-focus
 
-# Start a supported Codex process in an existing shell pane.
-herdr agent start github-planner --kind codex --pane <planner-pane-id> -- --profile planner
-herdr agent start github-coder --kind codex --pane <coder-pane-id> -- --profile coder
-herdr agent start github-reviewer --kind codex --pane <reviewer-pane-id> -- --profile reviewer
+# Start supported Codex processes with an exact managed root set.
+herdr agent start github-planner --kind codex --pane <planner-pane-id> -- \
+  --profile planner -c 'sandbox_workspace_write.writable_roots=[]' \
+  --sandbox workspace-write --add-dir "$EXTRA_ROOT"
+herdr agent start github-coder --kind codex --pane <coder-pane-id> -- \
+  --profile coder -c 'sandbox_workspace_write.writable_roots=[]' \
+  --sandbox workspace-write --add-dir "$EXTRA_ROOT"
+herdr agent start github-reviewer --kind codex --pane <reviewer-pane-id> -- \
+  --profile reviewer -c 'sandbox_workspace_write.writable_roots=[]' \
+  --sandbox read-only
 ```
 
 `agent start` requires the target pane to be at an interactive shell prompt. It does not create the pane. Agent-native arguments belong after `--`.
@@ -258,16 +283,25 @@ JSON response or `herdr pane list`.
 The interface is:
 
 ```text
-doctor.sh [--team PREFIX] [--cwd PROJECT_DIR]
+doctor.sh [--team PREFIX] [--cwd PROJECT_DIR] [--add-dir DIR]...
 ```
 
 ```bash
 /absolute/path/to/herdr-codex-team/scripts/doctor.sh \
   --team github \
-  --cwd "$PWD"
+  --cwd /absolute/path/to/primary-project \
+  --add-dir /absolute/path/to/second-project
 ```
 
-Now binary, on-disk profile, foreground profile binding, runtime, name, and state checks should all have enough live data to evaluate. If the platform cannot expose foreground process arguments, diagnostics fail closed instead of treating a renamed stale session as a valid role.
+Pass the same additional roots in the same order used by `start.sh`;
+`--add-dir` requires `--cwd` in diagnostics. Doctor validates role-specific
+argv: Planner and Coder must carry the exact ordered list, while Reviewer must
+carry no `--add-dir`. Binary, on-disk profile, foreground
+profile/sandbox/root binding, runtime, name, and state checks should then have
+enough live data to evaluate. This proves launch argv, not successful reads,
+writes, or Git history. If the platform cannot expose foreground process
+arguments, diagnostics fail closed instead of treating a renamed stale session
+as a valid role.
 
 ### 4. Establish communication evidence
 
@@ -282,7 +316,10 @@ test.sh [--team PREFIX] [--against-team PREFIX] static|ping|communication|full|p
 /absolute/path/to/herdr-codex-team/scripts/test.sh --team github communication
 ```
 
-Invoke these while the shell remains in the same Git project passed to `start.sh`. Watch the live panes during the test. A Planner-generated claim that Coder responded is not enough if the Herdr Coder pane never receives input or changes lifecycle state.
+`ping` and `communication` do not require a Git root; they provide bounded
+transport evidence only. Watch the live panes during the test. A
+Planner-generated claim that Coder responded is not enough if the Herdr Coder
+pane never receives input or changes lifecycle state.
 
 For the `full` and `policy` tests, the current directory is also the default
 host for their nested disposable fixtures:
@@ -293,6 +330,12 @@ host for their nested disposable fixtures:
 ```
 
 If the shell must be elsewhere, set `HERDR_TEST_PROJECT_DIR=/absolute/path/to/the-project-used-by-start.sh`. The script validates that the entire host Git worktree has a committed `HEAD` and is clean before it creates the nested fixture; use a disposable worktree rather than hiding or stashing changes merely to satisfy the test.
+
+When the primary `--cwd` is non-Git, it cannot be this host: report `full` and
+`policy` as `NOT RUN` for that team. If a Git-backed primary is combined with a
+non-Git additional root, a passing fixture under the primary does not establish
+the non-Git root's baseline, complete change scope, rollback, or writer
+attribution.
 
 When two prefixed teams are live and settled, test cross-team isolation from
 both directions:
@@ -306,7 +349,8 @@ both directions:
 
 `--against-team` is required only for `isolation`. If two real teams are not
 available, report this check as `NOT RUN`; static name parsing is not live
-routing evidence.
+routing evidence. Isolation checks named-agent transcripts and lifecycle
+sequences; it does not establish filesystem non-interference across roots.
 
 ## Updating a profile
 
@@ -318,16 +362,27 @@ policy digest.
 For reasoning, sandbox, approval, or role-instruction changes, edit the
 matching source under `profiles/` or `prompts/`, run `test.sh static`, then run
 `install.sh`. `doctor.sh` and `start.sh` reject direct installed-file drift in
-those managed fields. Exit and restart the affected Codex session after either
-kind of persistent change:
+those managed fields. After either kind of persistent change, preserve the
+task context and project changes, close only the requested team's three old
+sessions, and recreate that team with the current `start.sh` and its original
+root arguments:
 
 ```bash
-codex --profile planner
+/path/to/herdr-codex-team/scripts/start.sh \
+  --team github \
+  --cwd /absolute/path/to/primary-project \
+  --add-dir /absolute/path/to/second-project
+/path/to/herdr-codex-team/scripts/doctor.sh \
+  --team github \
+  --cwd /absolute/path/to/primary-project \
+  --add-dir /absolute/path/to/second-project
 ```
 
-An already-running session does not automatically reload profile changes.
-Re-running `install.sh` replaces all three installed role files after backing
-them up.
+For legacy mode, omit `--team` from both commands. Plain
+`codex --profile <role>` does not reproduce the managed sandbox/root argv and
+will fail the managed-process checks. An already-running session does not
+automatically reload profile changes. Re-running `install.sh` replaces all
+three installed role files after backing them up.
 
 ## Static verification and uninstall
 
@@ -336,7 +391,7 @@ cd /path/to/herdr-codex-team
 ./scripts/test.sh static
 ```
 
-The static mode checks required files, shell syntax, role guardrails, install rendering and backup behavior, recoverable uninstall behavior, and whether current Codex can load every rendered profile without contacting live agents. On Codex CLI 0.147.0 the load smoke test uses `codex --profile <role> debug prompt-input`; it is a configuration-load check, not a live agent/model test or a strict guarantee that every unknown field would be rejected.
+The static mode checks required files, shell syntax, role guardrails, install rendering and backup behavior, recoverable uninstall behavior, and whether current Codex can load every rendered profile without contacting live agents. On Codex CLI 0.149.1 the load smoke test uses `codex --profile <role> debug prompt-input`; it is a configuration-load check, not a live agent/model test or a strict guarantee that every unknown field would be rejected.
 
 To uninstall the profiles:
 

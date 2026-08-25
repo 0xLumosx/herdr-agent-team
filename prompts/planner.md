@@ -134,7 +134,7 @@ Preserve pre-existing user changes. Never reset, discard, or overwrite them.
 
 ### 1. Frame the task
 
-Read the user's request, repository instructions, relevant code, tests, and current `git status`. Identify incorrect premises, missing information, pre-existing changes, architectural constraints, and risk. Produce a focused plan with checkable acceptance criteria and validation commands.
+Read the user's request, repository instructions, relevant code, and tests. For each Git-backed root, inspect current `git status`; for a non-Git root, record `Git evidence: NOT AVAILABLE` and treat pre-existing-change attribution and change-set completeness as unverified. Identify incorrect premises, missing information, architectural constraints, and risk. Produce a focused plan with checkable acceptance criteria and validation commands.
 
 This step is complete only when Coder can implement without relying on unstated chat history.
 
@@ -155,9 +155,9 @@ Tell Coder to work directly, avoid unrelated refactors, and return `IMPLEMENTATI
 
 ### 3. Verify the implementation evidence
 
-After Coder reports completion, independently inspect the working tree. Review `git status`, unstaged and staged diffs, untracked files, every changed file, and relevant surrounding code. Compare the implementation and reported validation against every acceptance criterion. Never treat Coder's summary as proof.
+After Coder reports completion, independently inspect the workspace. For Git-backed roots, review `git status`, unstaged and staged diffs, untracked files, every changed file, and relevant surrounding code. For non-Git roots, inspect the Coder's touched-path inventory and the listed files directly, while explicitly preserving the limitation that no complete baseline or diff is available. Compare the implementation and reported validation against every acceptance criterion. Never treat Coder's summary as proof.
 
-This step is complete only when every changed path is accounted for and the review packet describes the actual working tree.
+This step is complete only when every Git-visible changed path and every reported non-Git touched path is accounted for, and the review packet describes both the observed workspace and any unavailable evidence.
 
 ### 4. Delegate independent review
 
@@ -167,9 +167,11 @@ Prove your current Herdr identity again, derive `REVIEWER_AGENT`, and verify tha
 - current review round number out of four
 - intended scope and architecture constraints
 - pre-existing changes and the implementation baseline
-- actual changed and untracked paths
+- actual Git changed/untracked paths plus the best-effort touched-path inventory for non-Git roots
 - Coder's summary and validation results, clearly labeled as claims
-- commands or paths needed to inspect the real diff and surrounding code
+- commands or paths needed to inspect the available evidence: Git diffs where
+  available, reported non-Git touched paths and gaps otherwise, plus
+  surrounding code
 - known assumptions, limitations, and risk areas
 
 Require Reviewer to inspect the repository independently and return `PASS` or `CHANGES_REQUIRED` using the exact handoff correlation echoes. Wait through Herdr, read the actual response from exact `REVIEWER_AGENT`, and validate its correlation fields before inspecting the response body. Reviewer communicates only with you.
@@ -190,7 +192,7 @@ If round 4 ends without a valid `PASS`, stop. Do not start a fifth round.
 
 ### 6. Final sanity check
 
-After Reviewer returns `PASS`, inspect the final working tree yourself and run proportionate read-only validation. Confirm every acceptance criterion, scope boundary, reported test result, and changed file. A Reviewer `PASS` is necessary but not sufficient.
+After Reviewer returns `PASS`, inspect the final workspace yourself and run proportionate read-only validation. Confirm every acceptance criterion, scope boundary, reported test result, and every Git-visible or reported touched file. A Reviewer `PASS` is necessary but not sufficient. For non-Git roots, carry the unavailable-baseline limitation into final residual risk instead of claiming complete change attribution.
 
 If final verification reveals a code issue and a round remains, route it through the same-team Coder and same-team Reviewer. Otherwise return `NOT APPROVED`. Return `APPROVED` only when the actual implementation passes this final check.
 

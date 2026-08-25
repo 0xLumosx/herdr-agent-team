@@ -41,7 +41,7 @@ Codex profile: reviewer       Herdr 实时名称: auth-reviewer
 - 编排者在 live agent 不可用时，悄悄改用 internal subagent；
 - 一个 Team 的 Planner 把任务路由给另一个 Team 的 Coder 或 Reviewer；
 - 多个 Agent 修改同一个工作树，导致作者归属或审查证据不可靠；
-- Reviewer 没有独立读取真实 diff 和验证证据，却报告成功。
+- Reviewer 没有独立读取可用的 Git/non-Git 变更证据和验证证据，却报告成功。
 
 Herdr 提供可见 runtime、唯一实时名称和通信；Codex CLI 提供三个角色专属 session；本仓库提供可复用 profile、自包含 prompt、启动辅助脚本、诊断和路由测试。
 
@@ -78,12 +78,12 @@ Planner profile 使用 `workspace-write`，因为只读 Planner 可能无法访�
 
 | 组件 | 所需能力 |
 | --- | --- |
-| Codex CLI | `$CODEX_HOME/<name>.config.toml` 独立 profile 文件、`--profile`、`workspace-write`、`read-only` 和 `approval_policy = "never"` |
+| Codex CLI | `$CODEX_HOME/<name>.config.toml` 独立 profile 文件、`--profile`、可重复的 `--add-dir`、`workspace-write`、`read-only` 和 `approval_policy = "never"` |
 | Herdr | 状态、workspace/pane 检查和创建、具名 agent 的 start/list/get/prompt/wait，以及合法且唯一的实时名称 |
 | Shell | macOS 或常见 Linux 发行版上的 Bash |
-| Git | diff 检查和完整工作流测试所必需 |
+| Git | CLI 用于保守识别 worktree scope；只有 diff-backed 证据和 `full`/`policy` live test 要求项目本身位于 Git worktree |
 
-实现于 2026-08-24 在 **Herdr 0.8.2** 和 **Codex CLI 0.147.0** 上完成检查。这只是本地验证基线，不是精确版本锁定。脚本会探测所需能力；若缺失则失败并给出修复提示。
+实现于 2026-08-25 在 **Herdr 0.8.2** 和 **Codex CLI 0.149.1** 上完成检查。这只是本地验证基线，不是精确版本锁定。脚本会探测所需能力；若缺失则失败并给出修复提示。
 
 你必须已经能够完成 Codex 身份验证并启动 Herdr。凡是读取 Herdr JSON 的脚本都需要真实解析器：优先使用 `jq`；未安装 `jq` 时，使用 Python 3 标准库作为 fallback。即使已安装 `jq`，隔离式完整循环 demo 仍明确需要 Python 3。
 
@@ -102,7 +102,8 @@ cd /path/to/herdr-codex-team
 ```bash
 /path/to/herdr-codex-team/scripts/start.sh \
   --team github \
-  --cwd /absolute/path/to/project
+  --cwd /absolute/path/to/primary-project \
+  --add-dir /absolute/path/to/second-project
 ```
 
 这会创建以下 Herdr 实时名称，同时选择通用 profile：
@@ -121,21 +122,28 @@ github-reviewer   → codex --profile reviewer
   --cwd /absolute/path/to/another-project
 ```
 
-显式检查每个 Team：
+`--add-dir` 可重复使用。主 `--cwd` 仍是 Herdr workspace 和 pane 的工作目录。Planner 和 Coder 在 `workspace-write` 下把每个额外目录作为可写 root，但 Planner 的角色策略仍禁止其修改项目文件。Reviewer 保持 `read-only`，启动时有意不传 `--add-dir`；它仍可只读检查请求的 root，但不会获得额外可写 root。
+
+显式检查每个 Team，并重复 startup 时使用的同一组 root 参数：
 
 ```bash
-/path/to/herdr-codex-team/scripts/doctor.sh --team github
+/path/to/herdr-codex-team/scripts/doctor.sh \
+  --team github \
+  --cwd /absolute/path/to/primary-project \
+  --add-dir /absolute/path/to/second-project
 /path/to/herdr-codex-team/scripts/test.sh --team github ping
 /path/to/herdr-codex-team/scripts/test.sh --team github communication
 
-/path/to/herdr-codex-team/scripts/doctor.sh --team auth
+/path/to/herdr-codex-team/scripts/doctor.sh \
+  --team auth \
+  --cwd /absolute/path/to/another-project
 ```
 
 `TEAM_PREFIX=github` 是 `--team github` 的环境变量替代方式。为兼容 legacy 模式，省略 Team 前缀会创建名称严格为 `planner`、`coder` 和 `reviewer` 的一个 Team：
 
 ```bash
 /path/to/herdr-codex-team/scripts/start.sh --cwd /absolute/path/to/project
-/path/to/herdr-codex-team/scripts/doctor.sh
+/path/to/herdr-codex-team/scripts/doctor.sh --cwd /absolute/path/to/project
 ```
 
 `start.sh` 仍保留 legacy 的位置参数项目目录形式。若启动后不应改变当前聚焦 pane，请使用 `--no-focus`。完整命令约定见[安装](docs/zh-CN/installation.md)。
@@ -154,10 +162,11 @@ github-reviewer   → codex --profile reviewer
 
 ## 并发 Team 的工作树
 
-精确名称路由配合 fail-closed prompt contract，在各 Agent 遵守约定时可降低误发跨 Team 消息的风险。创建 workspace 之前，`start.sh` 会检查另一名可核实 Herdr Codex 角色 Agent 的 `cwd` 与 `foreground_cwd`：若它们解析到同一物理 Git worktree，或路径包含目标 root／位于目标 root 内，则拒绝启动。只有 cwd scope 不发生这种重叠的独立 worktree 才允许并存。这只是启动前 guard，不是原子 reservation 或 ACL；检查后的竞态与 Herdr 外部 writer 仍然可能存在。
+精确名称路由配合 fail-closed prompt contract，在各 Agent 遵守约定时可降低误发跨 Team 消息的风险。创建 workspace 之前，`start.sh` 会把请求的完整 root set（主 `--cwd` 加所有 `--add-dir`）与其他可核实 Herdr Codex 角色暴露的受管主 root 和额外 root 比较。Git-backed 路径按物理 worktree root 比较，non-Git 路径按物理目录 root 比较；任何相同、祖先或后代 scope 重叠都会 fail closed。这只是启动前 guard，不是原子 reservation 或 ACL；检查后的竞态与 Herdr 外部 writer 仍然可能存在。
 
 - 不同仓库可使用不同 `--cwd` 并发运行。
 - 同一仓库中的并发任务应为每个 Team 使用独立 Git worktree 和 branch。
+- 并发 Team 的全部主 root 和额外 root 在物理路径与 Git worktree 解析后都必须互不重叠。
 
 ```bash
 cd /projects/myapp
@@ -189,9 +198,9 @@ Team 不会导致按前缀复制 profile。即使有二十个 Team，仍然只�
 
 | 角色 | 权限 | 必须做 | 禁止做 |
 | --- | --- | --- | --- |
-| Planner | 编排自己的 Team 并做最终决策 | 推导实时身份、验证精确的同 Team 目标、定义验收标准、检查真实 diff、分诊审查意见 | 实现源码、访问另一个 Team、猜测目标、用 native/internal subagent 代替 Herdr agent |
+| Planner | 编排自己的 Team 并做最终决策 | 推导实时身份、验证精确的同 Team 目标、定义验收标准、检查可用变更证据及其限制、分诊审查意见 | 实现源码、访问另一个 Team、猜测目标、用 native/internal subagent 代替 Herdr agent |
 | Coder | 所属 Team 唯一的实现工程师 | 做聚焦变更、运行相关验证、报告事实和阻塞 | 审批自己的工作、联系 Reviewer、编排 Agent |
-| Reviewer | 独立验证 | 检查需求、diff、相关代码和测试；报告具有明确后果的问题 | 修改文件、实现修复、指挥 Coder、编排 Agent |
+| Reviewer | 独立验证 | 检查需求、可用的 Git/non-Git 变更证据、相关代码和测试；报告具有明确后果的问题 | 修改文件、实现修复、指挥 Coder、编排 Agent |
 
 Reviewer 只返回 `PASS` 或 `CHANGES_REQUIRED`。阻塞性 finding 必须说明 severity、location、problem、consequence 和 recommended correction。`LOW` 默认不阻塞。
 
@@ -221,9 +230,11 @@ Reviewer 只返回 `PASS` 或 `CHANGES_REQUIRED`。阻塞性 finding 必须说�
 
 Isolation harness 把 Coder 保留终端中的 challenge-derived standalone token 与 lifecycle sequence 变化作为行为证据。Herdr 的普通 retained terminal 不是带角色标签的审计日志，因此它不能以密码学方式证明 token 的作者；对于有后果的运行，仍应观察具名 pane 并检查任务 artifact。
 
-运行 live 测试时，请观察精确具名的 pane。Planner 仅凭文本宣称目标已处理，并不能证明预期目标实际发生了状态变化。请在传给 `start.sh` 的同一 Git worktree 内使用 `test.sh` 的绝对路径运行，或显式设置 `HERDR_TEST_PROJECT_DIR`。
+运行 live 测试时，请观察精确具名的 pane。Planner 仅凭文本宣称目标已处理，并不能证明预期目标实际发生了状态变化。`ping` 和 `communication` 只建立有界的传输行为证据，`isolation` 只建立有界的 transcript 与 lifecycle 非接触证据；它们都不证明文件系统变更或 Git 隔离。
 
 `full` 与 `policy` 测试要求使用 clean、committed、可丢弃的 host worktree，并在其中创建嵌套 fixture。它们检查路由和生成的 Git artifact，但不提供操作系统级写入者归属证明。由于 Planner 使用 `workspace-write` sandbox，“Coder 是唯一 writer”对 Planner 仍属于 prompt/workflow 策略。Policy 模式还检查 peer transcript、lifecycle sequence 与可见 Herdr agent 名称不变，但无法证明隐藏 native worker 从未存在。
+
+Startup 的 single-root 与 multi-root 形式都允许使用现有 non-Git 目录，但这些 root 没有 Git baseline、完整 diff、untracked-file inventory、rollback point，也无法可靠区分预存变更与本次任务变更。应将每个这类 root 的 Git 证据记为 `NOT AVAILABLE`。如果主 `--cwd` 为 non-Git，`full` 和 `policy` 无法把它用作所需 host，必须记为 `NOT RUN`；不得把独立 Git-backed fixture 的结果外推到 non-Git root。`static`、`ping`、`communication` 以及有界的路由 `isolation` 模式在满足各自前置条件时仍可用。
 
 本仓库的静态测试套件不代表 live 多 Team 路由已经通过。如果没有两个合适的 Team，请将 isolation 测试报告为 `NOT RUN`，而不是 `PASS`。单方向结果不是双向隔离结果；必须交换 `--team` 与 `--against-team` 后再次运行。本次更新所在环境没有运行 live isolation。
 
@@ -252,9 +263,9 @@ sandbox_mode = "workspace-write"
 approval_policy = "never"
 ```
 
-这是默认建议，不是路由依赖。工作流与模型无关。你可以通过 `PLANNER_MODEL`、`CODER_MODEL` 和 `REVIEWER_MODEL` 在安装时或每次启动时选择当前 Codex account 与 CLI 可用的模型，也可以只编辑已安装角色文件顶层的 `model = ...` 赋值。修改模型后必须重启对应角色。
+这是默认建议，不是路由依赖。工作流与模型无关。你可以通过 `PLANNER_MODEL`、`CODER_MODEL` 和 `REVIEWER_MODEL` 在安装时或每次启动时选择当前 Codex account 与 CLI 可用的模型，也可以只编辑已安装角色文件顶层的 `model = ...` 赋值。修改模型后，必须通过当前 `start.sh` 使用原 root 参数重建受影响 Team。
 
-Planner 和 Reviewer 默认使用 `xhigh` reasoning；Coder 使用 `high`。Reasoning、sandbox、approval 和角色指令都是受管策略；必须在仓库 `profiles/` 或 `prompts/` 下的对应模板中修改，运行 `install.sh`，然后重启受影响角色。只能使用所选模型支持的值。详见[配置](docs/zh-CN/configuration.md)和[官方 Codex 配置参考](https://developers.openai.com/codex/config-reference/)。
+Planner 和 Reviewer 默认使用 `xhigh` reasoning；Coder 使用 `high`。Reasoning、sandbox、approval 和角色指令都是受管策略；必须在仓库 `profiles/` 或 `prompts/` 下的对应模板中修改，运行 `install.sh`，然后通过当前 `start.sh` 使用原 root 参数重建受影响 Team。只能使用所选模型支持的值。详见[配置](docs/zh-CN/configuration.md)和[官方 Codex 配置参考](https://developers.openai.com/codex/config-reference/)。
 
 ## 审批与 sandbox 设置
 
@@ -294,11 +305,16 @@ Coder 实现或修复 → Reviewer 审查 → Planner 分诊
 从精确 Team 开始：
 
 ```bash
-./scripts/doctor.sh --team github
+./scripts/doctor.sh \
+  --team github \
+  --cwd /absolute/path/to/primary-project \
+  --add-dir /absolute/path/to/second-project
 herdr agent list
 ```
 
-如果 Herdr 报告 `agent_name_taken`，不要覆盖，也不要继续启动一个不完整 Team；请选择唯一 Team 前缀。如果 Planner 访问了错误 Coder，请检查它推导出的 `SELF_AGENT`、`TEAM_PREFIX`、`CODER_AGENT` 和 `REVIEWER_AGENT`。如果两个 Coder 修改同一 checkout，请修正 `--cwd`/Git worktree 冲突；这不是路由问题。
+必须复用 startup 的精确 `--cwd` 和有序 `--add-dir` 列表；省略它们不能验证 multi-root Team，并可能正确报告 argv mismatch。
+
+如果 Herdr 报告 `agent_name_taken`，不要覆盖，也不要继续启动一个不完整 Team；请选择唯一 Team 前缀。如果 Planner 访问了错误 Coder，请检查它推导出的 `SELF_AGENT`、`TEAM_PREFIX`、`CODER_AGENT` 和 `REVIEWER_AGENT`。如果两个 Coder 修改了相互重叠的主 root 或额外 root，请修正完整 root-set collision；不同目录应互不重叠，同一仓库内并发任务应使用独立 Git worktree。这不是路由问题。
 
 最重要的症状仍是：Planner 声称 Coder 正在工作，但预期同 Team Coder pane 处于 idle。应将其视为通信失败，而不是进展。详见[故障排查](docs/zh-CN/troubleshooting.md)。
 
@@ -306,7 +322,7 @@ herdr agent list
 
 此工作流为 Planner 和 Coder 提供可写 sandbox，并禁用交互式审批暂停。Prompt 和前缀可减少歧义，但无法形成抵御 compromised model、恶意仓库指令、不安全 hook、共享文件系统或 sandbox 允许的破坏性命令的硬边界。
 
-请使用 clean branch 或 disposable worktree，不要在仓库和 prompt 中放置 secret，审查 hook，并在 merge 前检查每一个 diff。在敏感代码上使用 Team 前，请阅读[安全](docs/zh-CN/security.md)。
+请尽可能使用 clean branch 或 disposable worktree，不要在仓库和 prompt 中放置 secret，审查 hook，并在 merge 前检查全部可用 Git diff；对 non-Git root 则直接检查所报 touched path 并保留证据缺口。在敏感代码上使用 Team 前，请阅读[安全](docs/zh-CN/security.md)。
 
 ## 卸载
 

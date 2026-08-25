@@ -4,7 +4,7 @@
 
 ## 安全姿态
 
-Herdr Codex Team 协调能够执行命令的 Agent，其中两个角色可以在仓库内写入。它通过可见路由、最小角色权限、有界审查和 Git 证据减少歧义，但不会把语言模型 prompt 变成 hardened security boundary。
+Herdr Codex Team 协调能够执行命令的 Agent，其中两个角色可以在一个或多个项目 root 内写入。它通过可见路由、最小角色权限、有界审查和可用时的 Git 证据减少歧义，但不会把语言模型 prompt 变成 hardened security boundary。
 
 使用本项目前，应理解每一层的实际权限：
 
@@ -14,7 +14,7 @@ Team prefix      Planner 可以访问哪些精确同 Team 名称
 Codex sandbox    tool operation 可以访问什么
 Approval policy  Codex 是否在普通审批点暂停
 Role prompt      模型被要求采取什么行为
-Git review       实际发生了哪些变更
+变更证据         Git diff，或 non-Git touched path 加明确证据缺口
 ```
 
 ## `approval_policy = "never"`
@@ -39,7 +39,9 @@ approval_policy = "never"
 | Coder | `workspace-write` | 实现需要仓库写入 | 可在允许 root 内做破坏性或无关变更 |
 | Reviewer | `read-only` | 独立检查不需要写入 | 仍可能在输出中暴露敏感内容，或调用允许的只读 service |
 
-“只有 Coder 写源码”对 Reviewer 完全由 sandbox 强制，但对 Planner 只由策略强制。模型可能违反 prompt。Planner 的最终 diff 检查有助于事后发现违规，却不能阻止违规。
+“只有 Coder 写源码”对 Reviewer 完全由 sandbox 强制，但对 Planner 只由策略强制。模型可能违反 prompt。Planner 最终检查可用的 Git/non-Git 变更证据有助于事后发现违规，却不能阻止违规，而且 non-Git 证据并不完整。
+
+每个可重复 `--add-dir` 都会扩大 Planner 和 Coder 的受管可写 path set。它们在 `workspace-write` 下技术上可写主 cwd 与每个额外 root；Planner 的禁止编辑规则仍属 prompt 策略。Reviewer 使用显式 `--sandbox read-only` 启动且不携带 `--add-dir`，因此可只读检查请求的 root，但不会获得额外可写 root。Startup 先传入 `sandbox_workspace_write.writable_roots=[]` 中和从用户或 profile 配置继承的额外 writable root，再只向 Planner 和 Coder 添加请求的 root。使用同一 `--cwd` 和有序 `--add-dir` 列表运行时，`doctor.sh` 会验证角色专属 launch argv，但 argv 证据不能证明某次具体读写已发生。
 
 `danger-full-access` 不是项目默认值。不要用它绕过 `Operation not permitted`、missing hook、错误 `CODEX_HOME` 或不兼容 CLI。应诊断具体边界。
 
@@ -47,11 +49,12 @@ approval_policy = "never"
 
 - **来自仓库的 prompt injection：**源码、issue、generated log 或 test 可能包含旨在重定向 Agent 的指令。
 - **允许 root 内的不安全命令：**即使没有完整 host 权限，Coder 和 Planner 仍可删除或破坏可写文件。
+- **Non-Git 证据降级：**non-Git root 没有权威 baseline、完整 diff、untracked-file inventory、rollback point，也无法可靠区分预存变更与任务变更。最大努力的 touched-path 列表不是替代品。
 - **不可信 hook 或 integration：**hook 在语义角色契约之外执行，并可能随软件更新而变化。
 - **Secret disclosure：**Agent 可以读取可访问 credential、`.env` 文件、proprietary source 或 log，并在 terminal/report 中复述。
-- **虚假 report：**Agent 可以声称测试通过或另一个 Agent 已回复；必须根据 process state、command output 和 Git 验证。
+- **虚假 report：**Agent 可以声称测试通过或另一个 Agent 已回复；必须根据 process state、command output、可用 Git 证据，以及对所报 non-Git touched path 的直接检查进行验证。
 - **Profile source 真实性：**SHA-256 marker 只能检测已安装 prompt 或 policy 是否与当前 checkout 发生漂移，它不是签名。能同时修改 checkout 和已安装文件的 writer 也能同时改变两者，因此 marker 不能建立可信 provenance，也无法抵抗恶意本地 writer。
-- **共享工作树竞态：**启动会拒绝同一物理 worktree 中已可见、可核实的 Herdr Codex 角色，但该 preflight 不是原子锁。Human、外部 tool、检查后竞态或不符合受识别命名规则的 Agent 仍会使 attribution 和 review 不可靠。
+- **共享 scope 竞态：**startup 会比较每个 Team 的完整受管 root set。Git-backed 路径使用物理 worktree root，non-Git 路径使用物理目录 root；相同、祖先或后代 scope 重叠都会 fail closed。该 preflight 不是原子锁。Human、外部 tool、检查后竞态或不符合受识别命名规则的 Agent 仍会使 attribution 和 review 不可靠。
 - **跨 Team prompt failure：**前缀会创建明确路由，但 compromised 或错误配置的 Planner 仍可尝试访问另一个 live Team；fail-closed prompt 和 isolation test 只能降低风险，不能以 cryptographic 方式消除风险。
 - **依赖和测试副作用：**仓库命令可能访问网络、修改外部 service，或在其可用权限内运行不可信 build step。
 
@@ -63,12 +66,12 @@ approval_policy = "never"
 
 启动前：
 
-1. 使用 clean branch 或 disposable worktree；为每个并发 Team 提供独立 worktree 和 `--cwd`；
+1. 尽可能使用 clean branch 或 disposable worktree；为每个并发 Team 提供互不重叠的完整 root set，并为同一仓库中的并发任务使用独立 worktree 和 `--cwd`；
 2. commit 或安全保留 baseline；
 3. 移除任务不需要的 secret；
 4. 检查仓库级 Agent instruction 和脚本；
 5. 检查 Codex profile override 和 Herdr hook；
-6. 运行 Team-aware `doctor.sh`，再运行匹配的 communication test；
+6. 使用同一 `--cwd` 和所有 `--add-dir` 运行 Team-aware `doctor.sh`，再运行匹配的 communication test；
 7. 确认 Reviewer 仍为 `read-only`。
 
 工作期间：
@@ -80,7 +83,7 @@ approval_policy = "never"
 - 防止 Coder 和 Reviewer 绕过 Planner；
 - 按实际风险处理 test output 和 external-service change。
 
-Merge 前：
+Merge Git-backed 变更前：
 
 ```bash
 git status --short
@@ -89,6 +92,8 @@ git diff --staged
 ```
 
 检查每个 changed file，在可信 shell 中重新运行 critical validation，并检查 credential 或 generated artifact。`APPROVED` 是 Agent 决策，不能替代仓库 ownership control 或组织要求的 human review。
+
+对每个 non-Git root，记录 `Git evidence: NOT AVAILABLE`，直接检查所报 touched path，并保留“变更集完整性和预存归属未被证明”这一限制。如果主 cwd 为 non-Git，把依赖 Git host 的 `full` 和 `policy` 记为 `NOT RUN`。`ping`、`communication` 和 `isolation` 仍只是有界的路由证据，无法补回缺失的文件系统历史。
 
 ## Hook 与信任
 
@@ -118,7 +123,7 @@ git diff --staged
 
 如果策略要求硬保证 Planner 无法写源码，当前 Planner 设计不满足要求：其 `workspace-write` sandbox 是刻意接受的 Herdr compatibility compromise。请使用只暴露 Herdr communication endpoint 和只读仓库 view 的外部隔离设计，否则不要在该仓库使用此工作流。
 
-Team 前缀不会改变这一边界，也不会隔离文件系统。两个名称隔离的 Team 共享同一 checkout 时仍会竞态。要在同一仓库并发执行任务，请在启动 Team 前创建独立 branch 和 Git worktree。本项目刻意不自动创建、merge、移除 worktree 或解决 conflict。
+Team 前缀不会改变这一边界，也不会隔离文件系统。两个名称隔离的 Team 只要主 root 或额外 root 重叠就仍会竞态。要在同一仓库并发执行任务，请在启动 Team 前创建独立 branch 和 Git worktree，并保持每个额外 root 也互不重叠。本项目刻意不自动创建、merge、移除 worktree 或解决 conflict。
 
 ## 报告漏洞
 
