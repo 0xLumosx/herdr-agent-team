@@ -8,7 +8,9 @@ TEAM_LIB="$SCRIPT_DIR/lib/team.sh"
 JSON_LIB="$SCRIPT_DIR/lib/json.sh"
 DIGEST_LIB="$SCRIPT_DIR/lib/digest.sh"
 SCOPE_LIB="$SCRIPT_DIR/lib/scope.sh"
-[[ -f "$TEAM_LIB" && -f "$JSON_LIB" && -f "$DIGEST_LIB" && -f "$SCOPE_LIB" ]] || {
+RUN_STATE_LIB="$SCRIPT_DIR/lib/run-state.sh"
+[[ -f "$TEAM_LIB" && -f "$JSON_LIB" && -f "$DIGEST_LIB" && -f "$SCOPE_LIB" && \
+   -f "$RUN_STATE_LIB" ]] || {
   printf '[FAIL] Missing script helper under %s/lib.\n' "$SCRIPT_DIR" >&2
   exit 1
 }
@@ -20,6 +22,8 @@ source "$JSON_LIB"
 source "$DIGEST_LIB"
 # shellcheck source=lib/scope.sh
 source "$SCOPE_LIB"
+# shellcheck source=lib/run-state.sh
+source "$RUN_STATE_LIB"
 CODEX_DIR=${CODEX_HOME:-"$HOME/.codex"}
 case "$CODEX_DIR" in
   /*) ;;
@@ -44,6 +48,10 @@ workspace_id=''
 START_TIMEOUT_MS=${HERDR_START_TIMEOUT_MS:-120000}
 startup_issues=0
 first_issue_role=''
+RUN_ID=''
+RUN_STARTED_AT=''
+RUN_STATE_ACTIVE=0
+RUN_STATE_FINAL_STATUS=''
 
 usage() {
   printf '%s\n' \
@@ -80,6 +88,26 @@ on_error() {
   if [[ -n "$workspace_id" ]]; then
     printf '       Partial workspace %s was left intact for diagnosis.\n' "$workspace_id" >&2
     printf '       Inspect it with: herdr workspace get %s\n' "$workspace_id" >&2
+  fi
+  exit "$status"
+}
+
+finish_start_run() {
+  local status=$?
+
+  trap - EXIT ERR
+  set +e
+  if [[ ${RUN_STATE_ACTIVE:-0} -eq 1 && \
+        "${RUN_STATE_FINAL_STATUS:-}" != ready ]]; then
+    if ! run_state_write_current partial; then
+      printf '[WARN] Could not persist the partial launch record at %s. Herdr remains the live authority.\n' \
+        "${RUN_STATE_FILE:-unknown}" >&2
+    fi
+  fi
+  if [[ ${RUN_STATE_LOCK_HELD:-0} -eq 1 ]] && ! run_state_release_start_lock; then
+    printf '[FAIL] Team processes were left intact, but the startup lock could not be released safely: %s\n' \
+      "${RUN_STATE_LOCK_DIR:-unknown}" >&2
+    [[ $status -ne 0 ]] || status=1
   fi
   exit "$status"
 }
@@ -310,6 +338,20 @@ if ! server_status=$(herdr status server 2>&1); then
   die 'Herdr server is not reachable. Start or attach Herdr with `herdr` first.'
 fi
 
+RUN_ID=$(run_state_new_id) || die 'Could not generate a launch run ID.'
+RUN_STARTED_AT=$(run_state_now) || die 'Could not timestamp the launch run.'
+run_state_configure "$CODEX_DIR" "$TEAM_MODE" "$TEAM_PREFIX_EFFECTIVE" || \
+  die 'Could not derive a safe user-local launch-state path.'
+run_state_validate_launch_strings \
+  "$CODEX_DIR" "$TEAM_MODE" "$TEAM_PREFIX_EFFECTIVE" "$TEAM_DISPLAY" \
+  "$PROJECT_DIR" ${ADD_DIRS[@]+"${ADD_DIRS[@]}"} || \
+  die 'Launch-state inputs must round-trip as valid UTF-8 before Herdr workspace creation.'
+run_state_prepare_storage || \
+  die "Could not prepare private launch-state storage under $RUN_STATE_BASE_DIR."
+run_state_acquire_start_lock "$RUN_ID" || \
+  die 'Another managed startup is active or its lock cannot be verified safely.'
+trap finish_start_run EXIT
+
 if ! agent_list_payload=$(herdr agent list 2>&1); then
   printf '%s\n' "$agent_list_payload" >&2
   die 'Could not verify live Herdr names before startup; refusing to assume names are free.'
@@ -493,7 +535,10 @@ create_payload=$(herdr workspace create \
 workspace_id=$(extract_object_string "$create_payload" workspace workspace_id)
 root_pane_id=$(extract_object_string "$create_payload" root_pane pane_id)
 [[ -n "$workspace_id" ]] || die "Could not parse workspace ID from Herdr response: $create_payload"
+RUN_STATE_ACTIVE=1
 [[ -n "$root_pane_id" ]] || die "Could not parse root pane ID from Herdr response: $create_payload"
+run_state_write_current starting || \
+  die "Workspace $workspace_id was created, but its launch record could not be written atomically at $RUN_STATE_FILE. Do not retry startup until the retained workspace is inspected."
 
 coder_split=$(herdr pane split "$root_pane_id" \
   --direction right --ratio 0.5 --cwd "$PROJECT_DIR" \
@@ -675,6 +720,10 @@ if [[ $startup_issues -gt 0 ]]; then
   exit 1
 fi
 
+run_state_write_current ready || \
+  die "All three agents are ready, but the final launch record could not be written atomically at $RUN_STATE_FILE. Do not rerun startup; inspect the live team directly."
+RUN_STATE_FINAL_STATUS=ready
+
 if [[ $NO_FOCUS -eq 0 ]]; then
   herdr workspace focus "$workspace_id" >/dev/null
   herdr agent focus "$PLANNER_AGENT" >/dev/null
@@ -691,5 +740,6 @@ printf 'Primary:   %s\n' "$PROJECT_DIR"
 for add_dir in ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}; do
   printf 'Add dir:   %s\n' "$add_dir"
 done
+printf 'Run state: %s (%s)\n' "$RUN_STATE_FILE" "$RUN_ID"
 printf '\nVerify with: '
 print_doctor_command

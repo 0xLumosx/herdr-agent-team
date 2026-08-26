@@ -7,7 +7,8 @@ PROJECT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 TEAM_LIB="$SCRIPT_DIR/lib/team.sh"
 JSON_LIB="$SCRIPT_DIR/lib/json.sh"
 SCOPE_LIB="$SCRIPT_DIR/lib/scope.sh"
-[[ -f "$TEAM_LIB" && -f "$JSON_LIB" && -f "$SCOPE_LIB" ]] || {
+RUN_STATE_LIB="$SCRIPT_DIR/lib/run-state.sh"
+[[ -f "$TEAM_LIB" && -f "$JSON_LIB" && -f "$SCOPE_LIB" && -f "$RUN_STATE_LIB" ]] || {
   printf '[FAIL] Missing script helper under %s/lib.\n' "$SCRIPT_DIR" >&2
   exit 1
 }
@@ -17,6 +18,8 @@ source "$TEAM_LIB"
 source "$JSON_LIB"
 # shellcheck source=lib/scope.sh
 source "$SCOPE_LIB"
+# shellcheck source=lib/run-state.sh
+source "$RUN_STATE_LIB"
 TEST_TIMEOUT_MS=${HERDR_TEST_TIMEOUT_MS:-120000}
 FULL_TIMEOUT_MS=${HERDR_FULL_TEST_TIMEOUT_MS:-1200000}
 READ_LINES=${HERDR_TEST_READ_LINES:-2000}
@@ -487,6 +490,24 @@ run_static() {
   local herdr_call_log
   local split_counter
   local parse_log
+  local startup_lock_log
+  local startup_lock_marker
+  local state_file
+  local state_doctor_log
+  local state_doctor_calls
+  local legacy_state_file
+  local prefixed_legacy_state_file
+  local unsafe_state_marker
+  local unsafe_state_log
+  local invalid_utf8_value
+  local partial_root_marker
+  local partial_root_log
+  local state_symlink_codex
+  local state_symlink_target
+  local state_line
+  local invalid_state_byte
+  local lock_host
+  local held_lock_token
 
   required='README.md
 README.zh-CN.md
@@ -504,10 +525,15 @@ scripts/doctor.sh
 scripts/start.sh
 scripts/test.sh
 scripts/uninstall.sh
+scripts/open.sh
+scripts/remote.sh
 scripts/lib/team.sh
 scripts/lib/json.sh
 scripts/lib/digest.sh
 scripts/lib/scope.sh
+scripts/lib/run-state.sh
+scripts/lib/remote-bootstrap.sh
+tests/remote-launcher.sh
 tests/prompts/01-coder-ping.md
 tests/prompts/02-reviewer-ping.md
 tests/prompts/03-planner-to-coder.md
@@ -525,7 +551,9 @@ docs/installation.md
 docs/workflow.md
 docs/configuration.md
 docs/troubleshooting.md
-docs/security.md'
+docs/security.md
+docs/launch-state.md
+docs/omx-comparison.md'
   required="$required
 docs/multi-team.md
 docs/zh-CN/architecture.md
@@ -535,6 +563,8 @@ docs/zh-CN/multi-team.md
 docs/zh-CN/security.md
 docs/zh-CN/troubleshooting.md
 docs/zh-CN/workflow.md
+docs/zh-CN/launch-state.md
+docs/zh-CN/omx-comparison.md
 examples/multi-team.md"
 
   while IFS= read -r path; do
@@ -548,6 +578,8 @@ examples/multi-team.md"
   bash -n "$JSON_LIB"
   bash -n "$SCRIPT_DIR/lib/digest.sh"
   bash -n "$SCOPE_LIB"
+  bash -n "$RUN_STATE_LIB"
+  "$PROJECT_ROOT/tests/remote-launcher.sh"
   printf '[OK] Shell syntax\n'
 
   grep -Eq '^sandbox_mode[[:space:]]*=[[:space:]]*"workspace-write"' "$PROJECT_ROOT/profiles/planner.config.toml" || \
@@ -1088,7 +1120,7 @@ case "${1-}:${2-}" in
     ;;
   agent:list)
     case ${MOCK_HERDR_MODE:-preflight-collision} in
-      race-collision|multi-root-success|missing-primary|wrong-primary)
+      race-collision|multi-root-success|missing-primary|wrong-primary|missing-root-pane)
         printf '%s\n' '{"result":{"type":"agent_list","agents":[]}}'
         ;;
       doctor-success)
@@ -1109,7 +1141,11 @@ case "${1-}:${2-}" in
     [[ ${3-} == --help ]] && exit 0
     [[ -n ${MOCK_HERDR_CALL_LOG:-} ]] && printf '%s\n' "$*" >>"$MOCK_HERDR_CALL_LOG"
     : >"$MOCK_WORKSPACE_MARKER"
-    printf '%s\n' '{"result":{"workspace":{"workspace_id":"mock-workspace"},"root_pane":{"pane_id":"mock-root"}}}'
+    if [[ ${MOCK_HERDR_MODE:-} == missing-root-pane ]]; then
+      printf '%s\n' '{"result":{"workspace":{"workspace_id":"mock-workspace"}}}'
+    else
+      printf '%s\n' '{"result":{"workspace":{"workspace_id":"mock-workspace"},"root_pane":{"pane_id":"mock-root"}}}'
+    fi
     ;;
   pane:split)
     [[ ${3-} == --help ]] && exit 0
@@ -1207,12 +1243,18 @@ case "${1-}:${2-}" in
         github-planner|github-coder|github-reviewer)
           printf '%s\n' "$*" >>"$MOCK_HERDR_CALL_LOG"
           role=${3#github-}
+          case "$role" in
+            planner) pane=${MOCK_PLANNER_PANE:-mock-planner-pane} ;;
+            coder) pane=${MOCK_CODER_PANE:-mock-coder-pane} ;;
+            reviewer) pane=${MOCK_REVIEWER_PANE:-mock-reviewer-pane} ;;
+          esac
+          workspace=${MOCK_WORKSPACE_ID:-mock-team-workspace}
           reported_cwd=${MOCK_AGENT_CWD:-$MOCK_PROJECT_ROOT}
           reported_foreground_cwd=${MOCK_FOREGROUND_CWD:-$MOCK_PROJECT_ROOT}
           ready_json=${MOCK_INTERACTIVE_READY_JSON:-true}
           launch_pending_json=${MOCK_LAUNCH_PENDING_JSON:-false}
-          printf '{"result":{"agent":{"name":"%s","agent":"codex","agent_status":"idle","interactive_ready":%s,"launch_pending":%s,"pane_id":"mock-%s-pane","workspace_id":"mock-team-workspace","cwd":"%s","foreground_cwd":"%s"}}}\n' \
-            "$3" "$ready_json" "$launch_pending_json" "$role" "$reported_cwd" "$reported_foreground_cwd"
+          printf '{"result":{"agent":{"name":"%s","agent":"codex","agent_status":"idle","interactive_ready":%s,"launch_pending":%s,"pane_id":"%s","workspace_id":"%s","cwd":"%s","foreground_cwd":"%s"}}}\n' \
+            "$3" "$ready_json" "$launch_pending_json" "$pane" "$workspace" "$reported_cwd" "$reported_foreground_cwd"
           exit 0
           ;;
       esac
@@ -1233,9 +1275,9 @@ case "${1-}:${2-}" in
     fi
     if [[ ${MOCK_HERDR_MODE:-} == doctor-success ]]; then
       case ${4-} in
-        mock-planner-pane) role=planner ;;
-        mock-coder-pane) role=coder ;;
-        mock-reviewer-pane) role=reviewer ;;
+        "${MOCK_PLANNER_PANE:-mock-planner-pane}") role=planner ;;
+        "${MOCK_CODER_PANE:-mock-coder-pane}") role=coder ;;
+        "${MOCK_REVIEWER_PANE:-mock-reviewer-pane}") role=reviewer ;;
         *) exit 1 ;;
       esac
       case "$role" in
@@ -1278,6 +1320,146 @@ case "${1-}:${2-}" in
 esac
 MOCK_HERDR
   chmod +x "$mock_bin/codex" "$mock_bin/herdr"
+
+  team_configure '' || die 'Could not configure the legacy launch-state namespace.'
+  run_state_configure "$codex_test_dir" "$TEAM_MODE" "$TEAM_PREFIX_EFFECTIVE" || \
+    die 'Could not derive the legacy launch-state path.'
+  legacy_state_file=$RUN_STATE_FILE
+  team_configure legacy || die 'Could not configure the prefixed legacy launch-state namespace.'
+  run_state_configure "$codex_test_dir" "$TEAM_MODE" "$TEAM_PREFIX_EFFECTIVE" || \
+    die 'Could not derive the prefixed legacy launch-state path.'
+  prefixed_legacy_state_file=$RUN_STATE_FILE
+  [[ "$legacy_state_file" != "$prefixed_legacy_state_file" ]] || \
+    die 'Legacy mode and --team legacy collide in the launch-state namespace.'
+
+  team_configure unsafe-state || die 'Could not configure the unsafe-state test team.'
+  run_state_configure "$codex_test_dir" "$TEAM_MODE" "$TEAM_PREFIX_EFFECTIVE" || \
+    die 'Could not configure the unsafe-state launch path.'
+  run_state_prepare_storage || die 'Could not prepare the unsafe-state fixture.'
+  mkdir -- "$RUN_STATE_FILE"
+  unsafe_state_marker="$temporary_root/unsafe-state-workspace"
+  unsafe_state_log="$temporary_root/unsafe-state.log"
+  if env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
+       MOCK_HERDR_MODE=multi-root-success \
+       MOCK_PROJECT_ROOT="$PROJECT_ROOT" \
+       MOCK_WORKSPACE_MARKER="$unsafe_state_marker" \
+       "$SCRIPT_DIR/start.sh" --no-focus --team unsafe-state --cwd "$PROJECT_ROOT" \
+       >"$unsafe_state_log" 2>&1; then
+    die 'start.sh accepted a directory at its current.json target.'
+  fi
+  grep -Fq 'Could not prepare private launch-state storage' "$unsafe_state_log" || {
+    command cat "$unsafe_state_log" >&2
+    die 'Unsafe current.json target failed without the stable storage diagnostic.'
+  }
+  [[ ! -e "$unsafe_state_marker" ]] || \
+    die 'Unsafe current.json target reached Herdr workspace creation.'
+
+  team_configure unsafe-link || die 'Could not configure the state-symlink test team.'
+  run_state_configure "$codex_test_dir" "$TEAM_MODE" "$TEAM_PREFIX_EFFECTIVE" || \
+    die 'Could not configure the state-symlink launch path.'
+  run_state_prepare_storage || die 'Could not prepare the state-symlink fixture.'
+  mkdir -- "$temporary_root/current-target-directory"
+  ln -s "$temporary_root/current-target-directory" "$RUN_STATE_FILE"
+  if run_state_prepare_storage; then
+    die 'Launch-state storage accepted a current.json symlink to a directory.'
+  fi
+
+  invalid_utf8_value=$'invalid-\377'
+  if run_state_validate_launch_strings "$invalid_utf8_value"; then
+    die 'Launch-state validation accepted a value that cannot round-trip as valid UTF-8.'
+  fi
+
+  team_configure partialroot || die 'Could not configure the partial-root test team.'
+  partial_root_marker="$temporary_root/partial-root-workspace"
+  partial_root_log="$temporary_root/partial-root.log"
+  if env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
+       MOCK_HERDR_MODE=missing-root-pane \
+       MOCK_PROJECT_ROOT="$PROJECT_ROOT" \
+       MOCK_WORKSPACE_MARKER="$partial_root_marker" \
+       "$SCRIPT_DIR/start.sh" --no-focus --team partialroot --cwd "$PROJECT_ROOT" \
+       >"$partial_root_log" 2>&1; then
+    die 'start.sh accepted a workspace response without a root pane ID.'
+  fi
+  [[ -e "$partial_root_marker" ]] || \
+    die 'Missing-root-pane fixture did not create its retained workspace.'
+  run_state_configure "$codex_test_dir" "$TEAM_MODE" "$TEAM_PREFIX_EFFECTIVE" || \
+    die 'Could not derive the partial-root launch-state path.'
+  run_state_load_scope || die 'Workspace creation without a root pane did not persist safe partial state.'
+  [[ "$RUN_STATE_LOADED_STATUS" == partial && \
+     "$RUN_STATE_LOADED_WORKSPACE_ID" == mock-workspace && \
+     -z "$RUN_STATE_LOADED_PLANNER_PANE" ]] || \
+    die 'Partial launch state lost the created workspace identity or invented a root pane.'
+
+  team_configure "$REQUESTED_TEAM_PREFIX" || \
+    die 'Could not restore the requested test team after launch-state edge cases.'
+  printf '[OK] Launch-state namespaces, targets, UTF-8 inputs, and early partial failures fail closed\n'
+
+  startup_lock_log="$temporary_root/startup-lock.log"
+  startup_lock_marker="$temporary_root/startup-lock-workspace"
+  team_configure github || die 'Could not configure the startup-lock test team.'
+  run_state_configure "$codex_test_dir" "$TEAM_MODE" "$TEAM_PREFIX_EFFECTIVE" || \
+    die 'Could not configure startup-lock test storage.'
+  run_state_prepare_storage || die 'Could not prepare startup-lock test storage.'
+  run_state_acquire_start_lock static-lock-holder || \
+    die 'Could not acquire the parent startup-lock fixture.'
+  if env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
+       MOCK_HERDR_MODE=multi-root-success \
+       MOCK_PROJECT_ROOT="$PROJECT_ROOT" \
+       MOCK_WORKSPACE_MARKER="$startup_lock_marker" \
+       "$SCRIPT_DIR/start.sh" --no-focus --team github --cwd "$PROJECT_ROOT" \
+       >"$startup_lock_log" 2>&1; then
+    run_state_release_start_lock || true
+    die 'start.sh ignored another active managed startup.'
+  fi
+  run_state_release_start_lock || die 'Could not release the parent startup-lock fixture.'
+  grep -Fq 'Another herdr-codex-team startup is active' "$startup_lock_log" || {
+    command cat "$startup_lock_log" >&2
+    die 'Concurrent startup failed without the stable active-lock diagnostic.'
+  }
+  [[ ! -e "$startup_lock_marker" ]] || \
+    die 'Concurrent startup reached workspace creation before lock rejection.'
+
+  lock_host=$(run_state_host_id)
+  mkdir -- "$RUN_STATE_LOCK_DIR"
+  {
+    printf 'token=dead-owner-token\n'
+    printf 'pid=999999999\n'
+    printf 'host=%s\n' "$lock_host"
+    printf 'run_id=dead-owner-run\n'
+    printf 'team=github\n'
+  } >"$RUN_STATE_LOCK_DIR/owner"
+  chmod 600 "$RUN_STATE_LOCK_DIR/owner"
+  run_state_acquire_start_lock recovered-owner-run || \
+    die 'Could not recover a well-formed dead same-host startup owner.'
+  held_lock_token=$RUN_STATE_LOCK_TOKEN
+  RUN_STATE_LOCK_TOKEN=wrong-release-token
+  if run_state_release_start_lock; then
+    die 'Startup-lock release ignored an owner-token mismatch.'
+  fi
+  [[ -d "$RUN_STATE_LOCK_DIR" && ! -L "$RUN_STATE_LOCK_DIR" ]] || \
+    die 'Owner-token mismatch removed the startup lock.'
+  RUN_STATE_LOCK_TOKEN=$held_lock_token
+  run_state_release_start_lock || die 'Could not release the recovered startup lock.'
+
+  mkdir -- "$RUN_STATE_LOCK_DIR"
+  {
+    printf 'token=malformed-owner-token\n'
+    printf 'pid=999999999\n'
+    printf 'host=%s\n' "$lock_host"
+    printf 'run_id=malformed-owner-run\n'
+  } >"$RUN_STATE_LOCK_DIR/owner"
+  chmod 600 "$RUN_STATE_LOCK_DIR/owner"
+  if run_state_acquire_start_lock malformed-owner-retry >/dev/null 2>&1; then
+    die 'Startup lock accepted an owner record with a missing Team field.'
+  fi
+  [[ -d "$RUN_STATE_LOCK_DIR" ]] || \
+    die 'Malformed startup-lock ownership was deleted instead of failing closed.'
+  rm -f -- "$RUN_STATE_LOCK_DIR/owner"
+  rmdir -- "$RUN_STATE_LOCK_DIR"
+  team_configure "$REQUESTED_TEAM_PREFIX" || \
+    die 'Could not restore the requested test team after startup-lock validation.'
+  printf '[OK] Managed startup lock serializes, recovers dead owners, and checks ownership\n'
+
   collision_log="$temporary_root/collision.log"
   if env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
        MOCK_WORKSPACE_MARKER="$workspace_marker" \
@@ -1487,6 +1669,231 @@ MOCK_HERDR
   grep -Fq -- "doctor.sh --team github --cwd $non_git_primary --add-dir $non_git_extra" "$multi_root_log" || \
     die 'Startup did not print a reusable multi-root doctor command.'
   printf '[OK] Explicit non-Git multi-root startup grants extra writable roots only to Planner/Coder\n'
+
+  team_configure github || die 'Could not configure the launch-record test team.'
+  run_state_configure "$codex_test_dir" "$TEAM_MODE" "$TEAM_PREFIX_EFFECTIVE" || \
+    die 'Could not derive the launch-record test path.'
+  state_file=$RUN_STATE_FILE
+  [[ -f "$state_file" && ! -L "$state_file" ]] || \
+    die 'Successful startup did not create a safe user-local launch record.'
+  run_state_load_scope || die 'Successful startup wrote an invalid launch record.'
+  [[ "$RUN_STATE_LOADED_STATUS" == ready && \
+     "$RUN_STATE_LOADED_CWD" == "$non_git_primary" && \
+     "$RUN_STATE_LOADED_WORKSPACE_ID" == mock-workspace && \
+     "$RUN_STATE_LOADED_PLANNER_PANE" == mock-root && \
+     "$RUN_STATE_LOADED_CODER_PANE" == mock-pane-1 && \
+     "$RUN_STATE_LOADED_REVIEWER_PANE" == mock-pane-2 ]] || \
+    die 'Launch record did not preserve exact root/workspace/pane identity.'
+  [[ ${#RUN_STATE_LOADED_ADD_DIRS[@]} -eq 1 && \
+     "${RUN_STATE_LOADED_ADD_DIRS[0]}" == "$non_git_extra" ]] || \
+    die 'Launch record did not preserve the ordered additional-root list.'
+
+  state_doctor_log="$temporary_root/state-doctor.log"
+  state_doctor_calls="$temporary_root/state-doctor-calls.log"
+  : >"$state_doctor_calls"
+  if ! env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
+       MOCK_HERDR_MODE=doctor-success \
+       MOCK_HERDR_CALL_LOG="$state_doctor_calls" \
+       MOCK_PROJECT_ROOT="$non_git_primary" \
+       MOCK_EXTRA_ROOT="$non_git_extra" \
+       MOCK_WORKSPACE_ID=mock-workspace \
+       MOCK_PLANNER_PANE=mock-root \
+       MOCK_CODER_PANE=mock-pane-1 \
+       MOCK_REVIEWER_PANE=mock-pane-2 \
+       "$SCRIPT_DIR/doctor.sh" --team github \
+       >"$state_doctor_log" 2>&1; then
+    command cat "$state_doctor_log" >&2
+    die 'doctor.sh could not verify a live team from its saved launch scope.'
+  fi
+  grep -Fq 'Loaded launch record' "$state_doctor_log" || \
+    die 'doctor.sh did not report its user-local launch-record source.'
+  grep -Fq "Team additional root: $non_git_extra" "$state_doctor_log" || \
+    die 'doctor.sh did not replay the recorded additional root.'
+
+  if ! env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
+       MOCK_HERDR_MODE=doctor-success \
+       MOCK_HERDR_CALL_LOG="$state_doctor_calls" \
+       MOCK_PROJECT_ROOT="$non_git_primary" \
+       MOCK_EXTRA_ROOT="$non_git_extra" \
+       MOCK_WORKSPACE_ID=mock-workspace \
+       MOCK_PLANNER_PANE=mock-root \
+       MOCK_CODER_PANE=mock-pane-1 \
+       MOCK_REVIEWER_PANE=mock-pane-2 \
+       "$SCRIPT_DIR/doctor.sh" --bind-record-if-present --team github \
+       --cwd "$non_git_primary" --add-dir "$non_git_extra" \
+       >"$temporary_root/state-doctor-bound-match.log" 2>&1; then
+    command cat "$temporary_root/state-doctor-bound-match.log" >&2
+    die 'Record-bound explicit Doctor rejected the original workspace/pane identities.'
+  fi
+  grep -Fq 'Loaded launch record' "$temporary_root/state-doctor-bound-match.log" || \
+    die 'Record-bound explicit Doctor did not report the launch-record binding.'
+
+  if env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
+       MOCK_HERDR_MODE=doctor-success \
+       MOCK_HERDR_CALL_LOG="$state_doctor_calls" \
+       MOCK_PROJECT_ROOT="$non_git_primary" \
+       MOCK_EXTRA_ROOT="$non_git_extra" \
+       MOCK_WORKSPACE_ID=different-workspace \
+       MOCK_PLANNER_PANE=mock-root \
+       MOCK_CODER_PANE=mock-pane-1 \
+       MOCK_REVIEWER_PANE=mock-pane-2 \
+       "$SCRIPT_DIR/doctor.sh" --team github \
+       >"$temporary_root/state-doctor-stale-runtime.log" 2>&1; then
+    die 'Record-backed Doctor accepted a different live workspace identity.'
+  fi
+  grep -Fq 'not recorded run workspace mock-workspace' \
+    "$temporary_root/state-doctor-stale-runtime.log" || \
+    die 'Stale workspace identity failed without the recorded-binding diagnostic.'
+
+  if ! env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
+       MOCK_HERDR_MODE=doctor-success \
+       MOCK_HERDR_CALL_LOG="$state_doctor_calls" \
+       MOCK_PROJECT_ROOT="$non_git_primary" \
+       MOCK_EXTRA_ROOT="$non_git_extra" \
+       MOCK_WORKSPACE_ID=different-workspace \
+       MOCK_PLANNER_PANE=different-planner-pane \
+       MOCK_CODER_PANE=different-coder-pane \
+       MOCK_REVIEWER_PANE=different-reviewer-pane \
+       "$SCRIPT_DIR/doctor.sh" --team github --cwd "$non_git_primary" \
+       --add-dir "$non_git_extra" \
+       >"$temporary_root/state-doctor-explicit-bypass.log" 2>&1; then
+    command cat "$temporary_root/state-doctor-explicit-bypass.log" >&2
+    die 'Explicit-root Doctor did not bypass stale recorded workspace/pane binding.'
+  fi
+
+  if env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
+       MOCK_HERDR_MODE=doctor-success \
+       MOCK_HERDR_CALL_LOG="$state_doctor_calls" \
+       MOCK_PROJECT_ROOT="$non_git_primary" \
+       MOCK_EXTRA_ROOT="$non_git_extra" \
+       MOCK_WORKSPACE_ID=different-workspace \
+       MOCK_PLANNER_PANE=different-planner-pane \
+       MOCK_CODER_PANE=different-coder-pane \
+       MOCK_REVIEWER_PANE=different-reviewer-pane \
+       "$SCRIPT_DIR/doctor.sh" --bind-record-if-present --team github \
+       --cwd "$non_git_primary" --add-dir "$non_git_extra" \
+       >"$temporary_root/state-doctor-explicit-bound.log" 2>&1; then
+    die 'Record-bound explicit Doctor accepted replaced workspace/pane identities.'
+  fi
+  grep -Fq 'not recorded run workspace mock-workspace' \
+    "$temporary_root/state-doctor-explicit-bound.log" || \
+    die 'Record-bound explicit Doctor failed without the recorded identity diagnostic.'
+
+  : >"$state_doctor_calls"
+  if env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
+       MOCK_HERDR_MODE=doctor-success \
+       MOCK_HERDR_CALL_LOG="$state_doctor_calls" \
+       "$SCRIPT_DIR/doctor.sh" --bind-record-if-present --team github \
+       --cwd "$separate_git_root" --add-dir "$non_git_extra" \
+       >"$temporary_root/state-doctor-bound-scope.log" 2>&1; then
+    die 'Record-bound Doctor accepted requested roots from a different launch.'
+  fi
+  grep -Fq 'does not match the existing launch record' \
+    "$temporary_root/state-doctor-bound-scope.log" || \
+    die 'Record-bound scope mismatch failed without the stable diagnostic.'
+  [[ ! -s "$state_doctor_calls" ]] || \
+    die 'Record-bound Doctor contacted Herdr before rejecting mismatched requested roots.'
+  printf '[OK] Explicit reuse checks bind matching launch-record workspace and pane IDs\n'
+
+  cp -p -- "$state_file" "$temporary_root/current.json.clean"
+  printf '%s\n' '{"schema_version":1,"run_id":false}' >"$state_file"
+  : >"$state_doctor_calls"
+  if env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
+       MOCK_HERDR_MODE=doctor-success \
+       MOCK_HERDR_CALL_LOG="$state_doctor_calls" \
+       "$SCRIPT_DIR/doctor.sh" --team github \
+       >"$temporary_root/state-doctor-corrupt.log" 2>&1; then
+    die 'doctor.sh accepted a malformed user-local launch record.'
+  fi
+  grep -Fq 'launch record is malformed or incompatible' \
+    "$temporary_root/state-doctor-corrupt.log" || \
+    die 'Malformed launch state failed without the stable diagnostic.'
+  [[ ! -s "$state_doctor_calls" ]] || \
+    die 'doctor.sh contacted Herdr before rejecting malformed launch state.'
+  cp -p -- "$temporary_root/current.json.clean" "$state_file"
+
+  sed 's/"schema_version": 1/"schema_version": true/' \
+    "$temporary_root/current.json.clean" >"$state_file"
+  if run_state_load_scope >/dev/null 2>&1; then
+    die 'Launch-state parser accepted boolean true as schema version 1.'
+  fi
+  cp -p -- "$temporary_root/current.json.clean" "$state_file"
+
+  sed 's/"schema_version": 1/"schema_version": 1.0/' \
+    "$temporary_root/current.json.clean" >"$state_file"
+  run_state_load_scope >/dev/null 2>&1 || \
+    die 'Launch-state backends disagree on a mathematically integral schema version.'
+  cp -p -- "$temporary_root/current.json.clean" "$state_file"
+
+  invalid_state_byte=$'\377'
+  while IFS= read -r state_line; do
+    case "$state_line" in
+      *'"run_id":'*) printf '  "run_id": "bad-%s",\n' "$invalid_state_byte" ;;
+      *) printf '%s\n' "$state_line" ;;
+    esac
+  done <"$temporary_root/current.json.clean" >"$state_file"
+  if run_state_load_scope >/dev/null 2>&1; then
+    die 'Launch-state parser accepted raw invalid UTF-8 from current.json.'
+  fi
+  cp -p -- "$temporary_root/current.json.clean" "$state_file"
+
+  sed 's/"sandbox": "workspace-write"/"sandbox": "read-only"/g' \
+    "$temporary_root/current.json.clean" >"$state_file"
+  if run_state_load_scope >/dev/null 2>&1; then
+    die 'Launch-state parser accepted role sandbox values outside its schema.'
+  fi
+  cp -p -- "$temporary_root/current.json.clean" "$state_file"
+
+  sed 's/"launch_record": "herdr-codex-team"/"launch_record": "other"/' \
+    "$temporary_root/current.json.clean" >"$state_file"
+  if run_state_load_scope >/dev/null 2>&1; then
+    die 'Launch-state parser accepted a changed authority marker.'
+  fi
+  cp -p -- "$temporary_root/current.json.clean" "$state_file"
+
+  sed 's/"workspace_id": "mock-workspace"/"workspace_id": ""/' \
+    "$temporary_root/current.json.clean" >"$state_file"
+  if run_state_load_scope >/dev/null 2>&1; then
+    die 'Launch-state parser accepted an empty workspace ID.'
+  fi
+  cp -p -- "$temporary_root/current.json.clean" "$state_file"
+
+  rm -f -- "$state_file"
+  ln -s "$temporary_root/current.json.clean" "$state_file"
+  : >"$state_doctor_calls"
+  if env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
+       MOCK_HERDR_MODE=doctor-success \
+       MOCK_HERDR_CALL_LOG="$state_doctor_calls" \
+       "$SCRIPT_DIR/doctor.sh" --team github \
+       >"$temporary_root/state-doctor-symlink.log" 2>&1; then
+    die 'doctor.sh accepted a symlinked current.json launch record.'
+  fi
+  [[ ! -s "$state_doctor_calls" ]] || \
+    die 'doctor.sh contacted Herdr before rejecting a symlinked launch record.'
+  rm -f -- "$state_file"
+  cp -p -- "$temporary_root/current.json.clean" "$state_file"
+
+  state_symlink_codex="$temporary_root/state-symlink-codex"
+  state_symlink_target="$temporary_root/state-symlink-target"
+  mkdir -p "$state_symlink_codex" \
+    "$state_symlink_target/state/v1/teams/prefixed-github"
+  cp -p -- "$temporary_root/current.json.clean" \
+    "$state_symlink_target/state/v1/teams/prefixed-github/current.json"
+  ln -s "$state_symlink_target" "$state_symlink_codex/herdr-codex-team"
+  : >"$state_doctor_calls"
+  if env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$state_symlink_codex" \
+       MOCK_HERDR_MODE=doctor-success \
+       MOCK_HERDR_CALL_LOG="$state_doctor_calls" \
+       "$SCRIPT_DIR/doctor.sh" --team github \
+       >"$temporary_root/state-doctor-parent-symlink.log" 2>&1; then
+    die 'doctor.sh accepted a launch record through a symlinked managed parent.'
+  fi
+  [[ ! -s "$state_doctor_calls" ]] || \
+    die 'doctor.sh contacted Herdr before rejecting a symlinked state parent.'
+
+  team_configure "$REQUESTED_TEAM_PREFIX" || \
+    die 'Could not restore the requested test team after launch-record validation.'
+  printf '[OK] User-local launch state is atomic, replayable, and fail-closed\n'
 
   single_non_git_log="$temporary_root/single-non-git.log"
   single_non_git_marker="$temporary_root/single-non-git-created"

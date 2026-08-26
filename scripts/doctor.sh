@@ -8,7 +8,9 @@ TEAM_LIB="$SCRIPT_DIR/lib/team.sh"
 JSON_LIB="$SCRIPT_DIR/lib/json.sh"
 DIGEST_LIB="$SCRIPT_DIR/lib/digest.sh"
 SCOPE_LIB="$SCRIPT_DIR/lib/scope.sh"
-[[ -f "$TEAM_LIB" && -f "$JSON_LIB" && -f "$DIGEST_LIB" && -f "$SCOPE_LIB" ]] || {
+RUN_STATE_LIB="$SCRIPT_DIR/lib/run-state.sh"
+[[ -f "$TEAM_LIB" && -f "$JSON_LIB" && -f "$DIGEST_LIB" && -f "$SCOPE_LIB" && \
+   -f "$RUN_STATE_LIB" ]] || {
   printf '[FAIL] Missing script helper under %s/lib.\n' "$SCRIPT_DIR" >&2
   exit 1
 }
@@ -20,6 +22,8 @@ source "$JSON_LIB"
 source "$DIGEST_LIB"
 # shellcheck source=lib/scope.sh
 source "$SCOPE_LIB"
+# shellcheck source=lib/run-state.sh
+source "$RUN_STATE_LIB"
 CODEX_DIR=${CODEX_HOME:-"$HOME/.codex"}
 case "$CODEX_DIR" in
   /*) ;;
@@ -40,6 +44,8 @@ ADD_DIRS=()
 EXPECTED_DIRS=()
 EXPECTED_SCOPE_ROOTS=()
 EXPECTED_HAS_NON_GIT=0
+STATE_SCOPE_LOADED=0
+BIND_RECORD_IF_PRESENT=0
 
 ok() {
   printf '[OK] %s\n' "$*"
@@ -57,13 +63,16 @@ fail() {
 
 usage() {
   printf '%s\n' \
-    'Usage: ./scripts/doctor.sh [--team PREFIX] [--cwd PROJECT_DIR] [--add-dir DIR]...' \
+    'Usage: ./scripts/doctor.sh [--bind-record-if-present] [--team PREFIX] [--cwd PROJECT_DIR] [--add-dir DIR]...' \
     '' \
     'Without --team or TEAM_PREFIX, checks legacy planner/coder/reviewer names.' \
     'With --team github, checks github-planner/github-coder/github-reviewer.' \
     'TEAM_PREFIX may supply the prefix when --team is omitted.' \
     '--cwd requires all three agents to use that exact primary directory.' \
-    '--add-dir is repeatable; Planner/Coder must expose those writable roots, while read-only Reviewer must expose none.'
+    '--add-dir is repeatable; Planner/Coder must expose those writable roots, while read-only Reviewer must expose none.' \
+    "With neither root option, Doctor loads this team's latest user-local launch record when one exists." \
+    'Supplying --cwd explicitly bypasses recorded runtime-ID binding and verifies the requested live scope directly.' \
+    '--bind-record-if-present keeps explicit root checks and also binds any existing launch record IDs; open.sh uses it for safe reuse.'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -103,6 +112,11 @@ while [[ $# -gt 0 ]]; do
       ADD_DIR_ARGS+=("${1#--add-dir=}")
       shift
       ;;
+    --bind-record-if-present)
+      [[ $BIND_RECORD_IF_PRESENT -eq 0 ]] || { fail '--bind-record-if-present may be provided only once.'; exit 2; }
+      BIND_RECORD_IF_PRESENT=1
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -122,6 +136,37 @@ fi
 if ! team_configure "$REQUESTED_TEAM_PREFIX"; then
   fail "Invalid team prefix '$REQUESTED_TEAM_PREFIX'. It must match [a-z][a-z0-9_-]* and be at most 23 characters."
   exit 2
+fi
+if ! run_state_configure "$CODEX_DIR" "$TEAM_MODE" "$TEAM_PREFIX_EFFECTIVE"; then
+  fail 'Could not derive a safe user-local launch-state path.'
+  exit 2
+fi
+if [[ $BIND_RECORD_IF_PRESENT -eq 1 && $CWD_ARG_SET -eq 0 ]]; then
+  fail '--bind-record-if-present requires an explicit --cwd.'
+  exit 2
+fi
+if [[ $CWD_ARG_SET -eq 0 && ${#ADD_DIR_ARGS[@]} -eq 0 ]] || \
+   [[ $BIND_RECORD_IF_PRESENT -eq 1 ]]; then
+  if run_state_current_exists; then
+    if ! run_state_load_scope; then
+      fail "The user-local launch record is malformed or incompatible: $RUN_STATE_FILE"
+      exit 2
+    fi
+    STATE_SCOPE_LOADED=1
+    if [[ $BIND_RECORD_IF_PRESENT -eq 0 ]]; then
+      CWD_ARG_SET=1
+      EXPECTED_CWD_ARG=$RUN_STATE_LOADED_CWD
+      for state_add_dir in ${RUN_STATE_LOADED_ADD_DIRS[@]+"${RUN_STATE_LOADED_ADD_DIRS[@]}"}; do
+        ADD_DIR_ARGS+=("$state_add_dir")
+      done
+    fi
+  else
+    state_exists_status=$?
+    if [[ $state_exists_status -eq 2 ]]; then
+      fail "The user-local launch-record path is not a safe regular file: $RUN_STATE_FILE"
+      exit 2
+    fi
+  fi
 fi
 if [[ ${#ADD_DIR_ARGS[@]} -gt 0 && $CWD_ARG_SET -eq 0 ]]; then
   fail '--add-dir requires --cwd so primary and additional roots can be validated together.'
@@ -206,6 +251,25 @@ if [[ -n "$EXPECTED_CWD" ]]; then
   done
 fi
 
+if [[ $BIND_RECORD_IF_PRESENT -eq 1 && $STATE_SCOPE_LOADED -eq 1 ]]; then
+  record_scope_matches=1
+  [[ "$EXPECTED_CWD" == "$RUN_STATE_LOADED_CWD" ]] || record_scope_matches=0
+  if [[ ${#ADD_DIRS[@]} -ne ${#RUN_STATE_LOADED_ADD_DIRS[@]} ]]; then
+    record_scope_matches=0
+  else
+    for ((scope_index = 0; scope_index < ${#ADD_DIRS[@]}; scope_index++)); do
+      if [[ "${ADD_DIRS[$scope_index]}" != "${RUN_STATE_LOADED_ADD_DIRS[$scope_index]}" ]]; then
+        record_scope_matches=0
+        break
+      fi
+    done
+  fi
+  if [[ $record_scope_matches -ne 1 ]]; then
+    fail 'Requested cwd/ordered --add-dir list does not match the existing launch record.'
+    exit 2
+  fi
+fi
+
 process_uses_profile() {
   local payload=$1
   local role=$2
@@ -239,6 +303,12 @@ process_add_dirs_match() {
 }
 
 printf 'Herdr Codex Team doctor (team: %s)\n\n' "$TEAM_DISPLAY"
+
+if [[ $STATE_SCOPE_LOADED -eq 1 ]]; then
+  ok "Loaded launch record $RUN_STATE_LOADED_RUN_ID (recorded state: $RUN_STATE_LOADED_STATUS)"
+  printf '     Source: %s\n' "$RUN_STATE_FILE"
+  printf '     Herdr remains authoritative; the recorded IDs and roots are expectations to verify.\n'
+fi
 
 if [[ $EXPECTED_HAS_NON_GIT -eq 1 ]]; then
   warn 'Expected scope includes non-Git roots; launch identity can be checked, but complete Git diff/baseline evidence is unavailable.'
@@ -456,6 +526,20 @@ if [[ $server_running -eq 1 ]]; then
         planner|coder) expected_sandbox=workspace-write ;;
         reviewer) expected_sandbox=read-only ;;
       esac
+      if [[ $STATE_SCOPE_LOADED -eq 1 ]]; then
+        case "$role" in
+          planner) recorded_pane_id=$RUN_STATE_LOADED_PLANNER_PANE ;;
+          coder) recorded_pane_id=$RUN_STATE_LOADED_CODER_PANE ;;
+          reviewer) recorded_pane_id=$RUN_STATE_LOADED_REVIEWER_PANE ;;
+        esac
+        if [[ -n "$recorded_pane_id" && "$pane_id" != "$recorded_pane_id" ]]; then
+          fail "$live_name_expected pane is $pane_id, not recorded run pane $recorded_pane_id. The launch record is stale or a different session now owns the name."
+        fi
+        if [[ -n "$RUN_STATE_LOADED_WORKSPACE_ID" && \
+              "$workspace_id" != "$RUN_STATE_LOADED_WORKSPACE_ID" ]]; then
+          fail "$live_name_expected workspace is $workspace_id, not recorded run workspace $RUN_STATE_LOADED_WORKSPACE_ID. The launch record is stale or a different session now owns the name."
+        fi
+      fi
       if [[ -z "$pane_id" ]]; then
         fail "$live_name_expected did not expose a pane ID, so its active profile cannot be verified."
       elif [[ "$seen_panes" == *"|$pane_id|"* ]]; then
