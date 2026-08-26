@@ -4,7 +4,13 @@
 
 ## Security posture
 
-Herdr Codex Team coordinates agents that can execute commands and, for two roles, write inside one or more project roots. It reduces ambiguity through visible routing, least-role permissions, bounded review, and Git evidence where available. It does not turn language-model prompts into a hardened security boundary.
+Herdr Codex Team coordinates agents that can execute commands. Locally, only
+Coder can write inside the requested project roots; all three roles can open
+outbound command-network connections and may therefore cause remote side
+effects through SSH or another client. The project reduces ambiguity through
+visible routing, least-role filesystem permissions, bounded review, and Git
+evidence where available. It does not turn language-model prompts into a
+hardened security boundary.
 
 Use the project only after understanding the effective authority of each layer:
 
@@ -12,6 +18,7 @@ Use the project only after understanding the effective authority of each layer:
 Herdr identity   which visible live agent receives a message
 Team prefix      which exact same-team names Planner may address
 Codex sandbox    what tool operations can access
+Command network  whether shell commands can reach external hosts
 Approval policy  whether Codex pauses at ordinary approval points
 Role prompt      what behavior the model is instructed to follow
 Change evidence  Git diff, or non-Git touched paths plus explicit gaps
@@ -29,26 +36,48 @@ In current Codex CLI, `never` means Codex does not stop to request approval befo
 
 The tradeoff is important: automated handoffs do not stall at routine prompts, but the user loses an interactive checkpoint before potentially consequential commands that are already permitted. Review the role prompt, repository instructions, hooks, and sandbox before startup.
 
-See the [official Codex configuration reference](https://developers.openai.com/codex/config-reference/) and [sandbox and approval guidance](https://developers.openai.com/codex/agent-approvals-security/).
+See the [official Codex configuration reference](https://developers.openai.com/codex/config-reference/), [permissions guide](https://learn.chatgpt.com/docs/permissions), and [sandbox and approval guidance](https://developers.openai.com/codex/agent-approvals-security/).
 
 ## Sandbox matrix
 
-| Role | Default | Reason | Residual risk |
+| Role | Local filesystem | Command network | Residual risk |
 | --- | --- | --- | --- |
-| Planner | `workspace-write` | Herdr communication may fail under `read-only` | prompt forbids source edits, but filesystem capability still exists |
-| Coder | `workspace-write` | implementation requires repository writes | can make destructive or unrelated changes within allowed roots |
-| Reviewer | `read-only` | independent inspection requires no writes | can still expose sensitive content in its output or call allowed read-only services |
+| Planner | `read-only` | enabled | can prompt same-team peers and can change a remote host through an allowed network client |
+| Coder | `workspace-write` | enabled | can make destructive or unrelated local changes within allowed roots and remote changes through a network client |
+| Reviewer | `read-only` | enabled | can expose sensitive content and can change a remote host through an allowed network client |
 
-The statement “only Coder writes source” is fully sandbox-enforced for Reviewer, but only policy-enforced for Planner. A model can violate a prompt. Planner's final inspection of the available Git/non-Git change evidence helps detect that violation after the fact; it does not prevent it, and non-Git evidence is not complete.
+The statement “only Coder writes source” is sandbox-enforced for both Planner
+and Reviewer under managed startup. Planner's bridge contains no filesystem
+tool and accepts only same-team identity inspection plus role-only Coder or
+Reviewer prompts. This does not prove that an unmanaged same-user process,
+unsafe hook, or compromised installed bridge cannot write; non-Git evidence
+also remains incomplete.
 
-Every repeatable `--add-dir` expands the managed writable path set for Planner
-and Coder. They can technically write the primary cwd and each additional root
-under `workspace-write`; Planner's no-edit rule remains prompt policy. Reviewer
-is explicitly launched with `--sandbox read-only` and no `--add-dir`, so it can
-inspect the requested roots without receiving an additional writable-root
-grant. Startup first supplies `sandbox_workspace_write.writable_roots=[]` to
-neutralize additional writable roots inherited from user or profile
-configuration, then adds the requested roots only to Planner and Coder.
+Reviewer's managed Python environment avoids pytest's own default capture,
+cache, and bytecode writes; it does not add a writable exception to the
+sandbox. A test suite that needs temporary files, build output, coverage data,
+or write-dependent plugins remains outside what Reviewer can validate. This is
+reported as a limitation rather than silently granting scratch or workspace
+write access.
+
+Every repeatable `--add-dir` expands only Coder's managed writable path set.
+Planner receives the same path as read-only workspace context; Reviewer
+receives none. Their managed permission profile extends `:read-only`, while
+Coder's extends `:workspace`. All three named beta
+permission profiles enable command network. Startup repeats the exact
+`default_permissions`, `extends`, and `network.enabled=true` settings and does
+not pass the legacy `--sandbox` or `sandbox_workspace_write.writable_roots`
+overrides. On the supported CLI these legacy arguments can conflict with or
+suppress the intended effective policy.
+All role profiles also set `agents.enabled = false`, and startup repeats the
+setting as an exact CLI override. This removes Codex-native collaboration tools
+that could otherwise create hidden `/root/*` workers; Planner's bounded Herdr
+MCP tools remain available. Doctor verifies the live argv, so a role process
+started under the older policy is rejected until the Team is recreated.
+Startup and Doctor also inspect the effective model-visible filesystem sandbox
+and network state. An incompatible permission-profile implementation or a
+conflicting legacy argument fails closed rather than silently starting a role
+without the requested combination.
 After a managed startup, `doctor.sh --team <prefix>` can load the safe latest
 launch record and verify that role-specific launch argv plus the recorded
 workspace and pane identities. Supplying `--cwd` (and any ordered `--add-dir`)
@@ -58,10 +87,38 @@ read or write occurred.
 
 `danger-full-access` is not a project default. Do not enable it to work around `Operation not permitted`, missing hooks, a wrong `CODEX_HOME`, or an incompatible CLI. Diagnose the specific boundary instead.
 
+## SSH authority and safer defaults
+
+The command-network grant is intentionally broad enough for an ordinary SSH
+client. It is not limited to SSH, port 22, or a configured hostname. A local
+`read-only` sandbox controls local filesystem operations only: once an SSH
+session is established, the remote account, server ACLs, and remote command
+determine what can change. Because `approval_policy = "never"` has no routine
+interactive checkpoint, a permitted SSH command can take effect immediately.
+
+For every role that may use SSH:
+
+- use a dedicated low-privilege remote account and task-specific key; keep the
+  private key and host details out of this repository;
+- pin the host key in a controlled `known_hosts` file and keep
+  `StrictHostKeyChecking=yes`; never work around verification with
+  `StrictHostKeyChecking=no`;
+- use `BatchMode=yes` and `IdentitiesOnly=yes` for deterministic non-interactive
+  failure;
+- disable agent forwarding, port forwarding, and X11 forwarding, for example
+  with `ForwardAgent=no`, `ClearAllForwardings=yes`, and `ForwardX11=no`;
+- constrain the remote account with server-side ACLs, forced commands, or a
+  dedicated environment when the task does not require a general shell.
+
+These controls reduce remote authority; they do not convert the broad local
+network grant into a host allowlist. Managed startup validation proves the
+launch policy, not that a particular remote host is safe or that an SSH action
+was read-only.
+
 ## Threats this project does not eliminate
 
 - **Prompt injection from the repository:** source files, issues, generated logs, or tests can contain instructions intended to redirect an agent.
-- **Unsafe commands inside allowed roots:** Coder and Planner can remove or corrupt writable files even without full host access.
+- **Unsafe commands inside allowed roots:** Coder can remove or corrupt writable files even without full host access; Planner can also send an unsafe implementation request to same-team Coder.
 - **Degraded non-Git evidence:** a non-Git root has no authoritative baseline,
   complete diff, untracked-file inventory, rollback point, or reliable way to
   separate pre-existing changes from task changes. A best-effort touched-path
@@ -84,11 +141,13 @@ read or write occurred.
   Herdr-wide transaction. Different `CODEX_HOME` namespaces, humans, external
   tools, older helpers, manual Herdr operations, or agents outside the
   recognized naming scheme can still make attribution and review unreliable.
-- **Cross-team prompt failure:** prefixes create explicit routes, but a
-  compromised or incorrectly configured Planner can still attempt to address
-  another live team; fail-closed prompts and isolation tests reduce rather than
-  cryptographically eliminate this risk.
+- **Bridge/configuration compromise:** the bridge rejects arbitrary names and
+  derives only exact same-team peers, but a writer that can replace the source,
+  installed bridge, profile, and matching digests can change that policy.
 - **Dependency and test side effects:** repository commands can contact networks, mutate external services, or run untrusted build steps within their available permissions.
+- **Remote-host side effects:** every managed role can use command network, and
+  local filesystem read-only does not prevent writes, service changes, or
+  process control authorized by the remote SSH account.
 
 The independent Reviewer improves defect detection but is not a security scanner, formal verifier, or isolation boundary.
 
@@ -99,11 +158,11 @@ committed host whose Git-visible status, branch, and `HEAD` remain unchanged,
 plus script-owned assertions, fixture tests, and Planner's run-specific
 approval. The harness also disables user-level Git signing and hooks for its
 own baseline commit. It does not detect changes to ignored host files, so its
-host must be disposable and contain no sensitive ignored state. Since Planner
-has `workspace-write`, those observations cannot prove at the operating-system
-or cryptographic level that Coder alone produced every byte. Repositories that
-require hard attribution need external process/filesystem auditing and an
-isolation design beyond the current project.
+host must be disposable and contain no sensitive ignored state. Managed
+Planner and Reviewer are read-only, but those observations still cannot prove
+at a cryptographic level that no unmanaged process produced a byte.
+Repositories that require hard attribution need external process/filesystem
+auditing beyond the current project.
 
 ## Recommended operating procedure
 
@@ -123,7 +182,8 @@ Immediately after managed startup:
    its safe latest launch record, or supply the same `--cwd` and every ordered
    `--add-dir` for a direct scope check, then run the matching communication
    tests;
-2. confirm Reviewer remains `read-only`.
+2. confirm Planner and Reviewer remain `read-only`, and the Planner bridge
+   matches the current checkout.
 
 During work:
 
@@ -168,11 +228,11 @@ Do not use a dangerous hook-trust bypass for normal interactive setup.
 
 ## Backups and local configuration
 
-`install.sh` backs up existing target profiles before replacement. Backups can contain private model providers, endpoints, paths, or instructions. They remain under `$CODEX_HOME` and should not be committed, uploaded, or included in bug reports without redaction.
+`install.sh` backs up existing target profiles and the managed Planner bridge before replacement. Backups can contain private model providers, endpoints, paths, or instructions. They remain under `$CODEX_HOME` and should not be committed, uploaded, or included in bug reports without redaction.
 
 Repository templates must never contain API keys, access tokens, private SSH targets, or user-specific configuration copied from a real machine.
 
-`uninstall.sh` moves managed role profiles into a new timestamped backup and leaves earlier backups, the base configuration, credentials, and unrelated hooks intact. Removing those is a separate user-owned security decision.
+`uninstall.sh` moves managed role profiles and the Planner bridge into a new timestamped backup and leaves earlier backups, the base configuration, credentials, and unrelated hooks intact. Removing those is a separate user-owned security decision.
 
 Managed startup also stores one latest-run record per Team under
 `$CODEX_HOME/herdr-codex-team/state/v1`. Its directories use mode `0700`, and
@@ -191,11 +251,12 @@ history. See [Launch state](launch-state.md).
 
 For regulated, safety-critical, credential-bearing, or otherwise sensitive projects, validate this workflow in a disposable non-sensitive repository first. Apply organizational access control, network isolation, required human approval, and audit policy independently of this project.
 
-If your policy requires a hard guarantee that Planner cannot write source, the
-current Planner design is not sufficient: its `workspace-write` sandbox is a
-deliberate Herdr-compatibility compromise. Use an external isolation design
-that exposes only the Herdr communication endpoint and read-only repository
-view, or do not use this workflow for that repository.
+Managed startup gives Planner a direct `read-only` filesystem boundary and a
+bridge that exposes no file operation. This is materially stronger than a
+prompt-only rule, but it is not a tamper-proof same-user security boundary: a
+writer able to replace the checkout, installed bridge, profiles, and digests
+can alter the policy. Repositories requiring audited writer attribution still
+need external process/filesystem controls.
 
 Team prefixes do not change that boundary and do not isolate the filesystem.
 Two name-isolated teams whose primary or additional roots overlap can still

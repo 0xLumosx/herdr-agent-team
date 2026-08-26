@@ -26,6 +26,93 @@ prompt_payload_sha256() {
   { command cat -- "$prompt"; printf '\n'; } | sha256_stream
 }
 
+# Resolve the interpreter selected by the user's current trusted startup
+# environment to one absolute executable. Installed Planner MCP configuration
+# records this exact path, so the later sandbox-external launch never searches
+# PATH. Callers must rerun install.sh when the interpreter path changes.
+managed_python_executable() {
+  command -v python3 >/dev/null 2>&1 || return 127
+  python3 -c '
+import os
+import stat
+import sys
+
+path = os.path.realpath(sys.executable)
+if (not os.path.isabs(path) or not path or
+        any(ord(character) < 32 or 127 <= ord(character) <= 159
+            for character in path)):
+    raise SystemExit(2)
+metadata = os.stat(path)
+if not stat.S_ISREG(metadata.st_mode) or not os.access(path, os.X_OK):
+    raise SystemExit(2)
+print(path)
+' 2>/dev/null
+}
+
+# Resolve another command selected by the trusted startup environment to one
+# absolute executable, using the already-pinned Python interpreter for portable
+# realpath and file-type checks.
+managed_command_executable() {
+  local command_name=${1-}
+  local python_path=${2-}
+  local candidate
+
+  [[ "$command_name" =~ ^[A-Za-z0-9._+-]+$ && -x "$python_path" ]] || return 2
+  candidate=$(command -v -- "$command_name") || return 127
+  "$python_path" -c '
+import os
+import stat
+import sys
+
+path = os.path.realpath(sys.argv[1])
+if (not os.path.isabs(path) or not path or
+        any(ord(character) < 32 or 127 <= ord(character) <= 159
+            for character in path)):
+    raise SystemExit(2)
+metadata = os.stat(path)
+if not stat.S_ISREG(metadata.st_mode) or not os.access(path, os.X_OK):
+    raise SystemExit(2)
+print(path)
+' "$candidate" 2>/dev/null
+}
+
+# Render the two host-specific Planner MCP paths while leaving every other
+# profile-policy byte unchanged. Python's JSON strings are valid TOML basic
+# strings and safely preserve spaces, Unicode, quotes, and backslashes.
+profile_policy_render() {
+  local template=${1-}
+  local python_path=${2-}
+  local bridge_path=${3-}
+
+  [[ -f "$template" ]] || return 2
+  if ! grep -Fq '__HERDR_CODEX_TEAM_PYTHON__' "$template" &&
+     ! grep -Fq '__HERDR_CODEX_TEAM_BRIDGE__' "$template"; then
+    command cat -- "$template"
+    return
+  fi
+  [[ -n "$python_path" && -n "$bridge_path" ]] || return 2
+  "$python_path" -c '
+import json
+import os
+import sys
+
+python_path, bridge_path = sys.argv[1:]
+for value in (python_path, bridge_path):
+    if (not os.path.isabs(value) or not value or
+            any(ord(character) < 32 or 127 <= ord(character) <= 159
+                for character in value)):
+        raise SystemExit(2)
+text = sys.stdin.read()
+python_marker = "\"__HERDR_CODEX_TEAM_PYTHON__\""
+bridge_marker = "\"__HERDR_CODEX_TEAM_BRIDGE__\""
+if text.count(python_marker) != 1 or text.count(bridge_marker) != 1:
+    raise SystemExit(2)
+text = text.replace(python_marker, json.dumps(python_path, ensure_ascii=False))
+text = text.replace(bridge_marker, json.dumps(bridge_path, ensure_ascii=False))
+sys.stdout.write(text)
+' "$python_path" "$bridge_path" <"$template"
+}
+
 profile_marker_sha256() {
   local profile=${1-}
   local prefix=${2-}
@@ -73,9 +160,12 @@ profile_embedded_prompt_sha256() {
 # the only template lines intentionally excluded from the managed policy hash.
 profile_policy_source_sha256() {
   local template=${1-}
+  local python_path=${2-}
+  local bridge_path=${3-}
   [[ -f "$template" ]] || return 2
   {
-    sed '/^[[:space:]]*model[[:space:]]*=/d' "$template"
+    profile_policy_render "$template" "$python_path" "$bridge_path" |
+      sed '/^[[:space:]]*model[[:space:]]*=/d'
     printf '\n'
   } | sha256_stream
 }
@@ -140,11 +230,14 @@ profile_prompt_integrity() {
 profile_policy_integrity() {
   local profile=${1-}
   local source_template=${2-}
+  local python_path=${3-}
+  local bridge_path=${4-}
   local expected
   local marker
   local installed
 
-  if ! expected=$(profile_policy_source_sha256 "$source_template"); then
+  if ! expected=$(profile_policy_source_sha256 \
+       "$source_template" "$python_path" "$bridge_path"); then
     printf '%s' 'source profile policy digest unavailable'
     return 1
   fi
@@ -158,6 +251,45 @@ profile_policy_integrity() {
   fi
   if [[ "$marker" != "$expected" || "$installed" != "$expected" ]]; then
     printf '%s' 'installed profile policy digest mismatch'
+    return 1
+  fi
+}
+
+# The Planner-only stdio bridge is executable policy, not a user-editable
+# profile override. Require an exact regular-file copy of the repository source
+# before start/doctor may trust it.
+managed_bridge_integrity() {
+  local installed=${1-}
+  local source_bridge=${2-}
+  local installed_dir
+  local expected
+  local actual
+  local marker='# Managed by herdr-codex-team. Edit this source file and rerun scripts/install.sh.'
+
+  if [[ ! -f "$source_bridge" || -L "$source_bridge" ]]; then
+    printf '%s' 'source Herdr MCP bridge is missing or unsafe'
+    return 1
+  fi
+  installed_dir=${installed%/*}
+  if [[ -z "$installed_dir" || "$installed_dir" == "$installed" || \
+        ! -d "$installed_dir" || -L "$installed_dir" ]]; then
+    printf '%s' 'installed Herdr MCP bridge parent is missing or unsafe'
+    return 1
+  fi
+  if [[ ! -f "$installed" || -L "$installed" || ! -O "$installed" ]]; then
+    printf '%s' 'installed Herdr MCP bridge is missing or unsafe'
+    return 1
+  fi
+  if ! grep -Fxq "$marker" "$source_bridge" || ! grep -Fxq "$marker" "$installed"; then
+    printf '%s' 'Herdr MCP bridge marker is missing'
+    return 1
+  fi
+  if ! expected=$(sha256_stream <"$source_bridge") || ! actual=$(sha256_stream <"$installed"); then
+    printf '%s' 'Herdr MCP bridge digest unavailable'
+    return 1
+  fi
+  if [[ "$actual" != "$expected" ]]; then
+    printf '%s' 'installed Herdr MCP bridge digest mismatch'
     return 1
   fi
 }

@@ -14,6 +14,147 @@ json_backend_name() {
   fi
 }
 
+# Resolve the exact Codex permission policy used by managed role processes.
+# The installed role profile contains the same values so plain profile loading
+# remains fail-closed; managed startup repeats them at highest precedence so the
+# foreground argv is independently auditable. Callers consume the globals below
+# immediately.
+managed_role_permission_policy() {
+  local role=$1
+
+  case "$role" in
+    planner|reviewer)
+      MANAGED_ROLE_SANDBOX=read-only
+      MANAGED_ROLE_PERMISSION_NAME=herdr_read_only_network
+      MANAGED_ROLE_PERMISSION_PARENT=:read-only
+      ;;
+    coder)
+      MANAGED_ROLE_SANDBOX=workspace-write
+      MANAGED_ROLE_PERMISSION_NAME=herdr_workspace_network
+      MANAGED_ROLE_PERMISSION_PARENT=:workspace
+      ;;
+    *)
+      return 2
+      ;;
+  esac
+
+  MANAGED_ROLE_PERMISSION_CONFIGS=(
+    "default_permissions=\"$MANAGED_ROLE_PERMISSION_NAME\""
+    "permissions.$MANAGED_ROLE_PERMISSION_NAME.extends=\"$MANAGED_ROLE_PERMISSION_PARENT\""
+    "permissions.$MANAGED_ROLE_PERMISSION_NAME.network.enabled=true"
+  )
+}
+
+# `codex debug prompt-input` is the compatibility boundary for beta permission
+# profiles. Configuration load alone is insufficient: legacy sandbox settings
+# in a user's base config can change precedence. Require the model-visible prompt
+# to report both the role's exact local filesystem sandbox and enabled command
+# networking before Herdr creates or accepts a managed workspace.
+json_prompt_has_effective_role_permissions() {
+  local payload=$1
+  local role=$2
+  local expected_sandbox
+
+  managed_role_permission_policy "$role" || return 2
+  expected_sandbox=$MANAGED_ROLE_SANDBOX
+
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s\n' "$payload" | jq -se --arg sandbox "$expected_sandbox" '
+      if length != 1 then error("expected one JSON document") else .[0] end |
+      [.. | objects |
+        select(.type? == "input_text") |
+        .text? |
+        select(type == "string" and startswith("<permissions instructions>"))
+      ] as $permission_texts |
+      ($permission_texts | length) == 1 and
+      ($permission_texts[0] |
+        contains("`sandbox_mode` is `" + $sandbox + "`") and
+        contains("Network access is enabled.") and
+        (contains("Network access is restricted.") | not))
+    ' >/dev/null 2>&1
+    return
+  fi
+
+  command -v python3 >/dev/null 2>&1 || return 127
+  printf '%s\n' "$payload" | python3 -c '
+import json
+import sys
+
+def walk(value):
+    if isinstance(value, dict):
+        if value.get("type") == "input_text" and isinstance(value.get("text"), str):
+            yield value["text"]
+        for child in value.values():
+            yield from walk(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from walk(child)
+
+try:
+    payload = json.load(sys.stdin)
+    texts = [text for text in walk(payload)
+             if text.startswith("<permissions instructions>")]
+    sandbox = sys.argv[1]
+    if (len(texts) != 1 or
+            f"`sandbox_mode` is `{sandbox}`" not in texts[0] or
+            "Network access is enabled." not in texts[0] or
+            "Network access is restricted." in texts[0]):
+        sys.exit(1)
+except (TypeError, ValueError):
+    sys.exit(2)
+' "$expected_sandbox" >/dev/null 2>&1
+}
+
+# Require Codex's model-visible environment_context to expose the exact runtime
+# root list for each role. Planner and Coder receive the ordered additional
+# roots; Reviewer remains scoped to the primary root. This is distinct from the
+# filesystem permission check: Planner stays read-only even with extra context.
+json_prompt_has_role_workspace_roots() {
+  local payload=$1
+  local role=$2
+  local primary=$3
+  shift 3
+  local -a expected=("$primary")
+
+  case "$role" in
+    planner|coder) expected+=("$@") ;;
+    reviewer) ;;
+    *) return 2 ;;
+  esac
+
+  command -v python3 >/dev/null 2>&1 || return 127
+  printf '%s\n' "$payload" | python3 -c '
+import json
+import sys
+import xml.etree.ElementTree as ET
+
+def walk(value):
+    if isinstance(value, dict):
+        if value.get("type") == "input_text" and isinstance(value.get("text"), str):
+            yield value["text"]
+        for child in value.values():
+            yield from walk(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from walk(child)
+
+try:
+    payload = json.load(sys.stdin)
+    contexts = [text for text in walk(payload)
+                if text.startswith("<environment_context>")]
+    if len(contexts) != 1:
+        raise ValueError
+    root = ET.fromstring(contexts[0])
+    actual = [item.text or "" for item in
+              root.findall("./filesystem/workspace_roots/root")]
+    expected = sys.argv[2:]
+    if sys.argv[1] not in ("planner", "coder", "reviewer") or actual != expected:
+        raise ValueError
+except (ET.ParseError, TypeError, ValueError):
+    raise SystemExit(2)
+' "$role" "${expected[@]}" >/dev/null 2>&1
+}
+
 json_agent_field() {
   local payload=$1
   local field=$2
@@ -182,6 +323,50 @@ try:
     if not isinstance(value, bool):
         raise TypeError
     print(str(value).lower())
+except (KeyError, TypeError, ValueError):
+    sys.exit(2)
+' "$field" 2>/dev/null
+}
+
+# Herdr 0.8.2 omits launch_pending after an Agent has settled. Treat only an
+# absent field as false; a present null/string/number remains malformed.
+json_agent_boolean_or_false_if_absent() {
+  local payload=$1
+  local field=$2
+
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s\n' "$payload" | jq -ser --arg field "$field" '
+      if length != 1 then error("expected one JSON document") else .[0] end |
+      .result.agent as $agent |
+      if ($agent | type) != "object" then error("expected agent object")
+      elif ($agent | has($field)) then
+        $agent[$field] as $value |
+        if ($value | type) == "boolean" then ($value | tostring)
+        else error("expected boolean agent field")
+        end
+      else "false"
+      end
+    ' 2>/dev/null
+    return
+  fi
+
+  command -v python3 >/dev/null 2>&1 || return 127
+  printf '%s\n' "$payload" | python3 -c '
+import json
+import sys
+
+try:
+    agent = json.load(sys.stdin)["result"]["agent"]
+    if not isinstance(agent, dict):
+        raise TypeError
+    field = sys.argv[1]
+    if field not in agent:
+        print("false")
+    else:
+        value = agent[field]
+        if not isinstance(value, bool):
+            raise TypeError
+        print(str(value).lower())
 except (KeyError, TypeError, ValueError):
     sys.exit(2)
 ' "$field" 2>/dev/null
@@ -552,16 +737,31 @@ except (KeyError, TypeError, ValueError):
 ' 2>/dev/null
 }
 
-# Managed teams neutralize profile/base-config writable_roots before adding the
-# run-specific roots. Require that exact structured argv marker so collision
-# checks do not silently miss implicit writable roots.
+# Managed teams hard-disable Codex-native collaboration and repeat the exact
+# role-specific network permission profile at CLI precedence. Require those
+# structured argv markers and reject legacy `--sandbox` or
+# `sandbox_workspace_write` configuration because either can suppress beta
+# permission-profile networking. Additional writable roots are inspected by the
+# separate role-aware add-dir parser.
 json_process_has_managed_scope() {
   local payload=$1
-  local expected_sandbox=$2
-  local marker='sandbox_workspace_write.writable_roots=[]'
+  local role=$2
+  local agents_marker='agents.enabled=false'
+  local permission_default
+  local permission_extends
+  local permission_network
+
+  managed_role_permission_policy "$role" || return 2
+  permission_default=${MANAGED_ROLE_PERMISSION_CONFIGS[0]}
+  permission_extends=${MANAGED_ROLE_PERMISSION_CONFIGS[1]}
+  permission_network=${MANAGED_ROLE_PERMISSION_CONFIGS[2]}
 
   if command -v jq >/dev/null 2>&1; then
-    printf '%s\n' "$payload" | jq -se --arg marker "$marker" --arg sandbox "$expected_sandbox" '
+    printf '%s\n' "$payload" | jq -se \
+      --arg agents_marker "$agents_marker" \
+      --arg permission_default "$permission_default" \
+      --arg permission_extends "$permission_extends" \
+      --arg permission_network "$permission_network" '
       def is_codex_executable:
         type == "string" and
         ((gsub("\\\\"; "/") | split("/")[-1] | ascii_downcase | sub("[.]exe$"; "")) == "codex");
@@ -633,8 +833,10 @@ json_process_has_managed_scope() {
         ] as $records |
         any($records[]; .is_codex) and
         all($records[]; (.is_codex | not) or
-          (.configs == [$marker] and
-           .sandboxes == [$sandbox] and
+          (.configs == [$agents_marker,
+                        $permission_default, $permission_extends,
+                        $permission_network] and
+           .sandboxes == [] and
            (.cd_override | not) and
            (.remote_override | not) and
            (.bypass | not)))
@@ -653,8 +855,10 @@ try:
     processes = json.load(sys.stdin)["result"]["process_info"]["foreground_processes"]
     if not isinstance(processes, list):
         raise TypeError
-    marker = sys.argv[1]
-    expected_sandbox = sys.argv[2]
+    agents_marker = sys.argv[1]
+    permission_default = sys.argv[2]
+    permission_extends = sys.argv[3]
+    permission_network = sys.argv[4]
     codex_found = False
 
     def is_codex_executable(value):
@@ -724,11 +928,14 @@ try:
             if arg == "--remote" or arg.startswith("--remote="):
                 remote_override = True
             index += 1
-        if (configs != [marker] or sandboxes != [expected_sandbox] or
+        if (configs != [agents_marker, permission_default,
+                        permission_extends, permission_network] or
+                sandboxes or
                 cd_override or remote_override or bypass):
             sys.exit(1)
     sys.exit(0 if codex_found else 1)
 except (KeyError, TypeError, ValueError):
     sys.exit(2)
-' "$marker" "$expected_sandbox" >/dev/null 2>&1
+' "$agents_marker" "$permission_default" \
+    "$permission_extends" "$permission_network" >/dev/null 2>&1
 }

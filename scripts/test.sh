@@ -6,9 +6,11 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROJECT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 TEAM_LIB="$SCRIPT_DIR/lib/team.sh"
 JSON_LIB="$SCRIPT_DIR/lib/json.sh"
+DIGEST_LIB="$SCRIPT_DIR/lib/digest.sh"
 SCOPE_LIB="$SCRIPT_DIR/lib/scope.sh"
 RUN_STATE_LIB="$SCRIPT_DIR/lib/run-state.sh"
-[[ -f "$TEAM_LIB" && -f "$JSON_LIB" && -f "$SCOPE_LIB" && -f "$RUN_STATE_LIB" ]] || {
+[[ -f "$TEAM_LIB" && -f "$JSON_LIB" && -f "$DIGEST_LIB" && \
+   -f "$SCOPE_LIB" && -f "$RUN_STATE_LIB" ]] || {
   printf '[FAIL] Missing script helper under %s/lib.\n' "$SCRIPT_DIR" >&2
   exit 1
 }
@@ -16,6 +18,8 @@ RUN_STATE_LIB="$SCRIPT_DIR/lib/run-state.sh"
 source "$TEAM_LIB"
 # shellcheck source=lib/json.sh
 source "$JSON_LIB"
+# shellcheck source=lib/digest.sh
+source "$DIGEST_LIB"
 # shellcheck source=lib/scope.sh
 source "$SCOPE_LIB"
 # shellcheck source=lib/run-state.sh
@@ -318,7 +322,7 @@ require_named_runtime() {
      ! agent_kind=$(json_agent_required_string "$payload" agent) || \
      ! agent_status=$(json_agent_required_string "$payload" agent_status) || \
      ! interactive_ready=$(json_agent_required_boolean "$payload" interactive_ready) || \
-     ! launch_pending=$(json_agent_required_boolean "$payload" launch_pending) || \
+     ! launch_pending=$(json_agent_boolean_or_false_if_absent "$payload" launch_pending) || \
      ! pane_id=$(json_agent_required_string "$payload" pane_id) || \
      ! workspace_id=$(json_agent_required_string "$payload" workspace_id) || \
      ! state_change_seq=$(json_agent_field "$payload" state_change_seq); then
@@ -521,6 +525,7 @@ prompts/planner.md
 prompts/coder.md
 prompts/reviewer.md
 scripts/install.sh
+scripts/herdr_mcp.py
 scripts/doctor.sh
 scripts/start.sh
 scripts/test.sh
@@ -534,6 +539,7 @@ scripts/lib/scope.sh
 scripts/lib/run-state.sh
 scripts/lib/remote-bootstrap.sh
 tests/remote-launcher.sh
+tests/test_herdr_mcp.py
 tests/prompts/01-coder-ping.md
 tests/prompts/02-reviewer-ping.md
 tests/prompts/03-planner-to-coder.md
@@ -580,22 +586,70 @@ examples/multi-team.md"
   bash -n "$SCOPE_LIB"
   bash -n "$RUN_STATE_LIB"
   "$PROJECT_ROOT/tests/remote-launcher.sh"
+  PYTHONDONTWRITEBYTECODE=1 python3 "$PROJECT_ROOT/scripts/herdr_mcp.py" --check >/dev/null
+  PYTHONDONTWRITEBYTECODE=1 python3 -m unittest "$PROJECT_ROOT/tests/test_herdr_mcp.py"
   printf '[OK] Shell syntax\n'
 
-  grep -Eq '^sandbox_mode[[:space:]]*=[[:space:]]*"workspace-write"' "$PROJECT_ROOT/profiles/planner.config.toml" || \
-    die 'Planner template is not workspace-write.'
-  grep -Eq '^sandbox_mode[[:space:]]*=[[:space:]]*"workspace-write"' "$PROJECT_ROOT/profiles/coder.config.toml" || \
+  for read_only_role in planner reviewer; do
+    grep -Eq '^default_permissions[[:space:]]*=[[:space:]]*"herdr_read_only_network"[[:space:]]*$' \
+      "$PROJECT_ROOT/profiles/$read_only_role.config.toml" || \
+      die "$read_only_role template does not select the read-only network permission profile."
+    grep -Eq '^permissions[.]herdr_read_only_network[.]extends[[:space:]]*=[[:space:]]*":read-only"[[:space:]]*$' \
+      "$PROJECT_ROOT/profiles/$read_only_role.config.toml" || \
+      die "$read_only_role template is not locally read-only."
+    grep -Eq '^permissions[.]herdr_read_only_network[.]network[.]enabled[[:space:]]*=[[:space:]]*true[[:space:]]*$' \
+      "$PROJECT_ROOT/profiles/$read_only_role.config.toml" || \
+      die "$read_only_role template does not enable command network access."
+  done
+  grep -Eq '^default_permissions[[:space:]]*=[[:space:]]*"herdr_workspace_network"[[:space:]]*$' \
+    "$PROJECT_ROOT/profiles/coder.config.toml" || \
+    die 'Coder template does not select the workspace network permission profile.'
+  grep -Eq '^permissions[.]herdr_workspace_network[.]extends[[:space:]]*=[[:space:]]*":workspace"[[:space:]]*$' \
+    "$PROJECT_ROOT/profiles/coder.config.toml" || \
     die 'Coder template is not workspace-write.'
-  grep -Eq '^sandbox_mode[[:space:]]*=[[:space:]]*"read-only"' "$PROJECT_ROOT/profiles/reviewer.config.toml" || \
-    die 'Reviewer template is not read-only.'
+  grep -Eq '^permissions[.]herdr_workspace_network[.]network[.]enabled[[:space:]]*=[[:space:]]*true[[:space:]]*$' \
+    "$PROJECT_ROOT/profiles/coder.config.toml" || \
+    die 'Coder template does not enable command network access.'
+  grep -Eq '^shell_environment_policy[.]set[.]PYTHONDONTWRITEBYTECODE[[:space:]]*=[[:space:]]*"1"[[:space:]]*$' \
+    "$PROJECT_ROOT/profiles/reviewer.config.toml" || \
+    die 'Reviewer template does not suppress Python bytecode writes.'
+  grep -Eq '^shell_environment_policy[.]set[.]PYTEST_ADDOPTS[[:space:]]*=[[:space:]]*"--capture=sys -p no:cacheprovider"[[:space:]]*$' \
+    "$PROJECT_ROOT/profiles/reviewer.config.toml" || \
+    die 'Reviewer template does not select read-only-safe pytest capture and cache settings.'
   for role in planner coder reviewer; do
     grep -Eq '^approval_policy[[:space:]]*=[[:space:]]*"never"[[:space:]]*$' \
       "$PROJECT_ROOT/profiles/$role.config.toml" || \
       die "$role template does not set approval_policy = \"never\"."
+    grep -Eq '^agents[.]enabled[[:space:]]*=[[:space:]]*false[[:space:]]*$' \
+      "$PROJECT_ROOT/profiles/$role.config.toml" || \
+      die "$role template does not disable Codex-native multi-agent tools."
   done
-  if grep -Eq '^sandbox_mode[[:space:]]*=[[:space:]]*"danger-full-access"' "$PROJECT_ROOT"/profiles/*.config.toml; then
-    die 'A profile defaults to danger-full-access.'
+  if grep -Eq '^sandbox_mode[[:space:]]*=' "$PROJECT_ROOT"/profiles/*.config.toml; then
+    die 'A role profile still mixes legacy sandbox_mode with beta permission profiles.'
   fi
+  grep -Fq 'mcp_servers.herdr_codex_team.command = ' "$PROJECT_ROOT/profiles/planner.config.toml" || \
+    die 'Planner template lacks the managed Herdr MCP bridge.'
+  grep -Fxq 'mcp_servers.herdr_codex_team.command = "__HERDR_CODEX_TEAM_PYTHON__"' \
+    "$PROJECT_ROOT/profiles/planner.config.toml" || \
+    die 'Planner template lacks the install-time absolute Python placeholder.'
+  grep -Fxq 'mcp_servers.herdr_codex_team.args = ["__HERDR_CODEX_TEAM_BRIDGE__"]' \
+    "$PROJECT_ROOT/profiles/planner.config.toml" || \
+    die 'Planner template lacks the install-time absolute bridge placeholder.'
+  grep -Fq '  "HERDR_BIN_PATH",' "$PROJECT_ROOT/profiles/planner.config.toml" || \
+    die 'Planner template does not forward Herdr trusted binary identity.'
+  if grep -Eq 'command[[:space:]]*=[[:space:]]*"/bin/sh"|exec[[:space:]]+python3' \
+       "$PROJECT_ROOT/profiles/planner.config.toml"; then
+    die 'Planner template still selects a sandbox-external executable through PATH.'
+  fi
+  grep -Fq 'mcp_servers.herdr_codex_team.enabled_tools = ["inspect_team", "prompt_agent"]' "$PROJECT_ROOT/profiles/planner.config.toml" || \
+    die 'Planner Herdr MCP bridge does not expose the exact bounded tool list.'
+  grep -Eq '^mcp_servers\.herdr_codex_team\.required[[:space:]]*=[[:space:]]*true[[:space:]]*$' "$PROJECT_ROOT/profiles/planner.config.toml" || \
+    die 'Planner Herdr MCP bridge is not required at startup.'
+  for peer_profile in coder reviewer; do
+    if grep -Fq 'mcp_servers.herdr_codex_team.' "$PROJECT_ROOT/profiles/$peer_profile.config.toml"; then
+      die "$peer_profile template must not receive the Planner Herdr MCP bridge."
+    fi
+  done
   grep -Fq 'HERDR COMMUNICATION IS MANDATORY' "$PROJECT_ROOT/prompts/planner.md" || \
     die 'Planner prompt lacks the mandatory Herdr guardrail.'
   grep -Fq 'HERDR TEAM IDENTITY AND ROUTING' "$PROJECT_ROOT/prompts/planner.md" || \
@@ -604,6 +658,10 @@ examples/multi-team.md"
     die 'Planner prompt lacks the strict team-isolation guardrail.'
   grep -Fq 'HERDR_PANE_ID' "$PROJECT_ROOT/prompts/planner.md" || \
     die 'Planner prompt does not derive identity from its Herdr pane.'
+  grep -Fq 'mcp__herdr_codex_team__inspect_team' "$PROJECT_ROOT/prompts/planner.md" || \
+    die 'Planner prompt does not require the managed identity tool.'
+  grep -Fq 'mcp__herdr_codex_team__prompt_agent' "$PROJECT_ROOT/prompts/planner.md" || \
+    die 'Planner prompt does not require the managed role-only prompt tool.'
   grep -Fq 'HERDR_COMMUNICATION_FAILED' "$PROJECT_ROOT/prompts/planner.md" || \
     die 'Planner prompt lacks the mandatory Herdr failure result.'
   grep -Fq 'Allow at most 4 review rounds total.' "$PROJECT_ROOT/prompts/planner.md" || \
@@ -727,48 +785,94 @@ examples/multi-team.md"
   if json_agent_names "$agent_names_fixture" >/dev/null 2>&1; then
     die 'Agent-name parser accepted a Unicode C1 control character.'
   fi
-  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv0":"/usr/local/bin/codex","argv":["codex","--profile","coder","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write","--add-dir","/tmp/root with spaces","--add-dir=/tmp/root-two"]}]}}}'
-  json_process_has_managed_scope "$process_fixture" workspace-write || \
-    die 'Managed-scope parser rejected the exact override and sandbox marker.'
+  prompt_fixture='[{"type":"message","content":[{"type":"input_text","text":"<permissions instructions>\nFilesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: local read only. Network access is enabled.\n</permissions instructions>"}]}]'
+  json_prompt_has_effective_role_permissions "$prompt_fixture" planner || \
+    die 'Effective-permission parser rejected read-only local access with networking enabled.'
+  json_prompt_has_effective_role_permissions "$prompt_fixture" reviewer || \
+    die 'Effective-permission parser rejected the Reviewer read-only network policy.'
+  if json_prompt_has_effective_role_permissions "$prompt_fixture" coder; then
+    die 'Effective-permission parser accepted the wrong filesystem boundary.'
+  fi
+  prompt_fixture='[{"type":"message","content":[{"type":"input_text","text":"<permissions instructions>\n`sandbox_mode` is `read-only`. Network access is restricted.\n</permissions instructions>"}]}]'
+  if json_prompt_has_effective_role_permissions "$prompt_fixture" planner; then
+    die 'Effective-permission parser accepted restricted command networking.'
+  fi
+  prompt_fixture='[{"type":"message","content":[{"type":"input_text","text":"<environment_context><filesystem><workspace_roots><root>/tmp/primary</root><root>/tmp/extra</root></workspace_roots></filesystem></environment_context>"}]}]'
+  json_prompt_has_role_workspace_roots \
+    "$prompt_fixture" planner /tmp/primary /tmp/extra || \
+    die 'Workspace-root parser rejected exact Planner multi-root context.'
+  json_prompt_has_role_workspace_roots \
+    "$prompt_fixture" coder /tmp/primary /tmp/extra || \
+    die 'Workspace-root parser rejected exact Coder multi-root context.'
+  if json_prompt_has_role_workspace_roots \
+       "$prompt_fixture" reviewer /tmp/primary /tmp/extra; then
+    die 'Workspace-root parser accepted an additional Reviewer root.'
+  fi
+  prompt_fixture='[{"type":"message","content":[{"type":"input_text","text":"<environment_context><filesystem><workspace_roots><root>/tmp/primary</root></workspace_roots></filesystem></environment_context>"}]}]'
+  json_prompt_has_role_workspace_roots \
+    "$prompt_fixture" reviewer /tmp/primary /tmp/extra || \
+    die 'Workspace-root parser rejected primary-only Reviewer context.'
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv0":"/usr/local/bin/codex","argv":["codex","--profile","coder","-c","agents.enabled=false","-c","default_permissions=\"herdr_workspace_network\"","-c","permissions.herdr_workspace_network.extends=\":workspace\"","-c","permissions.herdr_workspace_network.network.enabled=true","--add-dir","/tmp/root with spaces","--add-dir=/tmp/root-two"]}]}}}'
+  json_process_has_managed_scope "$process_fixture" coder || \
+    die 'Managed-scope parser rejected the exact native-agent and network-permission markers.'
   [[ $(json_process_codex_add_dirs "$process_fixture") == $'/tmp/root with spaces\n/tmp/root-two' ]] || \
     die 'Structured add-dir parser did not preserve repeated paths and spaces.'
-  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","-c","sandbox_workspace_write.writable_roots=[]","-c","sandbox_workspace_write.writable_roots=[\\"/tmp/hidden\\"]","--sandbox","workspace-write"]}]}}}'
-  if json_process_has_managed_scope "$process_fixture" workspace-write; then
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","planner","-c","agents.enabled=false","-c","default_permissions=\"herdr_read_only_network\"","-c","permissions.herdr_read_only_network.extends=\":read-only\"","-c","permissions.herdr_read_only_network.network.enabled=true"]}]}}}'
+  json_process_has_managed_scope "$process_fixture" planner || \
+    die 'Managed-scope parser rejected the read-only network permission argv.'
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","agents.enabled=false","-c","default_permissions=\"herdr_workspace_network\"","-c","permissions.herdr_workspace_network.extends=\":workspace\""]}]}}}'
+  if json_process_has_managed_scope "$process_fixture" coder; then
+    die 'Managed-scope parser accepted a missing network-enabled marker.'
+  fi
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","agents.enabled=false","-c","default_permissions=\"herdr_workspace_network\"","-c","permissions.herdr_workspace_network.extends=\":workspace\"","-c","permissions.herdr_workspace_network.network.enabled=false"]}]}}}'
+  if json_process_has_managed_scope "$process_fixture" coder; then
+    die 'Managed-scope parser accepted disabled command networking.'
+  fi
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","agents.enabled=false","-c","default_permissions=\"herdr_workspace_network\"","-c","permissions.herdr_workspace_network.extends=\":workspace\"","-c","permissions.herdr_workspace_network.network.enabled=true","--sandbox","workspace-write"]}]}}}'
+  if json_process_has_managed_scope "$process_fixture" coder; then
+    die 'Managed-scope parser accepted a legacy sandbox override that suppresses permission-profile networking.'
+  fi
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write"]}]}}}'
+  if json_process_has_managed_scope "$process_fixture" coder; then
+    die 'Managed-scope parser accepted a process that still exposes native Codex agents.'
+  fi
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","-c","sandbox_workspace_write.writable_roots=[]","-c","agents.enabled=false","-c","sandbox_workspace_write.writable_roots=[\\"/tmp/hidden\\"]","--sandbox","workspace-write"]}]}}}'
+  if json_process_has_managed_scope "$process_fixture" coder; then
     die 'Managed-scope parser accepted a second writable_roots override.'
   fi
-  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","-c","sandbox_workspace_write.writable_roots=[]","-c","sandbox_workspace_write . writable_roots = [\\"/tmp/hidden\\"]","--sandbox","workspace-write"]}]}}}'
-  if json_process_has_managed_scope "$process_fixture" workspace-write; then
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","-c","sandbox_workspace_write.writable_roots=[]","-c","agents.enabled=false","-c","sandbox_workspace_write . writable_roots = [\\"/tmp/hidden\\"]","--sandbox","workspace-write"]}]}}}'
+  if json_process_has_managed_scope "$process_fixture" coder; then
     die 'Managed-scope parser accepted an equivalent TOML override spelling.'
   fi
-  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write","--cd","/tmp/hidden-primary"]}]}}}'
-  if json_process_has_managed_scope "$process_fixture" workspace-write; then
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","sandbox_workspace_write.writable_roots=[]","-c","agents.enabled=false","--sandbox","workspace-write","--cd","/tmp/hidden-primary"]}]}}}'
+  if json_process_has_managed_scope "$process_fixture" coder; then
     die 'Managed-scope parser accepted a Codex primary-directory override.'
   fi
-  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write","--remote","ws://127.0.0.1:9000"]}]}}}'
-  if json_process_has_managed_scope "$process_fixture" workspace-write; then
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","sandbox_workspace_write.writable_roots=[]","-c","agents.enabled=false","--sandbox","workspace-write","--remote","ws://127.0.0.1:9000"]}]}}}'
+  if json_process_has_managed_scope "$process_fixture" coder; then
     die 'Managed-scope parser accepted a remote execution endpoint.'
   fi
-  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write","--remote=ws://127.0.0.1:9000"]}]}}}'
-  if json_process_has_managed_scope "$process_fixture" workspace-write; then
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","sandbox_workspace_write.writable_roots=[]","-c","agents.enabled=false","--sandbox","workspace-write","--remote=ws://127.0.0.1:9000"]}]}}}'
+  if json_process_has_managed_scope "$process_fixture" coder; then
     die 'Managed-scope parser accepted an equals-form remote execution endpoint.'
   fi
-  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write","--dangerously-bypass-hook-trust"]}]}}}'
-  if json_process_has_managed_scope "$process_fixture" workspace-write; then
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","sandbox_workspace_write.writable_roots=[]","-c","agents.enabled=false","--sandbox","workspace-write","--dangerously-bypass-hook-trust"]}]}}}'
+  if json_process_has_managed_scope "$process_fixture" coder; then
     die 'Managed-scope parser accepted a hook-trust bypass flag.'
   fi
-  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write","--yolo"]}]}}}'
-  if json_process_has_managed_scope "$process_fixture" workspace-write; then
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","-c","sandbox_workspace_write.writable_roots=[]","-c","agents.enabled=false","--sandbox","workspace-write","--yolo"]}]}}}'
+  if json_process_has_managed_scope "$process_fixture" coder; then
     die 'Managed-scope parser accepted an unbounded sandbox bypass flag.'
   fi
-  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":99,"name":"zsh","argv":null},{"pid":101,"name":"codex","argv":["codex","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write"]}]}}}'
-  json_process_has_managed_scope "$process_fixture" workspace-write || \
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":99,"name":"zsh","argv":null},{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","agents.enabled=false","-c","default_permissions=\"herdr_workspace_network\"","-c","permissions.herdr_workspace_network.extends=\":workspace\"","-c","permissions.herdr_workspace_network.network.enabled=true"]}]}}}'
+  json_process_has_managed_scope "$process_fixture" coder || \
     die 'Managed-scope parser rejected an unrelated non-Codex process with unavailable argv.'
-  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","-c","sandbox_workspace_write.writable_roots=[]","--sandbox"]}]}}}'
-  if json_process_has_managed_scope "$process_fixture" workspace-write; then
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","-c","sandbox_workspace_write.writable_roots=[]","-c","agents.enabled=false","--sandbox"]}]}}}'
+  if json_process_has_managed_scope "$process_fixture" coder; then
     die 'Managed-scope parser accepted a dangling sandbox option.'
   fi
-  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","--","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write","--add-dir","/tmp/prompt-only"]}]}}}'
-  if json_process_has_managed_scope "$process_fixture" workspace-write; then
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","--","-c","sandbox_workspace_write.writable_roots=[]","-c","agents.enabled=false","--sandbox","workspace-write","--add-dir","/tmp/prompt-only"]}]}}}'
+  if json_process_has_managed_scope "$process_fixture" coder; then
     die 'Managed-scope parser accepted marker tokens after the option terminator.'
   fi
   [[ -z $(json_process_codex_add_dirs "$process_fixture") ]] || \
@@ -785,7 +889,7 @@ examples/multi-team.md"
   if json_process_codex_add_dirs "$process_fixture" >/dev/null 2>&1; then
     die 'Structured add-dir parser accepted a dangling option.'
   fi
-  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write","--add-dir","/tmp/root-one"]},{"pid":102,"name":"codex","argv":["codex","--profile","coder","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write","--add-dir","/tmp/root-two"]}]}}}'
+  process_fixture='{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","sandbox_workspace_write.writable_roots=[]","-c","agents.enabled=false","--sandbox","workspace-write","--add-dir","/tmp/root-one"]},{"pid":102,"name":"codex","argv":["codex","--profile","coder","-c","sandbox_workspace_write.writable_roots=[]","-c","agents.enabled=false","--sandbox","workspace-write","--add-dir","/tmp/root-two"]}]}}}'
   if json_process_codex_add_dirs "$process_fixture" >/dev/null 2>&1; then
     die 'Structured add-dir parser merged scope across multiple Codex processes.'
   fi
@@ -837,6 +941,15 @@ examples/multi-team.md"
      json_agent_required_boolean '{"result":{"agent":{"launch_pending":0}}}' launch_pending >/dev/null 2>&1; then
     die 'Strict agent-boolean parser coerced a string or numeric value.'
   fi
+  [[ $(json_agent_boolean_or_false_if_absent '{"result":{"agent":{}}}' launch_pending) == false ]] || \
+    die 'Compatible agent-boolean parser did not default an absent launch_pending field to false.'
+  [[ $(json_agent_boolean_or_false_if_absent '{"result":{"agent":{"launch_pending":true}}}' launch_pending) == true ]] || \
+    die 'Compatible agent-boolean parser rejected a present true value.'
+  if json_agent_boolean_or_false_if_absent '{"result":{"agent":{"launch_pending":null}}}' launch_pending >/dev/null 2>&1 || \
+     json_agent_boolean_or_false_if_absent '{"result":{"agent":{"launch_pending":"false"}}}' launch_pending >/dev/null 2>&1 || \
+     json_agent_boolean_or_false_if_absent '{"result":{"agent":{"launch_pending":0}}}' launch_pending >/dev/null 2>&1; then
+    die 'Compatible agent-boolean parser accepted a malformed present value.'
+  fi
   [[ -z $(json_agent_optional_string '{"result":{"agent":{"cwd":null}}}' cwd) ]] || \
     die 'Optional agent-string parser did not preserve null as empty.'
   if json_agent_optional_string '{"result":{"agent":{"cwd":1}}}' cwd >/dev/null 2>&1; then
@@ -865,6 +978,7 @@ HERDR_CODER_DONE_fixture'
   temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/herdr-codex-team-static.XXXXXX")
   codex_test_dir="$temporary_root/codex"
   mkdir -p "$codex_test_dir"
+  codex_test_dir=$(CDPATH= cd -- "$codex_test_dir" && pwd -P)
 
   parse_log="$temporary_root/parse.log"
   if env -u TEAM_PREFIX "$SCRIPT_DIR/start.sh" --team '' --cwd "$PROJECT_ROOT" \
@@ -1086,26 +1200,94 @@ HERDR_CODER_DONE_fixture'
       die "Installed $role profile lacks developer instructions."
     grep -Eq '^model[[:space:]]*=[[:space:]]*"test-'"$role"'"' "$codex_test_dir/$role.config.toml" || \
       die "Installed $role model override is missing."
+    grep -Eq '^agents[.]enabled[[:space:]]*=[[:space:]]*false[[:space:]]*$' \
+      "$codex_test_dir/$role.config.toml" || \
+      die "Installed $role profile still enables Codex-native multi-agent tools."
   done
+  bridge_path="$codex_test_dir/herdr-codex-team/herdr_mcp.py"
+  [[ -f "$bridge_path" && ! -L "$bridge_path" ]] || \
+    die 'Installer did not install a safe Planner Herdr MCP bridge.'
+  resolved_python_bin=$(managed_python_executable) || \
+    die 'Static test could not resolve Python to an absolute executable.'
+  resolved_herdr_bin=$(managed_command_executable herdr "$resolved_python_bin") || \
+    die 'Static test could not resolve Herdr to an absolute executable.'
+  python_toml=$("$resolved_python_bin" -c \
+    'import json, sys; print(json.dumps(sys.argv[1], ensure_ascii=False))' \
+    "$resolved_python_bin")
+  bridge_toml=$("$resolved_python_bin" -c \
+    'import json, sys; print(json.dumps(sys.argv[1], ensure_ascii=False))' \
+    "$bridge_path")
+  grep -Fxq "mcp_servers.herdr_codex_team.command = $python_toml" \
+    "$codex_test_dir/planner.config.toml" || \
+    die 'Installed Planner profile did not pin the absolute Python executable.'
+  grep -Fxq "mcp_servers.herdr_codex_team.args = [$bridge_toml]" \
+    "$codex_test_dir/planner.config.toml" || \
+    die 'Installed Planner profile did not pin the absolute managed bridge path.'
+  if grep -Eq '__HERDR_CODEX_TEAM_|command[[:space:]]*=[[:space:]]*"/bin/sh"|exec[[:space:]]+python3' \
+       "$codex_test_dir/planner.config.toml"; then
+    die 'Installed Planner profile retained an unsafe launcher or an unrendered path placeholder.'
+  fi
+  managed_bridge_integrity "$bridge_path" "$PROJECT_ROOT/scripts/herdr_mcp.py" || \
+    die 'Installed Planner Herdr MCP bridge does not match its managed source.'
+  PYTHONDONTWRITEBYTECODE=1 "$resolved_python_bin" "$bridge_path" --check >/dev/null || \
+    die 'Installed Planner Herdr MCP bridge failed self-check.'
 
   for role in planner coder reviewer; do
-    if ! CODEX_HOME="$codex_test_dir" \
-         codex --profile "$role" debug prompt-input 'profile validation' >/dev/null 2>&1; then
+    if ! rendered_prompt=$(CODEX_HOME="$codex_test_dir" \
+         HERDR_BIN_PATH="$resolved_herdr_bin" \
+         codex --profile "$role" debug prompt-input 'profile validation' 2>/dev/null); then
       die "Codex could not load the rendered $role profile."
     fi
+    json_prompt_has_effective_role_permissions "$rendered_prompt" "$role" || \
+      die "Rendered $role profile did not enable networking with its exact local filesystem boundary."
+    for native_agent_marker in \
+      spawn_agent followup_task send_message wait_agent interrupt_agent list_agents; do
+      if grep -Fq "$native_agent_marker" <<<"$rendered_prompt"; then
+        die "Rendered $role profile still exposes Codex-native agent marker $native_agent_marker."
+      fi
+    done
   done
-  printf '[OK] Codex loaded all rendered profiles\n'
+  printf '[OK] Codex loaded all rendered profiles with role-local filesystem boundaries, command networking, and no native multi-agent tools\n'
 
   mock_bin="$temporary_root/mock-bin"
   workspace_marker="$temporary_root/workspace-created"
   mkdir -p "$mock_bin"
-  cat >"$mock_bin/codex" <<'MOCK_CODEX'
+cat >"$mock_bin/codex" <<'MOCK_CODEX'
 #!/usr/bin/env bash
 if [[ ${1-} == --version ]]; then
   printf '%s\n' 'codex-cli mock'
+  exit 0
 fi
 if [[ ${1-} == --help ]]; then
   printf '%s\n' '  --add-dir <DIR>  Additional writable directory'
+  exit 0
+fi
+role=''
+previous=''
+add_dirs=()
+for argument in "$@"; do
+  if [[ "$previous" == --profile ]]; then
+    role=$argument
+  fi
+  if [[ "$previous" == --add-dir ]]; then
+    add_dirs+=("$argument")
+  elif [[ "$argument" == --add-dir=* ]]; then
+    add_dirs+=("${argument#--add-dir=}")
+  fi
+  previous=$argument
+done
+if [[ " $* " == *' debug prompt-input '* ]]; then
+  case "$role" in
+    planner|reviewer) sandbox=read-only ;;
+    coder) sandbox=workspace-write ;;
+    *) exit 2 ;;
+  esac
+  roots="<root>$PWD</root>"
+  for add_dir in ${add_dirs[@]+"${add_dirs[@]}"}; do
+    roots+="<root>$add_dir</root>"
+  done
+  printf '[{"type":"message","content":[{"type":"input_text","text":"<permissions instructions>\\n`Sandbox_mode` compatibility marker; `sandbox_mode` is `%s`. Network access is enabled.\\n</permissions instructions>"},{"type":"input_text","text":"<environment_context><filesystem><workspace_roots>%s</workspace_roots></filesystem></environment_context>"}]}]\n' \
+    "$sandbox" "$roots"
 fi
 exit 0
 MOCK_CODEX
@@ -1233,8 +1415,13 @@ case "${1-}:${2-}" in
         final_project_root=${MOCK_FINAL_PROJECT_ROOT:-$MOCK_PROJECT_ROOT}
         final_ready_json=${MOCK_FINAL_READY_JSON:-true}
         final_launch_pending_json=${MOCK_FINAL_LAUNCH_PENDING_JSON:-false}
-        printf '{"result":{"agent":{"name":"%s","agent":"codex","agent_status":"idle","interactive_ready":%s,"launch_pending":%s,"pane_id":"%s","workspace_id":"mock-workspace","cwd":"%s","foreground_cwd":"%s"}}}\n' \
-          "$3" "$final_ready_json" "$final_launch_pending_json" "$pane" "$final_project_root" "$final_project_root"
+        if [[ ${MOCK_OMIT_LAUNCH_PENDING:-0} == 1 ]]; then
+          printf '{"result":{"agent":{"name":"%s","agent":"codex","agent_status":"idle","interactive_ready":%s,"pane_id":"%s","workspace_id":"mock-workspace","cwd":"%s","foreground_cwd":"%s"}}}\n' \
+            "$3" "$final_ready_json" "$pane" "$final_project_root" "$final_project_root"
+        else
+          printf '{"result":{"agent":{"name":"%s","agent":"codex","agent_status":"idle","interactive_ready":%s,"launch_pending":%s,"pane_id":"%s","workspace_id":"mock-workspace","cwd":"%s","foreground_cwd":"%s"}}}\n' \
+            "$3" "$final_ready_json" "$final_launch_pending_json" "$pane" "$final_project_root" "$final_project_root"
+        fi
       fi
       exit 0
     fi
@@ -1253,8 +1440,13 @@ case "${1-}:${2-}" in
           reported_foreground_cwd=${MOCK_FOREGROUND_CWD:-$MOCK_PROJECT_ROOT}
           ready_json=${MOCK_INTERACTIVE_READY_JSON:-true}
           launch_pending_json=${MOCK_LAUNCH_PENDING_JSON:-false}
-          printf '{"result":{"agent":{"name":"%s","agent":"codex","agent_status":"idle","interactive_ready":%s,"launch_pending":%s,"pane_id":"%s","workspace_id":"%s","cwd":"%s","foreground_cwd":"%s"}}}\n' \
-            "$3" "$ready_json" "$launch_pending_json" "$pane" "$workspace" "$reported_cwd" "$reported_foreground_cwd"
+          if [[ ${MOCK_OMIT_LAUNCH_PENDING:-0} == 1 ]]; then
+            printf '{"result":{"agent":{"name":"%s","agent":"codex","agent_status":"idle","interactive_ready":%s,"pane_id":"%s","workspace_id":"%s","cwd":"%s","foreground_cwd":"%s"}}}\n' \
+              "$3" "$ready_json" "$pane" "$workspace" "$reported_cwd" "$reported_foreground_cwd"
+          else
+            printf '{"result":{"agent":{"name":"%s","agent":"codex","agent_status":"idle","interactive_ready":%s,"launch_pending":%s,"pane_id":"%s","workspace_id":"%s","cwd":"%s","foreground_cwd":"%s"}}}\n' \
+              "$3" "$ready_json" "$launch_pending_json" "$pane" "$workspace" "$reported_cwd" "$reported_foreground_cwd"
+          fi
           exit 0
           ;;
       esac
@@ -1267,9 +1459,9 @@ case "${1-}:${2-}" in
       if [[ ${MOCK_HERDR_MODE:-} == scope-unmanaged ]]; then
         printf '%s\n' '{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","--sandbox","workspace-write"]}]}}}'
       elif [[ -n ${MOCK_EXTRA_ROOT:-} && ${MOCK_HERDR_MODE:-} == scope-adddir-collision ]]; then
-        printf '{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write","--add-dir","%s"]}]}}}\n' "$MOCK_EXTRA_ROOT"
+        printf '{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","agents.enabled=false","-c","default_permissions=\\"herdr_workspace_network\\"","-c","permissions.herdr_workspace_network.extends=\\":workspace\\"","-c","permissions.herdr_workspace_network.network.enabled=true","--add-dir","%s"]}]}}}\n' "$MOCK_EXTRA_ROOT"
       else
-        printf '%s\n' '{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","workspace-write"]}]}}}'
+        printf '%s\n' '{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","coder","-c","agents.enabled=false","-c","default_permissions=\"herdr_workspace_network\"","-c","permissions.herdr_workspace_network.extends=\":workspace\"","-c","permissions.herdr_workspace_network.network.enabled=true"]}]}}}'
       fi
       exit 0
     fi
@@ -1281,15 +1473,15 @@ case "${1-}:${2-}" in
         *) exit 1 ;;
       esac
       case "$role" in
-        planner|coder) sandbox=workspace-write ;;
-        reviewer) sandbox=read-only ;;
+        planner|reviewer) permission=herdr_read_only_network; parent=:read-only ;;
+        coder) permission=herdr_workspace_network; parent=:workspace ;;
       esac
       if [[ -n ${MOCK_EXTRA_ROOT:-} && "$role" != reviewer ]]; then
-        printf '{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv0":"/usr/local/bin/codex","argv":["codex","--profile","%s","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","%s","--add-dir","%s"],"cmdline":"codex --profile %s"}]}}}\n' \
-          "$role" "$sandbox" "$MOCK_EXTRA_ROOT" "$role"
+        printf '{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv0":"/usr/local/bin/codex","argv":["codex","--profile","%s","-c","agents.enabled=false","-c","default_permissions=\\"%s\\"","-c","permissions.%s.extends=\\"%s\\"","-c","permissions.%s.network.enabled=true","--add-dir","%s"],"cmdline":"codex --profile %s"}]}}}\n' \
+          "$role" "$permission" "$permission" "$parent" "$permission" "$MOCK_EXTRA_ROOT" "$role"
       else
-        printf '{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv0":"/usr/local/bin/codex","argv":["codex","--profile","%s","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","%s"],"cmdline":"codex --profile %s"}]}}}\n' \
-          "$role" "$sandbox" "$role"
+        printf '{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv0":"/usr/local/bin/codex","argv":["codex","--profile","%s","-c","agents.enabled=false","-c","default_permissions=\\"%s\\"","-c","permissions.%s.extends=\\"%s\\"","-c","permissions.%s.network.enabled=true"],"cmdline":"codex --profile %s"}]}}}\n' \
+          "$role" "$permission" "$permission" "$parent" "$permission" "$role"
       fi
       exit 0
     fi
@@ -1298,17 +1490,17 @@ case "${1-}:${2-}" in
           ${MOCK_HERDR_MODE:-} == missing-primary || \
           ${MOCK_HERDR_MODE:-} == wrong-primary ]]; then
       case ${4-} in
-        mock-root) role=planner; sandbox=workspace-write ;;
-        mock-pane-1) role=coder; sandbox=workspace-write ;;
-        mock-pane-2) role=reviewer; sandbox=read-only ;;
+        mock-root) role=planner; permission=herdr_read_only_network; parent=:read-only ;;
+        mock-pane-1) role=coder; permission=herdr_workspace_network; parent=:workspace ;;
+        mock-pane-2) role=reviewer; permission=herdr_read_only_network; parent=:read-only ;;
         *) exit 1 ;;
       esac
       if [[ -n ${MOCK_EXTRA_ROOT:-} && "$role" != reviewer ]]; then
-        printf '{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","%s","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","%s","--add-dir","%s"]}]}}}\n' \
-          "$role" "$sandbox" "$MOCK_EXTRA_ROOT"
+        printf '{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","%s","-c","agents.enabled=false","-c","default_permissions=\\"%s\\"","-c","permissions.%s.extends=\\"%s\\"","-c","permissions.%s.network.enabled=true","--add-dir","%s"]}]}}}\n' \
+          "$role" "$permission" "$permission" "$parent" "$permission" "$MOCK_EXTRA_ROOT"
       else
-        printf '{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","%s","-c","sandbox_workspace_write.writable_roots=[]","--sandbox","%s"]}]}}}\n' \
-          "$role" "$sandbox"
+        printf '{"result":{"process_info":{"foreground_processes":[{"pid":101,"name":"codex","argv":["codex","--profile","%s","-c","agents.enabled=false","-c","default_permissions=\\"%s\\"","-c","permissions.%s.extends=\\"%s\\"","-c","permissions.%s.network.enabled=true"]}]}}}\n' \
+          "$role" "$permission" "$permission" "$parent" "$permission"
       fi
       exit 0
     fi
@@ -1631,6 +1823,7 @@ MOCK_HERDR
        MOCK_HERDR_MODE=multi-root-success \
        MOCK_PROJECT_ROOT="$non_git_primary" \
        MOCK_EXTRA_ROOT="$non_git_extra" \
+       MOCK_OMIT_LAUNCH_PENDING=1 \
        MOCK_WORKSPACE_MARKER="$multi_root_marker" \
        MOCK_HERDR_CALL_LOG="$multi_root_calls" \
        MOCK_SPLIT_COUNTER="$multi_root_splits" \
@@ -1646,19 +1839,32 @@ MOCK_HERDR
     die 'Non-Git multi-root startup omitted the degraded-evidence warning.'
   [[ $(grep -Fc -- "--add-dir $non_git_extra" "$multi_root_calls") -eq 2 ]] || {
     command cat "$multi_root_calls" >&2
-    die 'The exact additional root was not passed once to Planner and Coder only.'
+    die 'The exact additional root was not passed once each to Planner and Coder.'
   }
-  for writable_role in planner coder; do
-    grep -F "agent start github-$writable_role " "$multi_root_calls" | \
-      grep -Fq -- "--add-dir $non_git_extra" || \
-      die "The exact additional root was not passed to $writable_role."
-  done
+  grep -F 'agent start github-planner ' "$multi_root_calls" | \
+    grep -Fq -- "--add-dir $non_git_extra" || \
+    die 'The exact additional root was not passed to Planner as read-only workspace context.'
+  grep -F 'agent start github-coder ' "$multi_root_calls" | \
+    grep -Fq -- "--add-dir $non_git_extra" || \
+    die 'The exact additional root was not passed to Coder.'
   if grep -F 'agent start github-reviewer ' "$multi_root_calls" | grep -Fq -- ' --add-dir '; then
     command cat "$multi_root_calls" >&2
-    die 'Reviewer received --add-dir even though its sandbox is read-only.'
+    die 'Reviewer received --add-dir even though its managed review scope is the primary root.'
   fi
-  [[ $(grep -Fc -- '-c sandbox_workspace_write.writable_roots=[]' "$multi_root_calls") -eq 3 ]] || \
-    die 'The managed writable-roots override was not passed to all three Codex roles.'
+  [[ $(grep -Fc -- '-c agents.enabled=false' "$multi_root_calls") -eq 3 ]] || \
+    die 'The native-agent disable override was not passed to all three Codex roles.'
+  [[ $(grep -Fc -- '-c default_permissions="herdr_read_only_network"' "$multi_root_calls") -eq 2 ]] || \
+    die 'Planner and Reviewer did not receive the read-only network permission profile.'
+  [[ $(grep -Fc -- '-c default_permissions="herdr_workspace_network"' "$multi_root_calls") -eq 1 ]] || \
+    die 'Coder did not receive the workspace network permission profile.'
+  [[ $(grep -Fc -- '-c permissions.herdr_read_only_network.network.enabled=true' "$multi_root_calls") -eq 2 ]] || \
+    die 'Planner and Reviewer did not receive enabled command networking.'
+  [[ $(grep -Fc -- '-c permissions.herdr_workspace_network.network.enabled=true' "$multi_root_calls") -eq 1 ]] || \
+    die 'Coder did not receive enabled command networking.'
+  if grep -Eq -- '(^| )--sandbox( |$)|sandbox_workspace_write' "$multi_root_calls"; then
+    command cat "$multi_root_calls" >&2
+    die 'Managed startup mixed a legacy sandbox option into permission-profile argv.'
+  fi
   [[ $(grep -Fc -- "--cwd $non_git_primary" "$multi_root_calls") -eq 3 ]] || {
     command cat "$multi_root_calls" >&2
     die 'Workspace and both pane splits did not retain the primary cwd.'
@@ -1668,7 +1874,7 @@ MOCK_HERDR
   fi
   grep -Fq -- "doctor.sh --team github --cwd $non_git_primary --add-dir $non_git_extra" "$multi_root_log" || \
     die 'Startup did not print a reusable multi-root doctor command.'
-  printf '[OK] Explicit non-Git multi-root startup grants extra writable roots only to Planner/Coder\n'
+  printf '[OK] Explicit non-Git multi-root startup gives Planner read-only root context and Coder writable roots\n'
 
   team_configure github || die 'Could not configure the launch-record test team.'
   run_state_configure "$codex_test_dir" "$TEAM_MODE" "$TEAM_PREFIX_EFFECTIVE" || \
@@ -1991,6 +2197,7 @@ MOCK_HERDR
        MOCK_HERDR_MODE=doctor-success \
        MOCK_HERDR_CALL_LOG="$doctor_call_log" \
        MOCK_PROJECT_ROOT="$PROJECT_ROOT" \
+       MOCK_OMIT_LAUNCH_PENDING=1 \
        "$SCRIPT_DIR/doctor.sh" --team github --cwd "$PROJECT_ROOT" \
        >"$doctor_log" 2>&1; then
     command cat "$doctor_log" >&2
@@ -2006,7 +2213,7 @@ MOCK_HERDR
     command cat "$doctor_call_log" >&2
     die 'doctor.sh queried a generic or cross-team live name in prefixed mode.'
   fi
-  printf '[OK] doctor.sh validates one exact prefixed team\n'
+  printf '[OK] doctor.sh validates one exact prefixed team without legacy launch_pending\n'
 
   doctor_multi_root_log="$temporary_root/doctor-multi-root.log"
   if ! env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
@@ -2019,10 +2226,12 @@ MOCK_HERDR
     command cat "$doctor_multi_root_log" >&2
     die 'doctor.sh rejected matching multi-root process argv.'
   fi
-  [[ $(grep -Fc 'additional roots match the requested writable --add-dir list' "$doctor_multi_root_log") -eq 2 ]] || \
-    die 'doctor.sh did not verify the exact writable additional roots for Planner and Coder.'
+  [[ $(grep -Fc 'additional roots match the requested writable --add-dir list' "$doctor_multi_root_log") -eq 1 ]] || \
+    die 'doctor.sh did not verify the exact writable additional roots for Coder.'
+  [[ $(grep -Fc 'additional roots match the requested read-only workspace context' "$doctor_multi_root_log") -eq 1 ]] || \
+    die 'doctor.sh did not verify Planner additional roots as read-only workspace context.'
   [[ $(grep -Fc 'has no --add-dir writable-root grants, as required by read-only sandbox' "$doctor_multi_root_log") -eq 1 ]] || \
-    die 'doctor.sh did not verify that Reviewer has no writable --add-dir grant.'
+    die 'doctor.sh did not verify that Reviewer has no --add-dir grant.'
   if env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
        MOCK_HERDR_MODE=doctor-success \
        MOCK_HERDR_CALL_LOG="$doctor_call_log" \
@@ -2032,7 +2241,7 @@ MOCK_HERDR
        >"$temporary_root/doctor-missing-add-dir.log" 2>&1; then
     die 'doctor.sh accepted a live additional root omitted from its expected options.'
   fi
-  grep -Fq 'writable-root argv does not match its role' "$temporary_root/doctor-missing-add-dir.log" || \
+  grep -Fq 'additional-root argv does not match its role' "$temporary_root/doctor-missing-add-dir.log" || \
     die 'doctor.sh missing-add-dir rejection used the wrong diagnostic.'
   printf '[OK] doctor.sh verifies role-aware additional-root argv\n'
 
@@ -2141,8 +2350,8 @@ MOCK_HERDR
   cp -p -- "$codex_test_dir/reviewer.config.toml" "$temporary_root/reviewer.config.toml.clean"
   awk '
     BEGIN { changed = 0 }
-    !changed && /^sandbox_mode[[:space:]]*=/ {
-      print "sandbox_mode = \"workspace-write\""
+    !changed && /^permissions[.]herdr_read_only_network[.]extends[[:space:]]*=/ {
+      print "permissions.herdr_read_only_network.extends = \":workspace\""
       changed = 1
       next
     }
@@ -2157,16 +2366,16 @@ MOCK_HERDR
        MOCK_WORKSPACE_MARKER="$unsafe_profile_start_marker" \
        "$SCRIPT_DIR/start.sh" --no-focus --team github --cwd "$PROJECT_ROOT" \
        >"$unsafe_profile_start_log" 2>&1; then
-    die 'start.sh accepted a Reviewer profile with workspace-write sandbox.'
+    die 'start.sh accepted a Reviewer permission profile with workspace-write access.'
   fi
-  grep -Fq 'reviewer profile must use sandbox_mode = "read-only"' "$unsafe_profile_start_log" || {
+  grep -Fq 'reviewer profile does not preserve the read-only filesystem boundary' "$unsafe_profile_start_log" || {
     command cat "$unsafe_profile_start_log" >&2
     die 'start.sh rejected an unsafe Reviewer profile without the expected diagnostic.'
   }
   [[ ! -e "$unsafe_profile_start_marker" ]] || \
-    die 'start.sh created a workspace before rejecting an unsafe Reviewer sandbox.'
+    die 'start.sh created a workspace before rejecting an unsafe Reviewer permission profile.'
   cp -p -- "$temporary_root/reviewer.config.toml.clean" "$codex_test_dir/reviewer.config.toml"
-  printf '[OK] start.sh enforces installed approval/sandbox policy before startup\n'
+  printf '[OK] start.sh enforces installed approval/permission policy before startup\n'
 
   cp -p -- "$codex_test_dir/coder.config.toml" "$temporary_root/coder.config.toml.policy-clean"
   awk '
@@ -2197,6 +2406,57 @@ MOCK_HERDR
     die 'start.sh created a workspace before rejecting managed policy drift.'
   cp -p -- "$temporary_root/coder.config.toml.policy-clean" "$codex_test_dir/coder.config.toml"
   printf '[OK] start.sh detects managed profile-policy drift outside the prompt\n'
+
+  cp -p -- "$codex_test_dir/planner.config.toml" "$temporary_root/planner.config.toml.launch-clean"
+  awk '
+    BEGIN { changed = 0 }
+    !changed && /^mcp_servers[.]herdr_codex_team[.]command[[:space:]]*=/ {
+      print "mcp_servers.herdr_codex_team.command = \"/tmp/untrusted-python\""
+      changed = 1
+      next
+    }
+    { print }
+    END { if (!changed) exit 2 }
+  ' "$temporary_root/planner.config.toml.launch-clean" >"$codex_test_dir/planner.config.toml"
+  unsafe_launcher_log="$temporary_root/start-unsafe-launcher.log"
+  unsafe_launcher_marker="$temporary_root/start-unsafe-launcher-workspace"
+  if env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
+       MOCK_HERDR_MODE=separate-worktree \
+       MOCK_OTHER_WORKTREE="$separate_git_root" \
+       MOCK_WORKSPACE_MARKER="$unsafe_launcher_marker" \
+       "$SCRIPT_DIR/start.sh" --no-focus --team github --cwd "$PROJECT_ROOT" \
+       >"$unsafe_launcher_log" 2>&1; then
+    die 'start.sh accepted a tampered sandbox-external Planner launcher path.'
+  fi
+  grep -Fq 'planner installed profile policy digest mismatch' "$unsafe_launcher_log" || {
+    command cat "$unsafe_launcher_log" >&2
+    die 'start.sh rejected a tampered Planner launcher without the stable policy diagnostic.'
+  }
+  [[ ! -e "$unsafe_launcher_marker" ]] || \
+    die 'start.sh created a workspace before rejecting the tampered Planner launcher.'
+  cp -p -- "$temporary_root/planner.config.toml.launch-clean" "$codex_test_dir/planner.config.toml"
+  printf '[OK] start.sh rejects a tampered sandbox-external Planner launcher path\n'
+
+  cp -p -- "$bridge_path" "$temporary_root/herdr_mcp.py.clean"
+  printf '\n# unauthorized bridge drift\n' >>"$bridge_path"
+  bridge_drift_log="$temporary_root/start-bridge-drift.log"
+  bridge_drift_marker="$temporary_root/start-bridge-drift-workspace"
+  if env -u TEAM_PREFIX PATH="$mock_bin:$PATH" CODEX_HOME="$codex_test_dir" \
+       MOCK_HERDR_MODE=separate-worktree \
+       MOCK_OTHER_WORKTREE="$separate_git_root" \
+       MOCK_WORKSPACE_MARKER="$bridge_drift_marker" \
+       "$SCRIPT_DIR/start.sh" --no-focus --team github --cwd "$PROJECT_ROOT" \
+       >"$bridge_drift_log" 2>&1; then
+    die 'start.sh accepted a drifted installed Planner Herdr MCP bridge.'
+  fi
+  grep -Fq 'installed Herdr MCP bridge digest mismatch' "$bridge_drift_log" || {
+    command cat "$bridge_drift_log" >&2
+    die 'start.sh rejected bridge drift without the stable digest diagnostic.'
+  }
+  [[ ! -e "$bridge_drift_marker" ]] || \
+    die 'start.sh created a workspace before rejecting bridge drift.'
+  cp -p -- "$temporary_root/herdr_mcp.py.clean" "$bridge_path"
+  printf '[OK] start.sh detects managed Planner bridge drift before startup\n'
 
   malformed_log="$temporary_root/malformed-agent-list.log"
   malformed_workspace_marker="$temporary_root/malformed-workspace-created"
@@ -2251,6 +2511,8 @@ MOCK_HERDR
     [[ -f "$uninstall_backup/$role.config.toml" ]] || \
       die "Uninstall backup is missing $role.config.toml."
   done
+  [[ -f "$uninstall_backup/herdr-codex-team/herdr_mcp.py" ]] || \
+    die 'Uninstall backup is missing the managed Planner Herdr MCP bridge.'
 
   {
     printf 'unmanaged profile\n'

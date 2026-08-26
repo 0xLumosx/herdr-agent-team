@@ -93,11 +93,14 @@ TEAM_PREFIX=auth \
   --add-dir /path/to/third-project
 ```
 
-`--add-dir` 可重复。主 cwd 仍是 Herdr workspace/pane 目录。Planner 和 Coder 会获得有序的额外可写 root 列表；Reviewer 保持 `read-only`，不接收 `--add-dir`。
+`--add-dir` 可重复。主 cwd 仍是 Herdr workspace/pane 目录。Planner 与 Coder
+都获得有序列表：Planner 作为只读 workspace context，Coder 作为可写 context；
+Reviewer 仍只使用主 root。三个角色都获得受管 command-network permission；
+这不会扩大 Planner 或 Reviewer 的本地写权限。
 
 ## Planner 如何推导路由
 
-Planner 不会从 Codex profile 获得固定的下游名称。Runtime 中，它获取当前 Herdr 实时身份，并只应用以下两条闭合规则之一：
+Planner 不会从 Codex profile 获得固定的下游名称。必需的受管 bridge 会证明当前 pane 身份，并只应用以下两条闭合规则之一：
 
 ```text
 SELF_AGENT = planner
@@ -110,7 +113,7 @@ SELF_AGENT = <prefix>-planner
   → REVIEWER_AGENT = <prefix>-reviewer
 ```
 
-它在每次 handoff 前验证这些精确实时名称。身份来自 Herdr 名称，不来自 pane position、tab、workspace layout、process kind 或 hard-coded pane ID。这些其他属性可能变化，也可能被无关 Agent 共享。
+它在每次 handoff 前验证这些精确实时名称、同一 workspace、不同 pane 和 peer readiness。Bridge 只接受角色 `coder` 或 `reviewer`，从不接受任意 Agent 名称。身份来自当前 Herdr pane ownership，不来自 sidebar position、tab layout、process kind 或 hard-coded pane ID。
 
 任何无法识别的自身名称、有歧义的推导、缺失的同 Team 目标或 Herdr communication failure 都会产生：
 
@@ -134,7 +137,12 @@ Planner 不得寻找模糊匹配的 Coder、使用另一个 Team 的 Agent，或
 /path/to/herdr-codex-team/scripts/test.sh --team auth communication
 ```
 
-未提供 root option 时，Doctor 使用该 Team 最近的安全启动记录，并向 Herdr 重新核实其 root、workspace 和 pane ID。显式形式必须按相同顺序重复 startup 的每个 `--add-dir`，并绕过保存的 ID binding。两种形式都会验证受管的空继承-writable-roots 覆盖、角色 sandbox 和角色专属 process argv：Planner/Coder 必须携带精确列表，Reviewer 必须不携带 `--add-dir`。这是 launch 证据，不是文件访问或变更归属证明。
+未提供 root option 时，Doctor 使用该 Team 最近的安全启动记录，并向 Herdr 重新
+核实其 root、workspace 和 pane ID。显式形式必须按相同顺序重复 startup 的每个
+`--add-dir`，并绕过保存的 ID binding。两种形式都会验证具名 permission
+profile、精确 network grant、实际角色 filesystem sandbox 和角色专属 process
+argv：Planner 与 Coder 必须携带精确的有序列表，Reviewer 必须不携带
+`--add-dir`。这是 launch 证据，不是文件访问或变更归属证明。
 
 还要使用已安装 Herdr 版本提供的命令直接检查 runtime：
 
@@ -168,7 +176,17 @@ Harness 将 Coder 保留终端中的 challenge-derived standalone token、lifecy
 
 ## 工作目录隔离
 
-精确名称路由配合 fail-closed prompt contract，在各 Agent 遵守约定时可降低误发跨 Team 消息的风险；它不是 ACL 或安全边界。`start.sh` 会为请求 Team 和其他可核实 Herdr Codex 角色构建完整 effective scope：主/foreground cwd 加受管 process argv 中所有结构化 `--add-dir` 值。Git-backed 目录映射到物理 worktree root，non-Git 目录映射到物理目录。两个完整 root set 间任何相等、祖先或后代重叠都会被拒绝。无法检查的角色、malformed add-dir argv 或缺少受管空 writable-roots 覆盖的旧 process 都会 fail closed。带 owner 校验的用户本地 startup lock 会把使用同一 `CODEX_HOME` 的当前受管 `start.sh` 进程在 preflight 到 workspace 创建之间串行化。它在启动后释放，不占用项目 root、不介入文件访问，也不是 ACL 或操作系统隔离边界。不同 `CODEX_HOME` namespace、直接 Herdr/Codex 命令、旧脚本、人工操作和外部 writer 不受其约束。
+精确名称路由配合 fail-closed prompt contract，在各 Agent 遵守约定时可降低误发
+跨 Team 消息的风险；它不是 ACL 或安全边界。`start.sh` 会为请求 Team 和其他可
+核实 Herdr Codex 角色构建完整 effective scope：主/foreground cwd 加受管 process
+argv 中所有结构化 `--add-dir` 值。Git-backed 目录映射到物理 worktree root，
+non-Git 目录映射到物理目录。两个完整 root set 间任何相等、祖先或后代重叠都会
+被拒绝。无法检查的角色、malformed add-dir argv，或缺少受管 permission profile
+与 network grant 的旧 process 都会 fail closed。带 owner 校验的用户本地 startup
+lock 会把使用同一 `CODEX_HOME` 的当前受管 `start.sh` 进程在 preflight 到
+workspace 创建之间串行化。它在启动后释放，不占用项目 root、不介入文件访问，
+也不是 ACL 或操作系统隔离边界。不同 `CODEX_HOME` namespace、直接 Herdr/Codex
+命令、旧脚本、人工操作和外部 writer 不受其约束。
 
 不同仓库可以用独立 `--cwd` 并发运行：
 

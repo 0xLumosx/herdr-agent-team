@@ -4,5 +4,23 @@
 # model selected by the base config.
 
 model_reasoning_effort = "xhigh"
-sandbox_mode = "read-only"
 approval_policy = "never"
+
+# Herdr owns the visible role topology. Remove Codex-native collaboration tools
+# so Reviewer cannot create hidden workers outside the managed Team.
+agents.enabled = false
+
+
+# Permit outbound commands such as SSH while preserving a read-only local
+# filesystem. Permission profiles are beta; start.sh verifies the effective
+# sandbox and network state before creating a Herdr workspace.
+default_permissions = "herdr_read_only_network"
+permissions.herdr_read_only_network.extends = ":read-only"
+permissions.herdr_read_only_network.network.enabled = true
+
+# Pytest's default fd capture and cache provider create files before or during
+# collection. Keep the workspace read-only while selecting in-memory capture,
+# disabling pytest's cache, and suppressing Python bytecode writes for every
+# shell command run by Reviewer.
+shell_environment_policy.set.PYTHONDONTWRITEBYTECODE = "1"
+shell_environment_policy.set.PYTEST_ADDOPTS = "--capture=sys -p no:cacheprovider"

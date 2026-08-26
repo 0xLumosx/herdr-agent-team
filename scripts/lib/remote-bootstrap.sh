@@ -108,6 +108,7 @@ TEAM_ROOT=${HERDR_CODEX_TEAM_ROOT:-}
   die 2 'HERDR_CODEX_TEAM_ROOT must select the streamed absolute runtime.'
 [[ -x "$TEAM_ROOT/scripts/open.sh" && -x "$TEAM_ROOT/scripts/start.sh" && \
    -x "$TEAM_ROOT/scripts/doctor.sh" && -x "$TEAM_ROOT/scripts/install.sh" && \
+   -f "$TEAM_ROOT/scripts/herdr_mcp.py" && ! -L "$TEAM_ROOT/scripts/herdr_mcp.py" && \
    -f "$TEAM_ROOT/scripts/lib/team.sh" && -f "$TEAM_ROOT/scripts/lib/json.sh" && \
    -f "$TEAM_ROOT/scripts/lib/digest.sh" && -f "$TEAM_ROOT/scripts/lib/scope.sh" && \
    -f "$TEAM_ROOT/scripts/lib/run-state.sh" ]] || \
@@ -121,6 +122,7 @@ REMOTE_HERDR_VERSION=$(parse_herdr_version "$remote_herdr_output") || \
 [[ "$REMOTE_HERDR_VERSION" == "$EXPECTED_HERDR_VERSION" ]] || \
   die 16 "Local Herdr is $EXPECTED_HERDR_VERSION but remote Herdr is $REMOTE_HERDR_VERSION."
 command -v codex >/dev/null 2>&1 || die 13 'Codex CLI is not installed on the remote host.'
+command -v python3 >/dev/null 2>&1 || die 13 'Python 3 is not installed on the remote host.'
 
 # A forwarded socket override takes precedence over a named session. Clear
 # both before every Herdr command so this launcher cannot touch another

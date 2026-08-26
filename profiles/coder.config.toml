@@ -5,5 +5,15 @@
 
 model = "gpt-5.6-luna"
 model_reasoning_effort = "high"
-sandbox_mode = "workspace-write"
 approval_policy = "never"
+
+# Herdr owns the visible role topology. Remove Codex-native collaboration tools
+# so Coder cannot create hidden workers outside the managed Team.
+agents.enabled = false
+
+# Permit outbound commands such as SSH while retaining workspace-only local
+# writes. Permission profiles are beta; start.sh verifies the effective
+# sandbox and network state before creating a Herdr workspace.
+default_permissions = "herdr_workspace_network"
+permissions.herdr_workspace_network.extends = ":workspace"
+permissions.herdr_workspace_network.network.enabled = true

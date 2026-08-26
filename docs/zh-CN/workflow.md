@@ -130,7 +130,7 @@ git diff --staged
 
 Planner 把可用的 changed-file 和 validation evidence 与计划比较。如果 Coder 修改无关文件或可用证据实质不完整，Planner 会在审查前向 Coder 发送聚焦修正。
 
-Planner 不能通过自己编辑源码来“节省一轮”。它的 `workspace-write` sandbox 是为了 Herdr 兼容，不是实现权限。
+Planner 不能通过自己编辑源码来“节省一轮”。其受管 sandbox 为 `read-only`；Herdr 通信通过有界 Planner bridge 完成。
 
 ## 4. Planner 交给 Reviewer
 
@@ -236,13 +236,13 @@ Reviewer `PASS` 不会自动批准任务。Planner 最终检查：
 
 ## 通信语义
 
-在已检查的 Herdr 0.8.2 surface 中，Planner 向精确推导出的名称提交工作。例如对 `auth-planner`：
+Planner 先调用受管 `mcp__herdr_codex_team__inspect_team` 工具，再只通过 `mcp__herdr_codex_team__prompt_agent` 提交工作，且 `target_role` 必须精确为 `coder` 或 `reviewer`。对于 `auth-planner`，bridge 会推导 `auth-coder` 或 `auth-reviewer`；调用者不能提供任意 live name。
 
-```bash
-herdr agent prompt auth-coder "<self-contained task>" --wait --timeout 120000
-```
-
-`--wait` 观察 lifecycle state，而不是 cryptographically bound request/response turn。如果 Agent 已经在工作，它的当前 turn 就可能满足 wait。因此工作流组合 self-identity derivation、exact target-name verification、visible pane observation、run-specific test 和 result inspection，而不是把单个 signal 当作决定性证据。
+Bridge 会在发送前后重新证明当前 pane ownership 和两个同 workspace peer，等待
+settled state，要求 Herdr lifecycle sequence 前进，并返回有界 transcript。这些
+仍是相关 observation，不是 cryptographically bound request/response turn。因此
+工作流还会组合 handoff ID、run-specific test、visible pane observation 和 result
+inspection，而不是把单个 signal 当作决定性证据。
 
 用户本地启动记录不会改变这些语义。它不保存 prompt、ACK、delivery receipt、`TASK_ID`、`ROUND`、`HANDOFF_ID`、Agent response 或 task transition。Herdr 仍是唯一 production prompt transport，本项目不声称 durable 或 exactly-once delivery。Transport acceptance、lifecycle movement、相关 response 和最终 filesystem change 是不同证据。
 
@@ -261,4 +261,6 @@ herdr agent prompt auth-coder "<self-contained task>" --wait --timeout 120000
 
 项目不持久化 task/workflow state machine。启动记录只能恢复 root 和 runtime-ID 预期值；goal、当前 handoff、Coder report、Reviewer decision 和 delivery uncertainty 仍必须从 conversation 与 filesystem evidence 重建。详见[启动状态](launch-state.md)和[多 Team 隔离](multi-team.md)。
 
-Multi-root 访问改变证据，不改变权限：Coder 仍是策略上唯一允许修改项目文件的角色；Planner 仍具有技术上的 `workspace-write` 能力，但禁止将其用于实现；Reviewer 的 sandbox 在每个 root 上仍为 `read-only`。
+Multi-root 访问改变证据，不改变权限：Planner 与 Coder 接收相同的有序
+`--add-dir`；Planner 仅获得额外只读 workspace context，Coder 获得额外可写
+context；Reviewer 不接收 `--add-dir`，且 Coder 仍是唯一受管可写角色。

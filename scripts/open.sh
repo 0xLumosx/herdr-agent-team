@@ -46,7 +46,7 @@ usage() {
     'Opens one managed three-agent team in the current Herdr session.' \
     'If all three exact agents are healthy, the current compatible live Team is left running.' \
     'If none exist, a new team is created through start.sh.' \
-    '--repair-profiles explicitly backs up and refreshes managed profiles, but only when no Agent is live in this Herdr session.' \
+    '--repair-profiles explicitly backs up and refreshes managed profiles plus the Planner bridge, but only when no Agent is live in this Herdr session.' \
     '--install-integration explicitly permits Herdr to install/update its Codex hooks and configuration.' \
     'A partial or unhealthy team is never overwritten or silently replaced.'
 }
@@ -132,7 +132,7 @@ scope_path_has_control "$PROJECT_DIR" && \
   die 2 'Project directory argument contains an unsupported control character.'
 PROJECT_DIR=$(scope_physical_dir "$PROJECT_DIR") || \
   die 2 'Project directory does not exist or cannot be resolved safely.'
-[[ "$PROJECT_DIR" != '/' ]] || die 2 'Refusing to open workspace-write agents at the filesystem root.'
+[[ "$PROJECT_DIR" != '/' ]] || die 2 'Refusing to open a managed team at the filesystem root.'
 NORMALIZED_ADD_DIRS=()
 for add_dir in ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}; do
   scope_path_has_control "$add_dir" && \
@@ -214,15 +214,21 @@ case "$live_count" in
         profile_count=$((profile_count + 1))
       fi
     done
+    bridge_count=0
+    bridge_path=${CODEX_HOME:-"$HOME/.codex"}/herdr-codex-team/herdr_mcp.py
+    if [[ -e "$bridge_path" || -L "$bridge_path" ]]; then
+      bridge_count=1
+    fi
+    managed_file_count=$((profile_count + bridge_count))
     if [[ $REPAIR_PROFILES -eq 1 ]]; then
-      printf 'Explicit profile repair requested; install.sh will back up existing managed profile paths.\n'
+      printf 'Explicit profile repair requested; install.sh will back up existing managed profile and bridge paths.\n'
       "$SCRIPT_DIR/install.sh"
-    elif [[ $profile_count -eq 0 ]]; then
-      printf 'No managed Codex profiles exist yet; installing the three profiles once.\n'
+    elif [[ $managed_file_count -eq 0 ]]; then
+      printf 'No managed Codex team files exist yet; installing the three profiles and Planner bridge once.\n'
       "$SCRIPT_DIR/install.sh"
-    elif [[ $profile_count -ne 3 ]]; then
-      printf 'TEAM_UNSAFE: found %s of 3 managed Codex profile paths.\n' "$profile_count" >&2
-      printf 'No profile or Agent was overwritten. After reviewing the Codex home, rerun with --repair-profiles to make a backed-up replacement.\n' >&2
+    elif [[ $managed_file_count -ne 4 ]]; then
+      printf 'TEAM_UNSAFE: found %s of 3 managed Codex profile paths and %s of 1 Planner bridge paths.\n' "$profile_count" "$bridge_count" >&2
+      printf 'No managed file or Agent was overwritten. After reviewing the Codex home, rerun with --repair-profiles to make a backed-up replacement.\n' >&2
       exit 4
     fi
     START_ARGS=()

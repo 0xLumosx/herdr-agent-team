@@ -4,5 +4,43 @@
 # model selected by the base config.
 
 model_reasoning_effort = "xhigh"
-sandbox_mode = "workspace-write"
 approval_policy = "never"
+
+# Herdr owns the visible role topology. Remove Codex-native collaboration tools
+# so Planner cannot substitute hidden /root/* subagents for same-team Agents.
+agents.enabled = false
+
+# Permit outbound commands such as SSH while preserving a read-only local
+# filesystem. Permission profiles are beta; start.sh verifies the effective
+# sandbox and network state before creating a Herdr workspace.
+default_permissions = "herdr_read_only_network"
+permissions.herdr_read_only_network.extends = ":read-only"
+permissions.herdr_read_only_network.network.enabled = true
+
+# Codex starts this narrow stdio bridge outside the shell sandbox. The bridge
+# exposes only same-team identity inspection and Coder/Reviewer prompting; it
+# does not expose arbitrary Herdr commands or filesystem operations.
+mcp_servers.herdr_codex_team.command = "__HERDR_CODEX_TEAM_PYTHON__"
+mcp_servers.herdr_codex_team.args = ["__HERDR_CODEX_TEAM_BRIDGE__"]
+mcp_servers.herdr_codex_team.env_vars = [
+  "CODEX_HOME",
+  "HOME",
+  "PATH",
+  "HERDR_BIN_PATH",
+  "HERDR_ENV",
+  "HERDR_SOCKET_PATH",
+  "HERDR_SESSION",
+  "HERDR_PANE_ID",
+  "HERDR_TAB_ID",
+  "HERDR_WORKSPACE_ID",
+  "XDG_CONFIG_HOME",
+  "XDG_RUNTIME_DIR",
+]
+mcp_servers.herdr_codex_team.required = true
+mcp_servers.herdr_codex_team.enabled = true
+mcp_servers.herdr_codex_team.enabled_tools = ["inspect_team", "prompt_agent"]
+mcp_servers.herdr_codex_team.startup_timeout_sec = 10
+mcp_servers.herdr_codex_team.tool_timeout_sec = 330
+mcp_servers.herdr_codex_team.default_tools_approval_mode = "approve"
+mcp_servers.herdr_codex_team.tools.inspect_team.approval_mode = "approve"
+mcp_servers.herdr_codex_team.tools.prompt_agent.approval_mode = "approve"

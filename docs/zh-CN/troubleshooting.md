@@ -2,364 +2,223 @@
 
 [English](../troubleshooting.md)
 
-## 从证据开始
+## 先保留证据
 
-受管 startup 后，先使用保存的启动预期值运行诊断：
-
-```bash
-./scripts/doctor.sh --team <prefix>
-```
-
-这个短命令会从同一 `CODEX_HOME` 读取该 Team 的安全最新记录，并把检查绑定到所记录的 workspace、pane 和 root。Legacy `planner`/`coder`/`reviewer` Team 省略 `--team`。
-
-对于有意替换的 session、缺失或 stale 的记录，或需要直接检查目标 scope 时，显式提供 root：
+在明确目标 Team 与 scope 前，不要重启、修复、重命名或停止任何对象。先保存：
 
 ```bash
-./scripts/doctor.sh --team <prefix> \
-  --cwd /path/to/primary-project \
-  --add-dir /path/to/second-project
-```
-
-显式 `--cwd` 会绕过所记录的 workspace/pane binding，直接核实请求的 live scope。每个诊断 `--add-dir` 都要求 `--cwd`；必须重复 `start.sh` 使用的精确有序列表。这个快捷方式只适用于 Doctor：`start.sh` 仍需要通过 `--cwd`、有序 `--add-dir` 或当前目录默认值指定目标 root。
-
-在 Herdr 管理的 pane 内，还要检查：
-
-```bash
-herdr status --json
+/path/to/herdr-codex-team/scripts/doctor.sh --team dex-vut
 herdr agent list
+herdr agent get dex-vut-planner
+herdr agent read dex-vut-planner --source recent-unwrapped --lines 120
 ```
 
-不要仅凭三个 terminal pane 推断 Team 健康。记录实际存在的 binary、profile file、live name、pane 和 lifecycle state。
-
-## `agent_name_taken`
-
-`agent name planner is already used` 等消息或 `agent_name_taken` error 表示另一个 live agent 已经占用 startup 请求的精确名称。Herdr 实时名称必须唯一。
-
-不要强制 startup、重命名现有 Agent，或继续启动另外两个角色，否则会留下有歧义或不完整 Team。请改用唯一且合法的 Team 前缀：
+若保存的 launch record 缺失或 stale，请用启动时的精确 root 和原顺序绕过其
+workspace/pane ID：
 
 ```bash
-./scripts/start.sh --team github --cwd /path/to/project
+/path/to/herdr-codex-team/scripts/doctor.sh \
+  --team dex-vut \
+  --cwd /absolute/path/to/Dex_Teleop \
+  --add-dir /absolute/path/to/vut_hub-0.2.0
 ```
 
-这会请求 `github-planner`、`github-coder` 和 `github-reviewer`。如果其中某个名称也已存在，请选择其他前缀，或先有意结束现有 Team 再重试。Startup 绝不能删除、覆盖或接管它。
+这只是诊断 override。不要编辑 `current.json` 隐藏 mismatch。
 
-## Planner 把工作发给错误的 Coder
+## 界面未打开或 nested Herdr 被禁用
 
-常见原因包括旧 Planner prompt 仍 hard-code `coder`、无法识别自身名称，或 Team 前缀推导错误。
-
-检查 Planner 必须建立的四个路由值：
-
-```text
-SELF_AGENT
-TEAM_PREFIX
-CODER_AGENT
-REVIEWER_AGENT
-```
-
-对于 `SELF_AGENT=github-planner`，唯一有效路由是 `CODER_AGENT=github-coder`、`REVIEWER_AGENT=github-reviewer`。使用当前 Herdr 检查命令验证精确实时名称：
+手工 attach 命令必须在 fresh、普通本机 shell 中运行，不能在已有 Herdr pane 内：
 
 ```bash
-herdr agent list
-herdr agent get github-planner
-herdr agent get github-coder
-herdr agent get github-reviewer
+# 具名本机 session
+herdr session attach dex-vut
+
+# 具名远端 session
+herdr --remote user@server --session dex-vut
 ```
 
-不要从 pane position、tab、workspace、process kind 或 hard-coded pane ID 推断 Team membership。如果推导或精确目标验证失败，正确响应是 `HERDR_COMMUNICATION_FAILED`，即使另一个 Team 的 Coder 处于 idle 且可用。
+Nested attach 已禁用。若只想离开界面，按 `Ctrl+B`，松开后按小写 `q`。这只
+detach client；pane 与 Agent 会继续运行。
 
-重新安装当前角色 prompt，通过当前 `start.sh` 只重建请求的 Team，再使用 startup 的精确有序 root 运行 `doctor.sh --team github --cwd <primary> --add-dir <extra> ...`，然后运行 Team-aware communication test。不要在未独立检查和协调全部可用 Git diff 与所报 non-Git touched path 的情况下，接受或 merge 错误 Team 生成的工作。
+## `TEAM_UNSAFE` 报告受管文件缺失或漂移
 
-## 两个 Coder 修改了同一个工作树或 root
-
-这是 filesystem/Git workspace-scope collision，不是 Herdr routing failure。精确名称路由和 prompt contract 可降低误发跨 Team 消息的风险，但不是 ACL；只要任一 Team 的主 root 或额外 root 与另一 Team 的 scope 重叠，它就不能阻止 `auth-coder` 和 `ui-coder` 写入同一文件。
-
-停止发出新工作，并保留两个 Agent 的 report、全部可用 Git diff 和所报 non-Git touched-path inventory。对于不同仓库，使用互不重叠的完整 root set 重启 Team。对于同一仓库中的并发任务，为每个 Team 准备独立 branch 和 Git worktree：
+Helper 有意没有覆盖任何内容。先检查 `${CODEX_HOME:-$HOME/.codex}` 下所报 path。
+确认所选 Herdr session 中完全没有 live Agent 后，在原命令加入
+`--repair-profiles`：
 
 ```bash
-cd /projects/myapp
-git worktree add ../myapp-auth -b task/auth
-git worktree add ../myapp-ui -b task/ui
+/path/to/herdr-codex-team/scripts/open.sh \
+  --repair-profiles \
+  --team dex-vut \
+  --cwd /absolute/path/to/Dex_Teleop \
+  --add-dir /absolute/path/to/vut_hub-0.2.0
 ```
 
-然后把每个 Team 绑定到自己的 path。本项目不会自动 merge、remove 或 repair worktree。详见[多 Team 隔离](multi-team.md)。
+远程模式在同一条 `remote.sh` 命令加入 `--repair-profiles`。Installer 会备份被
+替换的受管 path。不要绕过 live Agent 做 repair。
 
-## Planner 声称 Coder 正在工作，但 Coder pane 处于 idle
+## `INTEGRATION_REQUIRED` 或 hook 变化
 
-这是最高优先级故障，因为它可能造成虚假进展。
+Herdr Codex integration 可能改变 executable hook、`hooks.json` 与 Codex config。
+先审查所报变更。在所选 session 没有 live Agent 时，为原 `open.sh` 或
+`remote.sh` 命令加入 `--install-integration`。不要把新 hook 当作普通 profile
+repair。
 
-可能原因：Planner 无法使用 Herdr，却悄悄创建或访问了 Codex-native/internal subagent；或者它推导了另一个 Team 的目标，而不是预期 live Herdr Coder。
+## `agent_name_taken`、`TEAM_PARTIAL` 或 `START_PARTIAL`
 
-检查：
+这些都是 fail-closed 结果。Helper 不会替换现有名称，也不会自动清理 partial
+workspace。
 
 ```bash
 herdr agent list
-herdr agent get <expected-team-coder>
-herdr agent read <expected-team-coder> --source recent-unwrapped --lines 120
+herdr agent get <exact_live_name>
+herdr agent read <exact_live_name> --source recent-unwrapped --lines 120
 ```
 
-然后检查 Planner profile，确认其中包含 mandatory Herdr identity/routing 和 strict Team-isolation 规则，并明确禁止 cross-team routing、native subagent、hidden worker、`/root/coder`、`/root/reviewer` 和 fallback agent system。
+保留打印的 workspace 与 pane ID，只处理已核实的目标 Team。不要重命名另一个
+Team 的 Agent、根据 pane 位置猜身份或执行广泛的 server stop。
 
-路由失败时的预期响应：
+## SSH 报告 `port 22: Operation not permitted`
 
-```text
-HERDR_COMMUNICATION_FAILED
-```
+正在运行的 Codex process 没有使用当前受管 command-network policy 启动。Live
+process 不会热加载 launch argument。
 
-除非具名 live pane 确实收到 prompt，且生成的 repository state 与 report 匹配，否则不要接受生成的 Coder report。
+1. 保留 task context 和项目变更；
+2. 按下文精确 stop 命令，只完全停止旧 Team 的 scope；
+3. 用原 root 重新运行当前 `open.sh` 或 `remote.sh`；
+4. Doctor 通过后再重试 SSH。
 
-## Planner 报告 `Operation not permitted`
+不要加入旧 `--sandbox`、`sandbox_workspace_write` 或 `danger-full-access`
+override。当前 startup 保持 Planner/Reviewer 本地只读、Coder workspace-write，
+并为三个角色启用 command network。Doctor 会验证模型实际可见的 filesystem
+sandbox 与 network 状态。
 
-Planner 可能使用无法访问本地 Herdr communication mechanism 的 `read-only` sandbox。
+Doctor 通过不证明远端可达或安全。Command network 是广泛权限，本地只读不限制
+SSH 远端副作用，`approval_policy = "never"` 也没有日常确认步骤。请使用专用
+低权限远端账号、固定 `known_hosts`、`BatchMode=yes`，并禁用 agent、port 与
+X11 forwarding。
 
-检查已安装文件：
+## Planner 的 Herdr 通信报告 `Operation not permitted`
 
-```text
-~/.codex/planner.config.toml
-```
+这与 TCP/SSH 拒绝不同。部分 Linux sandbox 会拒绝直接访问 Herdr AF_UNIX。
+Planner 必须使用受管 `herdr_codex_team` stdio bridge 及其有界
+`inspect_team`/`prompt_agent` 工具。
 
-仓库 `profiles/planner.config.toml` 中的默认值为：
-
-```toml
-sandbox_mode = "workspace-write"
-```
-
-同时保留禁止 Planner 编辑应用源码的 developer instruction。恢复或有意更新仓库模板，运行 `scripts/install.sh`，重启 Planner，再运行 `test.sh --team <prefix> communication`（legacy 使用不带前缀形式）。直接修改已安装文件中的这一受管字段会被 profile-policy digest 拒绝。
-
-如果错误仍然存在，不要扩大到 `danger-full-access`。请检查精确被拒 path、确认 Herdr integration 和 hook 是 current，并运行 `herdr agent explain <expected-team-agent>` 或当前 Herdr 版本打印出的诊断命令。
-
-如果任务需要第二个项目，请通过带显式 `--add-dir` 的 `start.sh` 重启 Team；不要使用私有的全局可写 root 作为变通。受管 startup 会清空继承的 `sandbox_workspace_write.writable_roots`，应用显式角色 sandbox，把额外可写 root 列表传给 Planner/Coder，并有意不传给只读 Reviewer。
-
-## 所有 Agent 都显示为 `codex`
-
-Agent kind 和实时名称不同。`codex` 可能正确描述 executable，但所需唯一名称仍然缺失。
-
-运行：
-
-```bash
-herdr agent list
-```
-
-在 Herdr 0.8.2 上，可用以下命令重命名你拥有且已明确识别的 existing live target：
-
-```bash
-herdr agent rename <agent-name-or-pane-id> <team-prefix>-planner
-herdr agent rename <agent-name-or-pane-id> <team-prefix>-coder
-herdr agent rename <agent-name-or-pane-id> <team-prefix>-reviewer
-```
-
-请使用 Herdr 返回的实际 target，而不是 sidebar position 或 guessed ID。名称必须唯一。绝不能为解决冲突而重命名另一个 Team 的现有 Agent。只有有意选择 legacy 模式时才使用不带前缀的角色名称。
-
-## Agent 名称在重启后消失
-
-在已检查的 Herdr 0.8.2 行为中，实时名称跟随当前 pane occupant；Agent 退出、被 release 或被替换时会清除。Codex profile 不会永久分配 Herdr 名称。
-
-保留 context 和项目变更后，通过当前 `start.sh` 使用原来的 `--team`、`--cwd` 和有序 `--add-dir` 参数，只重建请求的 Team；启动状态不会替 `start.sh` 提供 root。然后使用短命令 `doctor.sh --team <prefix>` 核实新记录，或用显式 root 直接检查 scope，再恢复任务。普通 profile launch 后再执行 `herdr agent rename` 不会复现受管 sandbox/root argv。这是预期 runtime lifecycle，并不说明 profile 已丢失。启动记录和新 process 都不会恢复旧对话；只有仍 live 的原 pane 保留它。
-
-## Profile 变更没有生效
-
-当前 Codex profile 文件位于基础配置旁：
-
-```text
-~/.codex/planner.config.toml
-~/.codex/coder.config.toml
-~/.codex/reviewer.config.toml
-```
-
-它们通过 `codex --profile <name>` 选择。受管理文件分别包含已嵌入角色 prompt 与规范化 profile policy 的 digest。为保留文档约定的模型选择自由，`model = ...` 行被刻意排除；reasoning、sandbox、approval 和其他 policy/template 字段仍受管理。应修改 `prompts/` 或 `profiles/` 下的 source 并重新运行 `scripts/install.sh`；直接修改已安装策略会被 `doctor.sh` 与 `start.sh` 拒绝。现有 Codex session 不会自动重新加载新安装的 profile。保留 context 和项目变更，只关闭请求 Team 的旧 session，再通过当前 `start.sh` 使用原 root 参数重建该 Team；启动状态是诊断 metadata，不会向 `start.sh` 重放参数。用短命令 `doctor.sh --team <prefix>` 核实替换后的新记录，或显式提供 root 直接检查；不要把普通 profile launch 加 rename 当作受管重启。
-
-还要检查安装和启动时是否设置了不同 `CODEX_HOME`。不匹配会使 Codex 读取另一个目录。
-
-## `1 hook is new or changed`
-
-Herdr Codex integration 可以添加或更新用于 Agent 状态报告的 hook。发生变化的 hook 是可执行配置，必须审查。
-
-1. 运行 `herdr integration status`；
-2. 找到 Codex 指出的 hook；
-3. 确认它属于预期 Herdr 安装；
-4. 检查 command、argument 和引用 script；
-5. 仅在 source 和 behavior 可接受后信任。
-
-不要仅为消除警告就使用 bypass flag。如果文件意外变化，请停止，并与已安装 integration 或官方 Herdr 指南比较。
+运行 Doctor 检查已安装 Planner profile 与 bridge digest。不要让 Planner 可写，
+也不要暴露任意 shell/Herdr MCP server。
 
 ## `start.sh` 无法连接 Herdr server
 
-启动辅助脚本需要可连接的本地 Herdr server。进入目标仓库并启动或 attach Herdr：
+具名本机 session 请从 fresh shell 打开或 attach：
 
 ```bash
-cd /path/to/project
-herdr
+herdr --session dex-vut
 ```
 
-从该 session 中的 shell pane 运行 `start.sh`；也可以从外部 shell 运行，但要先确认 `herdr status server` 能访问预期 server。脚本会创建新 workspace，并定位 Herdr 返回的 ID；它不依赖 UI 当前聚焦 pane。
-
-## Doctor 拒绝保存的启动记录
-
-Doctor 短命令会读取 `$CODEX_HOME/herdr-codex-team/state/v1/teams` 下对应 Team 的 `current.json`。过大、malformed、不支持 schema、symlink、unsafe path 或错误 Team 的记录会在 Doctor 联系 Herdr 前被拒绝。请保留文件供检查；不要编辑其中的 workspace/pane ID 或 status 来伪造健康结果。
-
-如需在不信任所记录 workspace/pane binding 的情况下检查目标 live scope，请使用显式形式：
+具名远端 session：
 
 ```bash
-./scripts/doctor.sh --team <prefix> \
-  --cwd /path/to/primary-project \
-  --add-dir /path/to/second-project
+herdr --remote user@server --session dex-vut
 ```
 
-显式 root 只在本次 Doctor 调用中绕过记录，不会修改它。如果文件缺失，短命令仍可检查 live Team identity，但没有保存的 multi-root 或 workspace/pane 预期；需要这些证据时请显式提供 root。该记录不是 task、handoff、transcript 或 conversation state，不能恢复被替换的 Codex session。哪个 workspace、pane 和 Agent 处于 live 仍以 Herdr 为权威。
-
-## `start.sh` 报告 startup-lock owner
-
-同一 `CODEX_HOME` 下的所有当前 `start.sh` 进程会共享一把短期 startup lock，用于串行执行 live name/root set 检查和 Herdr workspace/Agent 创建。有效的同主机 owner 且 PID 仍存活，表示另一受管 startup 仍处在该 critical section；让它结束并检查结果后再重试。这与 Herdr server 是否运行无关。
-
-下次受管 startup 会自动恢复格式正确、同主机但 PID 已死亡的 owner。Malformed owner 或不同/未知 host 会 fail closed，因为无法证明 ownership。请保留并检查意外 lock state；不要递归删除 state root。这把锁不会阻止手工 Herdr command、旧 helper、外部 writer 或使用不同 `CODEX_HOME` 的当前 helper，也不会在 startup 后继续保留项目 root。
-
-## 启动状态显示 `partial`
-
-`partial` 只表示 `start.sh` 创建了 Herdr workspace，但没有完成并持久化 `ready` 结论；实时角色仍可能已经 ready。它不表示 task progress 或 conversation state。请把记录的 workspace/pane ID 与 `herdr agent list`、`herdr agent get` 和 pane output 一起检查，在定位失败点时保留 live process 和项目变更。不要盲目重跑 startup、停止 workspace，或把 `current.json` 改成 `ready`；重试可能撞上仍 live 的名称，也可能掩盖有用证据。详见[启动状态](launch-state.md)。
-
-## Agent 状态是 `blocked` 或 `unknown`
-
-`blocked` 表示 Herdr 识别出 approval 或 question UI。`unknown` 表示 Agent 存在，但 Herdr 无法可靠分类；它不证明工作已经结束。
-
-行动前先检查：
+不要在 Herdr pane 内执行 attach。远程失败时，检查普通 SSH 和 launcher 使用的
+远端 PATH：
 
 ```bash
-herdr agent get <name>
-herdr agent read <name> --source recent-unwrapped --lines 120
+ssh user@server 'export PATH="$HOME/.local/bin:$HOME/bin:$PATH"; command -v herdr; herdr --version'
 ```
 
-不要自动回答 approval 或用户问题。需要授权或重大选择时，把可见 prompt 交给用户。
+修复 setup 后重跑同一条 `remote.sh`。不要用 SSHFS 或复制第二份 repository
+checkout 作为恢复路径。
 
-## `agent start` 失败
+## Doctor 拒绝 launch record 或额外 root
 
-Herdr 的 `agent start` 需要 existing pane，且该 pane 的 foreground process 正停留在 interactive shell prompt。它不会 split pane，也不会替换正在运行的 editor、server 或 Agent。
+使用 startup 的精确 `--team`、主 `--cwd` 和有序 `--add-dir` 列表。Planner 与
+Coder 必须携带该精确有序额外 root 列表；Reviewer 不能携带 `--add-dir`。缺失、
+多余、重排、malformed、重叠或 stale root 都会失败。
 
-检查目标 pane：
+两个并发 Team 若需要同一 Git repository，必须使用独立 worktree。同一物理
+worktree 中切换 branch 不构成隔离。Non-Git root 的 attribution 证据较弱，必须
+明确报告。
 
-```bash
-herdr pane process-info --pane <pane-id>
-herdr pane read <pane-id> --source recent-unwrapped --lines 80
-```
+## Profile 或 policy 变更没有生效
 
-创建或选择 clean shell pane，然后重试；Agent 原生参数放在 `--` 后：
-
-```bash
-herdr agent start <team-prefix>-coder --kind codex --pane <pane-id> -- --profile coder
-```
-
-## Ping 通过但 communication 失败
-
-Direct ping 证明外部 shell 可以访问 Coder 和 Reviewer，不代表 Planner 有 Herdr access 或遵守 no-fallback 策略。
-
-检查 Planner sandbox、已安装 prompt、实时名称和 pane state。运行：
-
-```bash
-/path/to/herdr-codex-team/scripts/test.sh --team <prefix> communication
-```
-
-同时观察两个下游 pane。如果 Planner 只是自己 echo 预期 sentinel，应视为测试失败。
-
-## Full 测试无法运行
-
-Full 测试需要 live 三 Agent Herdr Team、Git 和 Python 3，因为它会验证真实 working-tree change、运行 demo test 并检查 review loop。请只在 ping 和 communication 通过后运行：
-
-```bash
-/path/to/herdr-codex-team/scripts/test.sh --team <prefix> full
-```
-
-脚本会把 bundled fixture 复制到 `${HERDR_TEST_PROJECT_DIR:-$PWD}` 下的 `.herdr-codex-test.*`，在其中初始化 isolated Git repository，并在成功后删除。请在与 `start.sh` 所用相同 Git project 中使用 `test.sh` 的绝对路径调用，或显式将 `HERDR_TEST_PROJECT_DIR` 设为该 project。脚本会拒绝不在 Git worktree 内、没有 committed `HEAD` 或整个 worktree 不 clean 的 host。
-
-如果 Team 的主 cwd 为 non-Git，就无法满足该前置条件：把 `full` 记为 `NOT RUN`。独立 fixture 不会为 Team 的 non-Git root 创建 baseline 或完整 diff。如果只有额外 root 为 non-Git，Git-backed 主 root 下 full-test 通过也不能说明该额外 root 的完整变更 scope。
-
-Host 位置很重要：disposable path 必须留在 live Team 的 workspace-write root 内。失败后脚本会保留目录以供诊断；设 `KEEP_TEST_WORKSPACE=1` 可保留成功运行。请使用 clean disposable worktree。如果 harness 报告 dirty host，请自行检查并保留变更，不要要求测试忽略它。
-
-Pass 能验证 challenge-derived Coder completion 和 Reviewer pass response、fixture history 未变、精确 changed-file scope、host Git-visible status/branch/`HEAD` 未变、脚本自身 assertion、fixture test 和 Planner 本次运行特定 approval。它不会检查 ignored host file，也无法证明 filesystem writer identity，因为 Planner 同样有 `workspace-write`。请使用不含敏感 ignored file 的 disposable host。如果 hard attribution 属于验收标准，当前测试不够充分。
-
-Full 测试还会在 live Coder/Reviewer transcript 中验证普通交接关联。它为第 1–4 轮预先分配互不相同的 Coder/Reviewer `HANDOFF_ID`，始终保持同一 `TASK_ID`，允许连续的 `CHANGES_REQUIRED` 轮次最终以同轮 `PASS` 结束，并拒绝复用或未使用的后续轮 response token。每个已使用关联值都必须同时出现在收到的 prompt 与角色精确回显中。
-
-测试默认读取最新 2000 行 unwrapped terminal。如果一次合法但输出很长的运行让最终本次运行特定 token 滚出窗口，请保留 fixture，并以更大的正 `HERDR_TEST_READ_LINES` 重试；扩大窗口不能替代观察具名 pane。
-
-如果 audit session 无法安全访问目标 live Herdr server——本仓库组装时正是这种情况——只能声称完成静态 shell/configuration 检查。当 `herdr status server` 能解析预期 server 时，可从外部人工操作 shell 调用 live script；在这些脚本实际对具名 Agent 运行前，live communication 仍未验证。
-
-在 Team 仓库 checkout 中运行非 live 检查：
+正在运行的 Codex session 不会重新加载受管文件或 launch argument。保留工作后：
 
 ```bash
 cd /path/to/herdr-codex-team
-./scripts/test.sh static
+./scripts/test.sh static && ./scripts/install.sh
 ```
 
-## Policy 测试无法运行
+然后只停止目标 Team，并用相同 `--team`、`--cwd` 和有序 `--add-dir` 重建。
+普通 `codex --profile ...` 后再 Herdr rename，不是受管重启。
 
-在 `ping`、`communication` 与 `full` 之后，从相同 clean disposable host worktree 运行：
+## Agent 是 `blocked`、`unknown` 或意外 idle
+
+发送输入前先检查：
 
 ```bash
-./scripts/test.sh --team <prefix> policy
+herdr agent get <exact_live_name>
+herdr agent read <exact_live_name> --source recent-unwrapped --lines 120
 ```
 
-它依次对 Reviewer、Coder、Planner 注入对抗性角色越界请求，同时检查带基线校验的嵌套 Git fixture、peer transcript/lifecycle sequence 与可见 Herdr agent 名称不变。成功 cleanup 之前的 phase 失败会保留 fixture。通过只代表有边界的行为证据，不是 ACL、filesystem audit，也不能证明隐藏 native worker 从未存在。若无法安全访问预期 live Team，请把该模式记录为 `NOT RUN`。
+- `blocked` 表示检测到 approval 或 question UI；不要替用户回答；
+- `unknown` 表示分类不确定，不代表完成；
+- prompt 后的 `idle`/`done` 只有在 lifecycle 已变化，且预期输出或 repository
+  证据存在时才有意义。
 
-这里同样要求 Git host。主 cwd 为 non-Git 的 Team 必须把 `policy` 记为 `NOT RUN`；不得把另一 Git-backed fixture 的 policy 结果外推到 non-Git 项目 root。
+## Reviewer 无法创建临时文件
 
-## Isolation 测试无法运行
+Reviewer 有意保持 `read-only`。受管 profile 会禁用常见 pytest cache 和 bytecode
+写入，但需要 `tmp_path`、compiler output、coverage data 或 application scratch
+file 的测试仍可能无法在该边界内运行。请报告限制，不要给 Reviewer 写权限。
 
-Isolation 模式需要两个不同、均处于 live/settled 状态且绑定预期 generic profile 的带前缀 Team：
+## Ping 或 live test 失败
+
+只在前置条件具备时逐步增强检查：
 
 ```bash
-./scripts/test.sh --team github --against-team auth isolation
+./scripts/test.sh --team dex-vut ping
+./scripts/test.sh --team dex-vut communication
+./scripts/test.sh --team dex-vut full
+./scripts/test.sh --team dex-vut policy
 ```
 
-`--against-team` 只在该模式中必需，并且必须与 `--team` 不同。一次调用只验证从 `--team` 指定 Planner 出发的有方向路由，以及 peer Team 保留 transcript 和 lifecycle sequence 不变。要验证反方向，必须交换参数后再次运行：
+`ping` 检查直接可达；`communication` 要求相关目标已 settled，并证明经过 Planner
+的往返。`full` 与 `policy` 需要其文档规定的 Git-clean fixture 条件；不要为了
+绿色结果而对 dirty 或 hardware-facing worktree 运行。Isolation test 需要两个
+真实且互不重叠的 Team。前置条件缺失时报告 `NOT RUN`。
+
+## 停止精确 scope
+
+先区分 detach、一个 workspace、一个 named session，以及当前 server/session
+namespace。
 
 ```bash
-./scripts/test.sh --team auth --against-team github isolation
+# 窄范围：关闭共享 session 中一个已核实 Team workspace。
+herdr --session dex-vut workspace list
+herdr --session dex-vut workspace close w9
+
+# 在拥有该 session 的主机上停止并删除一个 named session。
+herdr session stop dex-vut
+herdr session delete dex-vut
+
+# default session 可显式具名。
+herdr session stop default
 ```
 
-如果当前 shell 无法安全访问两个真实 Team，请记录 live isolation 为 `NOT RUN` 并说明原因。通过静态名称构造、doctor 或单 Team communication test，不能证明一个 Planner 无法控制另一个 Team 的 Coder。本次更新所在环境没有运行 live isolation，不能把它报告为 `PASS`。
-它也不是任一 Team root set 的文件系统隔离证据。
-
-## `start.sh` 拒绝项目目录
-
-启动接口是 `start.sh [--no-focus] [--team PREFIX] [--cwd PROJECT_DIR] [--add-dir DIR]... [PROJECT_DIR]`。`PROJECT_DIR` 默认为当前目录。不要把 `--cwd` 与 legacy 位置 path 一起使用。
-
-Single-root 与 multi-root 模式都不要求目录位于 Git worktree；Git CLI 仍用于保守识别 scope。每个请求目录都必须存在、能安全解析、不是 `/`，且与其他目录互不重叠。相同、祖先/后代、symlink 等价或属于同一 effective worktree 的 root 都会被拒绝；malformed 或有歧义的 Git metadata 也会 fail closed，而不会被当成普通 non-Git 证据。
-
-检查：
+远端 named Team 的完整清理：
 
 ```bash
-git -C /path/to/project rev-parse --show-toplevel
+ssh -T user@server 'export PATH="$HOME/.local/bin:$HOME/bin:$PATH"; herdr session stop dex-vut && herdr session delete dex-vut'
 ```
 
-上面的命令只用于诊断证据能力，不是启动前置条件。Non-Git 项目直接接受打印的证据 warning 即可；如果本来就需要多个已存项目目录，用可重复 `--add-dir` 传入每个额外目录。不要仅为消除 warning 而初始化无关目录。
+`herdr server stop` 会停止当前选定 server/session namespace 内的全部 pane。它不
+会停止其他全部 named session，但对单个 Team workspace 仍然过宽。示例 `w9`
+只能替换为已核实的 workspace ID；绝不能用广泛的 server stop 仅仅 detach。
 
-## Doctor 报告额外 root 不匹配
+## Doctor 在新版本上报告命令缺失
 
-受管 startup 后，先使用短命令，让 Doctor 一起检查保存的有序 root 和所记录的 workspace/pane identity：
-
-```bash
-./scripts/doctor.sh --team <prefix>
-```
-
-如需绕过所记录的 workspace/pane binding 并直接诊断请求的 live scope，请使用启动 Team 时的同一主路径和额外 root，并保持相同顺序：
-
-```bash
-./scripts/doctor.sh --team <prefix> \
-  --cwd /path/to/primary-project \
-  --add-dir /path/to/second-project
-```
-
-Doctor 会比较每个角色的结构化 process argv，包括 generic profile、显式 sandbox、空继承-writable-roots 覆盖和角色专属额外 root 策略。Planner/Coder 必须携带精确的有序列表，Reviewer 必须不携带 `--add-dir`。缺失、多余、重排、malformed 或 stale writable root 都是失败。短命令 mismatch 也可能表示保存的 workspace/pane ID 已 stale；显式 root 可以在不修改记录的情况下区分这一情形。只有在保留证据并明确提供目标 root 后，才通过当前 `start.sh` 重启三个角色；不要通过编辑私有全局配置或 `current.json` 隐藏 mismatch。Doctor 通过只证明 launch argument，并在短命令形式中证明所记录 identity 一致；它不证明实际文件访问或变更归属。
-
-## Doctor 在较新版本上报告命令缺失
-
-仅凭 version number 不能证明兼容。较新 release 可能重命名或移除脚本所用命令。
-
-运行相关的当前 help：
-
-```bash
-herdr --help
-herdr agent --help
-herdr pane --help
-herdr workspace --help
-codex --help
-```
-
-只能根据观察到的 syntax 更新脚本，然后更新文档中的兼容性基线。不要仅因为旧示例使用某命令就加入 guessed command。
+较新的 version number 不证明兼容。读取当前 binary 对应的 `--help`，保留精确
+failure，只有确认 command contract 变化后才更新 helper。安全结果应是 startup
+失败，而不是猜测 fallback。

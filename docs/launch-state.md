@@ -54,7 +54,7 @@ before using it.
 | Fact | Authoritative owner |
 | --- | --- |
 | live workspace, pane, agent identity, lifecycle, prompt transport | Herdr |
-| role profile, sandbox, and writable-root argv | the live Codex process |
+| role profile, permission-profile argv, effective sandbox/network, and additional-root argv | the live Codex process |
 | current code and change evidence | Git or the filesystem |
 | values previously written by this startup helper | the launch record |
 

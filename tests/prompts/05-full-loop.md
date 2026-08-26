@@ -2,7 +2,7 @@
 
 This task is for the live Herdr Planner asserted by the test runner as `{{PLANNER_AGENT}}`.
 
-Before accepting the task, independently prove your live identity from the current Herdr pane. Require `SELF_AGENT` to equal that assertion. Derive your team's Coder and Reviewer under your permanent routing rules and require the exact results to equal `{{CODER_AGENT}}` and `{{REVIEWER_AGENT}}`. These assertions do not replace runtime identity discovery. Fail closed on any mismatch.
+Before accepting the task, use the managed `mcp__herdr_codex_team__inspect_team` tool to prove your live identity. Require `self_agent` to equal that assertion and the exact returned peer names to equal `{{CODER_AGENT}}` and `{{REVIEWER_AGENT}}`. These assertions do not replace runtime identity discovery. Fail closed on any mismatch.
 
 The current test working tree contains a deliberately broken demo function named `add(a, b)` that subtracts `b` from `a`. Discover the fixture from the repository; do not assume an unverified path.
 
@@ -32,7 +32,7 @@ Planner frames the task and acceptance criteria
 
 A round is Coder implementation or fix, Reviewer review, and Planner triage. Use at most 4 rounds. Coder and Reviewer must not communicate directly.
 
-Before every handoff, re-prove your current identity, re-derive the exact same-team target, and verify it with the Herdr CLI. Use the Herdr CLI agent surface for delivery, waiting, and response reading. Never contact a generic similarly named agent or another team's agent. Do not use Codex native subagents, internal workers, hidden or spawned local agents, `/root/coder`, `/root/reviewer`, session-local agents, or any fallback agent system.
+Before every handoff, re-run the managed inspection tool. Use only `mcp__herdr_codex_team__prompt_agent` with `target_role = "coder"` or `"reviewer"` for delivery, waiting, lifecycle correlation, and response reading. Never contact a generic similarly named agent or another team's agent. Do not use shell Herdr commands, Codex native subagents, internal workers, hidden or spawned local agents, `/root/coder`, `/root/reviewer`, session-local agents, or any fallback agent system.
 
 If Herdr identity, routing, discovery, or communication fails at any stage, stop and begin the response with:
 

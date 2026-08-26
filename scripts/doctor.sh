@@ -9,6 +9,7 @@ JSON_LIB="$SCRIPT_DIR/lib/json.sh"
 DIGEST_LIB="$SCRIPT_DIR/lib/digest.sh"
 SCOPE_LIB="$SCRIPT_DIR/lib/scope.sh"
 RUN_STATE_LIB="$SCRIPT_DIR/lib/run-state.sh"
+BRIDGE_SOURCE="$SCRIPT_DIR/herdr_mcp.py"
 [[ -f "$TEAM_LIB" && -f "$JSON_LIB" && -f "$DIGEST_LIB" && -f "$SCOPE_LIB" && \
    -f "$RUN_STATE_LIB" ]] || {
   printf '[FAIL] Missing script helper under %s/lib.\n' "$SCRIPT_DIR" >&2
@@ -33,6 +34,7 @@ if [[ -d "$CODEX_DIR" ]]; then
   CODEX_DIR=$(CDPATH= cd -- "$CODEX_DIR" && pwd -P)
 fi
 export CODEX_HOME="$CODEX_DIR"
+BRIDGE_TARGET="$CODEX_DIR/herdr-codex-team/herdr_mcp.py"
 failures=0
 warnings=0
 TEAM_CLI_SET=0
@@ -69,7 +71,7 @@ usage() {
     'With --team github, checks github-planner/github-coder/github-reviewer.' \
     'TEAM_PREFIX may supply the prefix when --team is omitted.' \
     '--cwd requires all three agents to use that exact primary directory.' \
-    '--add-dir is repeatable; Planner/Coder must expose those writable roots, while read-only Reviewer must expose none.' \
+    '--add-dir is repeatable; Planner and Coder must expose those workspace roots, while Reviewer exposes none.' \
     "With neither root option, Doctor loads this team's latest user-local launch record when one exists." \
     'Supplying --cwd explicitly bypasses recorded runtime-ID binding and verifies the requested live scope directly.' \
     '--bind-record-if-present keeps explicit root checks and also binds any existing launch record IDs; open.sh uses it for safe reuse.'
@@ -333,12 +335,43 @@ else
   fail 'Herdr not found. Install Herdr and make sure `herdr` is in PATH.'
 fi
 
+PYTHON_BIN=''
+HERDR_BIN=''
+if command -v python3 >/dev/null 2>&1 && \
+   PYTHON_BIN=$(managed_python_executable); then
+  ok "Python found: $("$PYTHON_BIN" --version 2>&1 | head -n 1) ($PYTHON_BIN)"
+  if bridge_integrity_error=$(managed_bridge_integrity \
+       "$BRIDGE_TARGET" "$BRIDGE_SOURCE" 2>&1); then
+    if "$PYTHON_BIN" "$BRIDGE_TARGET" --check >/dev/null 2>&1; then
+      ok 'Planner Herdr MCP bridge matches the managed source and passes self-check'
+    else
+      fail 'Installed Planner Herdr MCP bridge failed its self-check. Rerun ./scripts/install.sh.'
+    fi
+  else
+    fail "$bridge_integrity_error. Rerun ./scripts/install.sh."
+  fi
+else
+  fail 'Python 3 was not found or did not resolve to a safe absolute executable; the Planner Herdr MCP bridge cannot start.'
+fi
+if command -v herdr >/dev/null 2>&1 && [[ -n "$PYTHON_BIN" ]] && \
+   HERDR_BIN=$(managed_command_executable herdr "$PYTHON_BIN"); then
+  ok "Herdr executable resolves safely: $HERDR_BIN"
+else
+  fail 'Herdr did not resolve to a safe absolute executable; Planner profile validation cannot start its managed bridge.'
+fi
+
 json_ready=0
 if JSON_BACKEND=$(json_backend_name); then
   json_ready=1
   ok "JSON parser found: $JSON_BACKEND"
 else
   fail 'A real JSON parser is required: install jq or make python3 available.'
+fi
+
+if [[ -f "$CODEX_DIR/config.toml" ]] && \
+   grep -Eq '^[[:space:]]*(sandbox_mode[[:space:]]*=|\[sandbox_workspace_write\])' \
+     "$CODEX_DIR/config.toml"; then
+  warn "$CODEX_DIR/config.toml contains legacy sandbox settings; effective permission checks below must pass, and the base config should be migrated for documented forward compatibility."
 fi
 
 for role in planner coder reviewer; do
@@ -353,6 +386,9 @@ for role in planner coder reviewer; do
   if ! grep -Eq '^approval_policy[[:space:]]*=[[:space:]]*"never"[[:space:]]*$' "$profile"; then
     fail "$role profile does not set approval_policy = \"never\"."
   fi
+  if ! grep -Eq '^agents[.]enabled[[:space:]]*=[[:space:]]*false[[:space:]]*$' "$profile"; then
+    fail "$role profile does not set agents.enabled = false; native Codex subagents must be unavailable."
+  fi
   if ! grep -Eq '^developer_instructions[[:space:]]*=' "$profile"; then
     fail "$role profile has no installed developer_instructions. Rerun ./scripts/install.sh."
   fi
@@ -363,46 +399,63 @@ for role in planner coder reviewer; do
     fail "$role $prompt_integrity_error. Rerun ./scripts/install.sh."
   fi
   if policy_integrity_error=$(profile_policy_integrity \
-       "$profile" "$PROJECT_ROOT/profiles/$role.config.toml" 2>&1); then
+       "$profile" "$PROJECT_ROOT/profiles/$role.config.toml" \
+       "$PYTHON_BIN" "$BRIDGE_TARGET" 2>&1); then
     ok "$role installed profile policy matches the managed source"
   else
     fail "$role $policy_integrity_error. Rerun ./scripts/install.sh."
   fi
   if command -v codex >/dev/null 2>&1; then
-    case "$role" in
-      planner|coder) expected_sandbox=workspace-write ;;
-      reviewer) expected_sandbox=read-only ;;
-    esac
+    managed_role_permission_policy "$role" || {
+      fail "Could not resolve the managed permission policy for role: $role"
+      continue
+    }
+    expected_sandbox=$MANAGED_ROLE_SANDBOX
+    if grep -Eq '^sandbox_mode[[:space:]]*=' "$profile"; then
+      fail "$role profile still uses legacy sandbox_mode, which disables managed network permissions."
+    fi
+    if ! grep -Eq '^default_permissions[[:space:]]*=[[:space:]]*"'"$MANAGED_ROLE_PERMISSION_NAME"'"[[:space:]]*$' "$profile"; then
+      fail "$role profile does not select $MANAGED_ROLE_PERMISSION_NAME."
+    fi
+    if ! grep -Eq '^permissions[.]'"$MANAGED_ROLE_PERMISSION_NAME"'[.]extends[[:space:]]*=[[:space:]]*"'"$MANAGED_ROLE_PERMISSION_PARENT"'"[[:space:]]*$' "$profile"; then
+      fail "$role profile does not preserve the $expected_sandbox filesystem boundary."
+    fi
+    if ! grep -Eq '^permissions[.]'"$MANAGED_ROLE_PERMISSION_NAME"'[.]network[.]enabled[[:space:]]*=[[:space:]]*true[[:space:]]*$' "$profile"; then
+      fail "$role profile does not enable command network access."
+    fi
     validation_args=(
       --profile "$role"
-      -c 'sandbox_workspace_write.writable_roots=[]'
-      --sandbox "$expected_sandbox"
+      -c 'agents.enabled=false'
     )
+    for permission_config in "${MANAGED_ROLE_PERMISSION_CONFIGS[@]}"; do
+      validation_args+=(-c "$permission_config")
+    done
     if [[ "$role" != reviewer ]]; then
       for add_dir in ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}; do
         validation_args+=(--add-dir "$add_dir")
       done
     fi
-    if codex "${validation_args[@]}" debug prompt-input 'profile validation' >/dev/null 2>&1; then
-      ok "$role profile loads in Codex"
+    validation_cwd=${EXPECTED_CWD:-$PWD}
+    if rendered_permissions=$(CDPATH= cd -- "$validation_cwd" && \
+         HERDR_BIN_PATH="$HERDR_BIN" \
+         codex "${validation_args[@]}" \
+         debug prompt-input 'profile validation' 2>/dev/null) && \
+       json_prompt_has_effective_role_permissions "$rendered_permissions" "$role"; then
+      ok "$role resolves to local $expected_sandbox with command network enabled"
+      if [[ $CWD_ARG_SET -eq 1 ]]; then
+        if json_prompt_has_role_workspace_roots \
+             "$rendered_permissions" "$role" "$EXPECTED_CWD" \
+             ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}; then
+          ok "$role exposes the exact managed workspace-root context"
+        else
+          fail "$role does not expose the exact managed workspace-root context. Use a compatible Codex release."
+        fi
+      fi
     else
-      fail "$role profile cannot be loaded by Codex. Restore a backup or rerun ./scripts/install.sh."
+      fail "$role does not resolve to local $expected_sandbox with command network enabled. Remove conflicting legacy sandbox settings or use a compatible Codex release."
     fi
   fi
 done
-
-if [[ -f "$CODEX_DIR/planner.config.toml" ]] && \
-   ! grep -Eq '^sandbox_mode[[:space:]]*=[[:space:]]*"workspace-write"[[:space:]]*$' "$CODEX_DIR/planner.config.toml"; then
-  fail 'planner profile must use sandbox_mode = "workspace-write" for Herdr communication.'
-fi
-if [[ -f "$CODEX_DIR/coder.config.toml" ]] && \
-   ! grep -Eq '^sandbox_mode[[:space:]]*=[[:space:]]*"workspace-write"[[:space:]]*$' "$CODEX_DIR/coder.config.toml"; then
-  fail 'coder profile must use sandbox_mode = "workspace-write".'
-fi
-if [[ -f "$CODEX_DIR/reviewer.config.toml" ]] && \
-   ! grep -Eq '^sandbox_mode[[:space:]]*=[[:space:]]*"read-only"[[:space:]]*$' "$CODEX_DIR/reviewer.config.toml"; then
-  fail 'reviewer profile must use sandbox_mode = "read-only".'
-fi
 
 if ! command -v herdr >/dev/null 2>&1; then
   printf '\nEnvironment is not healthy: %s failure(s), %s warning(s).\n' "$failures" "$warnings"
@@ -458,7 +511,7 @@ if [[ $server_running -eq 1 ]]; then
          ! state=$(json_agent_required_string "$agent_payload" agent_status) || \
          ! agent_kind=$(json_agent_required_string "$agent_payload" agent) || \
          ! interactive_ready=$(json_agent_required_boolean "$agent_payload" interactive_ready) || \
-         ! launch_pending=$(json_agent_required_boolean "$agent_payload" launch_pending) || \
+         ! launch_pending=$(json_agent_boolean_or_false_if_absent "$agent_payload" launch_pending) || \
          ! pane_id=$(json_agent_required_string "$agent_payload" pane_id) || \
          ! workspace_id=$(json_agent_required_string "$agent_payload" workspace_id); then
         fail "$live_name_expected reported malformed identity or lifecycle fields."
@@ -522,10 +575,6 @@ if [[ $server_running -eq 1 ]]; then
         continue
       fi
       identity_failures_before=$failures
-      case "$role" in
-        planner|coder) expected_sandbox=workspace-write ;;
-        reviewer) expected_sandbox=read-only ;;
-      esac
       if [[ $STATE_SCOPE_LOADED -eq 1 ]]; then
         case "$role" in
           planner) recorded_pane_id=$RUN_STATE_LOADED_PLANNER_PANE ;;
@@ -550,19 +599,21 @@ if [[ $server_running -eq 1 ]]; then
         else
           fail "$live_name_expected is not verifiably running with --profile $role. Restart it through start.sh."
         fi
-        if json_process_has_managed_scope "$process_payload" "$expected_sandbox"; then
-          ok "$live_name_expected uses the managed writable-roots override and --sandbox $expected_sandbox"
+        if json_process_has_managed_scope "$process_payload" "$role"; then
+          ok "$live_name_expected disables native agents and carries the managed network-permission argv"
         else
-          fail "$live_name_expected lacks the exact managed scope/sandbox argv. Restart it through the current start.sh."
+          fail "$live_name_expected lacks the exact managed native-agent/network-permission argv. Restart it through the current start.sh."
         fi
         if process_add_dirs_match "$process_payload" "$role"; then
-          if [[ "$role" == reviewer ]]; then
-            ok "$live_name_expected has no --add-dir writable-root grants, as required by read-only sandbox"
-          else
+          if [[ "$role" == coder ]]; then
             ok "$live_name_expected additional roots match the requested writable --add-dir list"
+          elif [[ "$role" == planner ]]; then
+            ok "$live_name_expected additional roots match the requested read-only workspace context"
+          else
+            ok "$live_name_expected has no --add-dir writable-root grants, as required by read-only sandbox"
           fi
         else
-          fail "$live_name_expected writable-root argv does not match its role: Planner/Coder require the requested --add-dir list and Reviewer requires none. Rerun doctor with the same options used by start.sh."
+          fail "$live_name_expected additional-root argv does not match its role: Planner and Coder require the requested --add-dir list; Reviewer requires none. Rerun doctor with the same options used by start.sh."
         fi
       else
         fail "$live_name_expected foreground process could not be inspected: $process_payload"

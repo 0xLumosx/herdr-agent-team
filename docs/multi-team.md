@@ -112,13 +112,15 @@ One team may intentionally cover multiple disjoint project roots:
 ```
 
 `--add-dir` is repeatable. The primary cwd remains the Herdr workspace/pane
-directory. Planner and Coder receive the ordered additional writable-root
-list; Reviewer remains `read-only` and receives no `--add-dir`.
+directory. Planner and Coder receive the ordered list: Planner as read-only
+workspace context, Coder as writable context. Reviewer stays on the primary
+root. All three roles receive the managed command-network permission; this
+does not expand Planner or Reviewer's local write access.
 
 ## How Planner derives its route
 
-Planner does not receive a fixed downstream name from its Codex profile. At
-runtime it obtains its current live Herdr identity and applies one of two
+Planner does not receive a fixed downstream name from its Codex profile. Its
+required managed bridge proves the current pane identity and applies one of two
 closed rules:
 
 ```text
@@ -132,10 +134,11 @@ SELF_AGENT = <prefix>-planner
   → REVIEWER_AGENT = <prefix>-reviewer
 ```
 
-It verifies those exact live names before every handoff. Identity comes from
-the Herdr name, not pane position, tab, workspace layout, process kind, or a
-hard-coded pane ID. Those other properties can change or be shared by unrelated
-agents.
+It verifies those exact live names, same workspace, distinct panes, and peer
+readiness before every handoff. The bridge accepts only the role `coder` or
+`reviewer`, never an arbitrary agent name. Identity comes from current Herdr
+pane ownership, not sidebar position, tab layout, process kind, or a hard-coded
+pane ID.
 
 Any unrecognized self name, ambiguous derivation, missing same-team target, or
 Herdr communication failure produces:
@@ -164,10 +167,10 @@ Use the same prefix for diagnostics and tests:
 With no root options, Doctor uses this Team's latest safe launch record and
 rechecks its roots, workspace, and pane IDs against Herdr. The explicit form
 must repeat every startup `--add-dir` in the same order and bypasses saved ID
-binding. Both forms validate the managed empty inherited-writable-roots
-override, role sandbox, and role-specific process argv: the exact list on
-Planner/Coder and none on Reviewer. That is launch evidence, not proof of file
-access or change attribution.
+binding. Both forms validate the named permission profile, its exact network
+grant, the effective role filesystem sandbox, and role-specific process argv:
+the exact ordered list on Planner and Coder, and no `--add-dir` on Reviewer.
+That is launch evidence, not proof of file access or change attribution.
 
 Also inspect the runtime directly with the commands exposed by the installed
 Herdr version:
@@ -211,7 +214,8 @@ other inspectable Herdr Codex role: primary/foreground cwd plus all structured
 their physical worktree root; non-Git directories map to their physical
 directory. Startup refuses any equal, ancestor, or descendant overlap between
 the two complete root sets. An uninspectable role, malformed add-dir argv, or
-older process without the managed empty writable-roots override fails closed.
+older process without the managed permission profile and network grant fails
+closed.
 An owner-checked, user-local startup lock serializes current managed `start.sh`
 processes using the same `CODEX_HOME` across this preflight and workspace
 creation. It is released after startup, reserves no project root, mediates no

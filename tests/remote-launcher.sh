@@ -25,6 +25,7 @@ call_log="$temporary_root/calls.log"
 profiles_home="$temporary_root/profiles-home"
 mkdir -p "$fake_root/scripts/lib" "$mock_bin" "$remote_shell_bin" \
   "$temporary_root/home" "$profiles_home"
+cp -p -- "$PROJECT_ROOT/scripts/herdr_mcp.py" "$fake_root/scripts/herdr_mcp.py"
 for helper in team json digest scope run-state; do
   cp -p -- "$PROJECT_ROOT/scripts/lib/$helper.sh" "$fake_root/scripts/lib/$helper.sh"
 done
@@ -181,6 +182,9 @@ chmod +x "$fake_root/scripts/start.sh" "$fake_root/scripts/doctor.sh" \
 for role in planner coder reviewer; do
   : >"$profiles_home/$role.config.toml"
 done
+mkdir -p "$profiles_home/herdr-codex-team"
+cp -p -- "$PROJECT_ROOT/scripts/herdr_mcp.py" \
+  "$profiles_home/herdr-codex-team/herdr_mcp.py"
 
 : >"$call_log"
 env PATH="$mock_bin:$PATH" CODEX_HOME="$profiles_home" MOCK_CALL_LOG="$call_log" \
@@ -469,6 +473,8 @@ grep -Fxq '<remote-arg:--repair-profiles>' "$call_log" || \
 grep -Fxq '<remote-arg:--install-integration>' "$call_log" || \
   die 'remote.sh did not pass through explicit integration approval.'
 grep -Fxq 'scripts/open.sh' "$archive_log" || die 'remote.sh did not stream open.sh.'
+grep -Fxq 'scripts/herdr_mcp.py' "$archive_log" || \
+  die 'remote.sh did not stream the Planner Herdr MCP bridge.'
 grep -Fxq 'scripts/lib/remote-bootstrap.sh' "$archive_log" || \
   die 'remote.sh did not stream the remote bootstrap.'
 grep -Fxq '<--remote>' "$call_log" || die 'remote.sh did not launch the local Herdr remote client.'

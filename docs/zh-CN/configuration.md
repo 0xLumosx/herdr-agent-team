@@ -43,10 +43,13 @@ State 目录使用 `0700`，JSON 文件使用 `0600`。其中包含主/额外项
 
 | 设置 | Planner | Coder | Reviewer |
 | --- | --- | --- | --- |
-| `sandbox_mode` | `workspace-write` | `workspace-write` | `read-only` |
+| 实际本地 filesystem policy | `read-only` | `workspace-write` | `read-only` |
 | `approval_policy` | `never` | `never` | `never` |
+| 受管 `default_permissions` | `herdr_read_only_network` | `herdr_workspace_network` | `herdr_read_only_network` |
+| permission parent | `:read-only` | `:workspace` | `:read-only` |
+| command network | 启用 | 启用 | 启用 |
 | reasoning 默认值 | `xhigh` | `high` | `xhigh` |
-| 应用源码编辑 | prompt 禁止 | 允许且预期 | sandbox 和 prompt 均阻止 |
+| 应用源码编辑 | sandbox 和 prompt 均阻止 | 允许且预期 | sandbox 和 prompt 均阻止 |
 
 Coder 模板还提供以下默认建议：
 
@@ -57,7 +60,7 @@ model_reasoning_effort = "high"
 
 工作流不会根据这个模型名称选择不同分支。用户可以使用当前 Codex account 和 CLI 支持的任何模型覆盖它。
 
-不要在未重新测试 Herdr 通信的情况下把 Planner 改成 `read-only`。只读 Planner 曾因 `Operation not permitted` 失败。也不要为了让 Reviewer 自己修复 finding 而把它改为可写 sandbox；这会破坏独立审查边界。
+Planner 必需的 `herdr_codex_team` stdio MCP server 只暴露 `inspect_team` 与 `prompt_agent`。这是 Linux shell sandbox 拒绝 Herdr Unix socket 时的受支持解决方案；不要改用 `danger-full-access` 或暴露任意 shell/Herdr 命令的 MCP server。也不要为了绕过验证失败而把 Planner 或 Reviewer 改为可写 sandbox。
 
 ## 模型
 
@@ -67,7 +70,7 @@ model_reasoning_effort = "high"
 model = "<available-model>"
 ```
 
-`model_reasoning_effort` 属于受管策略，不是可直接修改的本地覆盖。如需更改，请编辑 `profiles/` 下的对应仓库模板，运行静态检查后重新安装。Sandbox、approval、角色指令和未来受管策略字段同样必须按 source 修改并重新安装。
+`model_reasoning_effort` 属于受管策略，不是可直接修改的本地覆盖。如需更改，请编辑 `profiles/` 下的对应仓库模板，运行静态检查后重新安装。Sandbox、approval、角色指令、Planner bridge 和未来受管策略字段同样必须按 source 修改并重新安装。
 
 建议的选择标准：
 
@@ -113,7 +116,10 @@ Codex 在 session 启动时读取所选 profile，不会自动把文件变化重
 4. 使用同一组 root 参数运行 `doctor.sh`，确认三个精确实时名称；
 5. 从可用 Git diff 或所报 non-Git touched path 恢复任务，保留每项证据限制，并使用自包含 handoff。
 
-不要只运行普通 `codex --profile <role>` 重启。它会缺少受管空 inherited-writable-roots 覆盖、显式 sandbox、角色专属额外 root，以及 `doctor.sh` 要求的受管 launch 证据。重启 Team 可能清除 Herdr 实时名称，因为名称属于 pane occupant。不要停止或重命名无关 Team。
+不要只运行普通 `codex --profile <role>` 重启。它会缺少受管 permission
+profile、显式 network grant、角色专属额外 root，以及 `doctor.sh` 要求的受管
+launch 证据。重启 Team 可能清除 Herdr 实时名称，因为名称属于 pane occupant。
+不要停止或重命名无关 Team。
 
 绝不能通过分配另一个 Team 的名称来修复重启。Profile 匹配不代表 Team membership。
 
@@ -121,13 +127,42 @@ Codex 在 session 启动时读取所选 profile，不会自动把文件变化重
 
 `approval_policy = "never"` 表示 Codex 在普通审批点不会暂停。它不会授予 sandbox 禁止的文件系统访问权限。反过来，即使 prompt 要求不要使用，`workspace-write` 仍然提供实质性的写入能力。
 
-受管 startup 还会在任何显式可写 root 前传入 `-c 'sandbox_workspace_write.writable_roots=[]'`。它会中和从基础配置或角色 profile 继承的 writable root，避免这些 root 静默扩大 Team 的受管 scope。Planner 和 Coder 在 `workspace-write` 下获得主 cwd 与每个可重复 `--add-dir`；Reviewer 被强制为 `read-only` 且不接收 `--add-dir`，因此可检查请求的 root，但不会获得可写 root。
+受管 startup 会在命令行组合 Codex 的 beta permission profile。Planner 和
+Reviewer 选择继承 `:read-only` 的 `herdr_read_only_network`；Coder 选择继承
+`:workspace` 的 `herdr_workspace_network`。每次 launch 都重复精确的
+`default_permissions`、`extends` 和 `network.enabled=true` 设置。它不会传入旧的
+`--sandbox` 或 `sandbox_workspace_write.writable_roots` override，因为在受支持的
+Codex 版本中，这些参数可能与实际 network policy 冲突或抑制它。Planner 与
+Coder 都获得主 cwd 和每个可重复 `--add-dir`；Planner 保持本地只读，Coder
+可写，Reviewer 保持本地只读且只使用主 root。
+
+三个角色都启用 command network，因此标准 SSH 可以直接连接。这是广泛的出站
+网络权限，不是仅限 SSH 或特定 host 的规则。本地 `read-only` 不会约束通过 SSH
+在远端执行的操作，`approval_policy = "never"` 也不提供交互检查点。因此
+`start.sh` 与 `doctor.sh` 会同时检查精确受管 argv，以及模型实际可见的
+filesystem sandbox 和 network 状态；CLI 行为不兼容或出现冲突的旧参数时会
+fail closed。
+
+每个受管角色 profile 还会设置 `agents.enabled = false`，startup 再用
+`-c 'agents.enabled=false'` 重复覆盖。该 CLI 覆盖可防止基础配置重新启用 Codex
+原生协作工具，精确 argv 验收会让缺少此项的旧 live process fail closed。
+Planner 必需的 Herdr bridge 是独立的有界 MCP 工具面，因此仍可使用。修改或
+重装 profile 后必须重建受影响 Team；运行中的 Codex session 不会热加载。
+
+Reviewer profile 还会设置 `PYTHONDONTWRITEBYTECODE=1` 和
+`PYTEST_ADDOPTS="--capture=sys -p no:cacheprovider"`。这样，普通 `pytest`
+收集和输出捕获不再创建默认捕获文件、`.pytest_cache` 或 `.pyc` 文件。
+它不会创建可写临时目录：需要 `tmp_path`、`capfd`、coverage 数据、编译器
+输出或应用 scratch file 的测试与 plugin，仍必须明确报告为无法在独立只读
+审查边界内运行。
 
 必须从概念上区分这三种机制：
 
 ```text
 approval policy  Codex 何时在操作前询问
 sandbox mode     操作可以访问什么
+command network  shell command 是否可以建立出站连接
+agent topology   Codex 原生协作工具是否存在
 role prompt      Agent 被要求采取什么行为
 ```
 
@@ -140,7 +175,7 @@ role prompt      Agent 被要求采取什么行为
 从新仓库版本更新前，检查当前使用的本地角色设置和受管策略：
 
 ```bash
-grep -E '^(model|model_reasoning_effort|sandbox_mode|approval_policy)[[:space:]]*=' \
+grep -E '^(model|model_reasoning_effort|sandbox_mode|approval_policy|agents[.]enabled)[[:space:]]*=' \
   "$HOME/.codex/planner.config.toml"
 ```
 
@@ -170,7 +205,7 @@ Team 身份是 runtime input，不是已安装配置：
 
 Prefix 必须能为三个角色生成合法且唯一的 Herdr 名称。Startup 会在 workspace 创建前检查精确生成名，并在冲突时停止；它不会重命名、替换或删除现有 live agent。
 
-`--cwd` 选择 Herdr workspace/pane 的主目录。`--add-dir` 可重复，用于选择 Planner 和 Coder 的额外可写 root；Reviewer 保持 `read-only`，不接收该参数。只要提供了 `--add-dir`，诊断就同时要求 `--cwd`，并验证角色专属 argv：Planner/Coder 必须携带精确的有序列表，Reviewer 必须不携带 `--add-dir`。所有请求目录都必须已存在、不是文件系统 root，并在物理路径与 Git-worktree 解析后互不重叠。
+`--cwd` 选择 Herdr workspace/pane 的主目录。`--add-dir` 可重复，为 Planner 提供额外只读 workspace context，为 Coder 提供额外可写 context；Reviewer 不接收该参数。只要提供了 `--add-dir`，诊断就同时要求 `--cwd`，并验证角色专属 argv：Planner 与 Coder 必须携带精确的有序列表，Reviewer 必须不携带 `--add-dir`。所有请求目录都必须已存在、不是文件系统 root，并在物理路径与 Git-worktree 解析后互不重叠。
 
 位于 Git worktree 中是证据能力，不是启动条件：single-root 与 multi-root startup 都允许现有 non-Git 目录；Git CLI 仍用于保守识别 worktree scope。Non-Git root 的 baseline、完整 diff、untracked-file scope、rollback point 与预存变更归属均为 `NOT AVAILABLE`。不同 Team 要使用互不重叠的完整 root set；两个 Team 在同一仓库中并发工作时要使用不同 Git worktree。参见[多 Team 隔离](multi-team.md)。
 
@@ -204,4 +239,4 @@ HERDR_TEST_PROJECT_DIR=/path/to/project \
   /path/to/herdr-codex-team/scripts/test.sh --team github full
 ```
 
-Host 必须位于 Git-clean worktree 中且有已提交的 `HEAD`。这一布局使 nested fixture 保持在 live Planner/Coder 的 `workspace-write` root 内，同时 baseline check 会拒绝 Git-visible 外部变更、commit 和 branch switch。Git status 不会审计 ignored file，因此应使用不含敏感 ignored content 的 disposable worktree；选择无关、unborn 或 dirty 目录会安全失败。主 cwd 为 non-Git 的 Team 必须把 `full` 和 `policy` 记为 `NOT RUN`；Git-backed 主 root 下的 fixture 结果不覆盖任何 non-Git 额外 root。
+Host 必须位于 Git-clean worktree 中且有已提交的 `HEAD`。这一布局使 nested fixture 保持在 live Coder 的 `workspace-write` root 内，同时 baseline check 会拒绝 Git-visible 外部变更、commit 和 branch switch。Git status 不会审计 ignored file，因此应使用不含敏感 ignored content 的 disposable worktree；选择无关、unborn 或 dirty 目录会安全失败。主 cwd 为 non-Git 的 Team 必须把 `full` 和 `policy` 记为 `NOT RUN`；Git-backed 主 root 下的 fixture 结果不覆盖任何 non-Git 额外 root。

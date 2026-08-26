@@ -16,7 +16,7 @@ usage() {
   printf '%s\n' \
     'Usage: ./scripts/uninstall.sh' \
     '' \
-    'Moves profiles installed by herdr-codex-team into a dated backup.' \
+    'Moves profiles and the Planner Herdr MCP bridge installed by herdr-codex-team into a dated backup.' \
     'It does not remove Codex, Herdr, or the Herdr Codex integration.'
 }
 
@@ -58,12 +58,31 @@ for role in planner coder reviewer; do
   printf '[OK] Moved %s.config.toml to the uninstall backup.\n' "$role"
 done
 
+bridge="$CODEX_DIR/herdr-codex-team/herdr_mcp.py"
+if [[ -e "$bridge" || -L "$bridge" ]]; then
+  bridge_marker='# Managed by herdr-codex-team. Edit this source file and rerun scripts/install.sh.'
+  if [[ -f "$bridge" && ! -L "$bridge" ]] && grep -Fxq "$bridge_marker" "$bridge"; then
+    if [[ $moved -eq 0 ]]; then
+      mkdir -p -- "$backup_dir"
+      chmod 700 "$backup_dir" 2>/dev/null || true
+    fi
+    mkdir -p -- "$backup_dir/herdr-codex-team"
+    chmod 700 "$backup_dir/herdr-codex-team" 2>/dev/null || true
+    mv -- "$bridge" "$backup_dir/herdr-codex-team/herdr_mcp.py"
+    moved=$((moved + 1))
+    printf '[OK] Moved the managed Planner Herdr MCP bridge to the uninstall backup.\n'
+  else
+    printf '[WARN] Leaving non-managed or unsafe bridge path untouched: %s\n' "$bridge"
+    skipped=$((skipped + 1))
+  fi
+fi
+
 if [[ $moved -gt 0 ]]; then
-  printf '\nUninstall complete. Profiles remain recoverable at:\n  %s\n' "$backup_dir"
+  printf '\nUninstall complete. Managed files remain recoverable at:\n  %s\n' "$backup_dir"
 else
-  printf 'No managed team profiles were found. Nothing was removed.\n'
+  printf 'No managed team files were found. Nothing was removed.\n'
 fi
 
 if [[ $skipped -gt 0 ]]; then
-  printf '%s profile(s) were intentionally left untouched because they lacked the installer marker.\n' "$skipped"
+  printf '%s path(s) were intentionally left untouched because they lacked the installer marker or were unsafe.\n' "$skipped"
 fi

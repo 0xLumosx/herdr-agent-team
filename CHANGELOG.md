@@ -8,6 +8,9 @@ All notable changes to this project are documented here.
 
 - Prefixed Herdr team names for multiple concurrent three-agent teams.
 - Runtime Planner identity derivation and same-team dynamic routing.
+- A required Planner-only stdio MCP bridge with bounded `inspect_team` and
+  role-only `prompt_agent` tools, avoiding Linux Codex shell-sandbox AF_UNIX
+  failures without granting arbitrary Herdr or filesystem operations.
 - Team-aware startup, diagnostics, communication tests, and collision checks.
 - Multi-team routing and isolation test coverage.
 - Multi-team documentation and examples.
@@ -53,6 +56,26 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- The English and Chinese quick starts are shorter and now separate local,
+  multi-root, remote, manual-attach, detach, workspace-close, and named-session
+  stop/delete flows. Detach guidance now uses the correct lowercase `q` key.
+- All three managed roles now enable command networking through role-specific
+  Codex permission profiles so ordinary SSH can open outbound TCP connections.
+  Planner and Reviewer extend `:read-only`; Coder extends `:workspace` and
+  remains the only role that can write additional roots. Planner and Coder
+  receive `--add-dir` so both project roots are visible to orchestration and
+  implementation; Reviewer stays on the primary root. Startup and Doctor inspect
+  the effective model-visible filesystem/network policy and reject legacy
+  `--sandbox` argv or incompatible permission resolution.
+- All three managed Codex role profiles now set `agents.enabled = false`, and
+  startup repeats that setting as an exact CLI override. This removes Codex's
+  native collaboration tools so `/root/*` workers cannot substitute for the
+  visible same-team Herdr Agents. Static tests inspect rendered prompt input,
+  while startup and Doctor reject live role processes missing the override.
+- The read-only Reviewer profile now makes ordinary Python test runs avoid
+  pytest's file-backed default capture, cache writes, and Python bytecode
+  writes. Tests or plugins that inherently require writable temporary storage
+  remain an explicit validation limitation instead of weakening the sandbox.
 - Prefixed workspace labels now use `codex-team:<team>` without repeating the
   project directory; legacy labels remain `codex-team:<project>`.
 - Planner no longer assumes that downstream agents use the generic live names
@@ -61,11 +84,11 @@ All notable changes to this project are documented here.
   keeping model selection user-configurable and workflow-independent.
 - Normal Coder and Reviewer responses now echo `TASK_ID`, `ROUND`, and
   `HANDOFF_ID`; Planner fails closed before interpreting a mismatched response.
-- Managed role launches clear inherited
-  `sandbox_workspace_write.writable_roots` and apply the role's explicit
-  sandbox. Planner/Coder receive only the requested additional writable roots;
-  read-only Reviewer receives no `--add-dir`. Doctor verifies this role-specific
-  policy from foreground process arguments.
+- Planner now runs under a hard `read-only` filesystem permission profile and
+  communicates through the managed bridge. Planner and Coder receive requested
+  `--add-dir` roots as read-only and writable context respectively; Reviewer
+  remains on the primary root. Doctor verifies profile, bridge, effective
+  permission state, and foreground argv integrity.
 - Git worktrees are no longer a startup prerequisite. Existing non-Git
   directories work in both single-root and multi-root mode with explicit
   degraded-evidence warnings.
@@ -78,8 +101,12 @@ All notable changes to this project are documented here.
   transport, while the local record never becomes task/workflow state or
   restores a conversation. The fixed Planner/Coder/Reviewer architecture does
   not add an OMX-style scheduler, mailbox, or automatic per-role worktrees.
+- Herdr 0.8.2 Agent payloads that omit the settled-only `launch_pending` field
+  no longer produce a false `START_PARTIAL`. An absent field is treated as not
+  pending; a present non-boolean value and an explicit `true` still fail closed.
 
 ### Backward compatibility
 
 - Exact legacy live names `planner`, `coder`, and `reviewer` remain supported.
-- Installation still manages only the three reusable Codex profiles.
+- Installation still manages only the three reusable Codex profiles, plus one
+  shared Planner bridge independent of Team prefix.

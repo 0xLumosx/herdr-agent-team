@@ -83,9 +83,10 @@ Planner 只在自己的 Team 内编排。
 $CODEX_HOME/planner.config.toml
 $CODEX_HOME/coder.config.toml
 $CODEX_HOME/reviewer.config.toml
+$CODEX_HOME/herdr-codex-team/herdr_mcp.py
 ```
 
-`CODEX_HOME` 默认为 `~/.codex`。Codex CLI 通过 `--profile planner`、`--profile coder` 或 `--profile reviewer` 选择文件，并将其叠加到基础用户配置之上。这些 profile 是可复用的角色策略，不是 Team 身份。所有 Team 使用相同的三个文件；不需要、也不会安装带前缀的 profile 副本。
+`CODEX_HOME` 默认为 `~/.codex`。Codex CLI 通过 `--profile planner`、`--profile coder` 或 `--profile reviewer` 选择文件，并将其叠加到基础用户配置之上。这些 profile 是可复用的角色策略，不是 Team 身份。所有 Team 使用相同的三个 profile 和同一个 Planner bridge；不需要、也不会安装带前缀的副本。
 
 ### Prompt
 
@@ -93,12 +94,12 @@ $CODEX_HOME/reviewer.config.toml
 
 ### 设置脚本
 
-- `install.sh` 验证前置条件、备份冲突文件并安装 profile。
-- `doctor.sh` 检查 binary、已安装 profile、Herdr runtime、精确 legacy 或带前缀的实时名称、状态、workspace/pane/cwd 关联，以及前台 profile、sandbox、受管 writable-root 覆盖和角色专属额外 root argv 绑定。未显式提供 root 时，它可以读取最近 Team 启动记录，再向 Herdr 核实精确 runtime binding。
-- `start.sh` 仅使用已安装 Herdr 公开的 CLI 能力，准备一个 legacy 或带前缀的三 pane Team。它拒绝名称冲突和完整 root-set 重叠，不会重命名或删除现有 Agent。可重复 Codex `--add-dir` 只应用到使用 `workspace-write` 的 Planner 和 Coder。短期 startup lock 会把使用同一 `CODEX_HOME` 的当前 helper 在 preflight 到 workspace 创建之间串行化，并以原子方式记录该次 helper 调用的启动 observation。
+- `install.sh` 验证前置条件、备份冲突文件，并安装 profile 与精确的受管 Planner bridge。
+- `doctor.sh` 检查 binary、已安装 profile、Herdr runtime、精确 legacy 或带前缀的实时名称、状态、workspace/pane/cwd 关联，以及前台 profile、具名 permission profile、实际 filesystem sandbox 与 network 和角色专属额外 root argv 绑定。未显式提供 root 时，它可以读取最近 Team 启动记录，再向 Herdr 核实精确 runtime binding。
+- `start.sh` 仅使用已安装 Herdr 公开的 CLI 能力，准备一个 legacy 或带前缀的三 pane Team。它拒绝名称冲突和完整 root-set 重叠，不会重命名或删除现有 Agent。可重复 Codex `--add-dir` 为 Planner 提供只读 workspace context、为 Coder 提供可写 context；Reviewer 仍只使用主 root。短期 startup lock 会把使用同一 `CODEX_HOME` 的当前 helper 在 preflight 到 workspace 创建之间串行化，并以原子方式记录该次 helper 调用的启动 observation。
 - `lib/run-state.sh` 只拥有 schema validation、原子启动记录写入、state-backed scope loading 和 startup lock。它绝不 prompt、启动、停止或调度 Agent。
 - `test.sh` 检查 Team-aware direct ping、经 Planner 的通信、完整循环，并在两个真实 Team 可用时检查路由隔离。
-- `uninstall.sh` 只把本项目管理的 profile 文件移到可恢复的日期备份中。
+- `uninstall.sh` 只把本项目管理的 profile 与 bridge 移到可恢复的日期备份中。
 
 ### 测试 Prompt
 
@@ -106,7 +107,7 @@ Direct-ping fixture 定义精确 sentinel 回复；mediated 和 full-loop 测试
 
 Isolation 模式指定一个 primary Team 和一个 adversarial peer Team。它检查 live 同 Team 路由，并在 peer Team 的下游证据中查找本次运行特定的 challenge。两个 Team 必须都是真实且 settled；仅靠静态名称构造无法证明跨 Team 隔离。如果无法执行 live 检查，必须报告 `NOT RUN`。它是路由证据，不证明 root set 之间的文件系统隔离。
 
-Full-loop harness 要求 host worktree Git-clean 且有已提交的 `HEAD`，并在 live Team 所使用的项目下创建 disposable nested Git repository。它使用 challenge-derived Coder/Reviewer response token，避免把输入文字误判为成功回复；还要求 fixture `HEAD` 保持在 harness baseline、只有预期 fixture 文件发生差异、周边 host 的 Git-visible status/branch/`HEAD` 保持不变、脚本自身 Python assertion 和 fixture test 通过，并且 Planner 发出本次运行特定的 approval token。Harness commit 会禁用用户级签名和 hook。它不是 filesystem audit，无法发现对 ignored host file 的修改，也不能提供 writer attribution：Planner 拥有 `workspace-write`，而项目没有安装操作系统级 audit 机制。“Only Coder writes” 对 Reviewer 有硬约束，但对 Planner 仍是 prompt/workflow 策略。
+Full-loop harness 要求 host worktree Git-clean 且有已提交的 `HEAD`，并在 live Team 所使用的项目下创建 disposable nested Git repository。它使用 challenge-derived Coder/Reviewer response token，避免把输入文字误判为成功回复；还要求 fixture `HEAD` 保持在 harness baseline、只有预期 fixture 文件发生差异、周边 host 的 Git-visible status/branch/`HEAD` 保持不变、脚本自身 Python assertion 和 fixture test 通过，并且 Planner 发出本次运行特定的 approval token。Harness commit 会禁用用户级签名和 hook。它不是 filesystem audit，无法发现对 ignored host file 的修改，也不能提供 writer attribution：受管 Planner 与 Reviewer 均为只读，但项目没有为未受管进程安装操作系统级 audit 机制。
 
 Harness 要求 Git-backed 主 host。如果 Team 的主 cwd 为 non-Git，`full` 和 `policy` 均为 `NOT RUN`。Git-backed 主 root 下获得的结果不能建立 non-Git 额外 root 的 baseline、完整 diff、rollback 或 writer attribution。
 
@@ -137,11 +138,32 @@ kind: codex, name: auth-reviewer
 | 调度同 Team Reviewer | 是 | 否 | 否 |
 | 访问另一个 Team | 否 | 否 | 否 |
 | 按策略修改应用源码 | 否 | 是 | 否 |
-| Filesystem sandbox | `workspace-write` | `workspace-write` | `read-only` |
+| Filesystem sandbox | `read-only` | `workspace-write` | `read-only` |
+| Command network | 启用 | 启用 | 启用 |
 | 检查可用变更证据 | 每个 Git root 的 diff；每个 non-Git root 的 touched-path 限制 | 对自身 report 执行相同检查 | 独立检查两者并保留缺口 |
 | 宣布最终批准 | 是 | 否 | 否 |
 
-Planner 的 no-write 边界是 prompt 和工作流规则，而不是硬文件系统限制。保留 `workspace-write` 是因为只读 Planner 在尝试 Herdr 通信时曾产生 `Operation not permitted`。Coder 具有相同技术写 scope，并是唯一预期实现 writer。Reviewer 被强制为 `read-only` 且启动时不传 `--add-dir`；它仍可只读检查请求的 root，但不会获得额外可写 root。受管 startup 会清空继承的 `sandbox_workspace_write.writable_roots`，然后只向 Planner 和 Coder 传入精确的额外可写 root set。必须理解这一取舍，不能把它描述为完美隔离。
+Planner 与 Reviewer 都有直接 `read-only` 文件系统边界。Planner 接收
+`--add-dir` 作为 workspace context，Reviewer 不接收；Coder 是唯一受管实现
+writer。受管 startup 为 Planner 与 Reviewer
+选择继承 `:read-only` 的 beta permission profile，为 Coder 选择继承
+`:workspace` 的另一个 profile；三个 profile 都启用 command network。Startup
+在 argv 中重复精确 permission 设置，向 Planner 与 Coder 传入同一额外 root
+context，但只有 Coder 可写，并拒绝
+旧 `--sandbox` 或 `sandbox_workspace_write.writable_roots` 冲突。Startup 与 Doctor
+还会验证模型实际可见的 filesystem sandbox 和 network 状态。Linux shell sandbox
+可能拒绝 AF_UNIX socket 创建，因此 Planner 通过必需的本地 stdio MCP bridge
+访问 Herdr。Bridge 会验证当前 pane、socket ownership、精确同 workspace Team
+身份、readiness 与 lifecycle correlation；工具面只接受 `inspect_team` 和按角色的
+`prompt_agent`，从不接受任意 Agent 名称或任意 Herdr 命令。每个角色 profile
+都通过 `agents.enabled = false` 禁用 Codex 原生多代理工具；受管 launch 会在 argv
+中重复该设置，live validation 会拒绝缺少它的旧进程。因此 Herdr 是唯一受管
+Agent 拓扑。
+
+Command network 是广泛出站能力，不是 SSH host allowlist。本地 filesystem
+sandbox 不会约束通过 SSH 执行的远端操作，`approval_policy = "never"` 也不会在
+允许的远端命令前增加交互检查点。远端账号与 server-side 限制属于独立 trust
+boundary。
 
 ## 交接契约
 
@@ -167,7 +189,9 @@ Coder 实现或修复 → Reviewer 审查 → Planner 分诊
 
 1. **Herdr runtime：**提供实时身份和可观察路由。可见 pane 是 process identity 的证据，不证明其输出正确。
 2. **Team-name boundary：**当 Planner 遵守 fail-closed 契约时，精确 `<prefix>-<role>` 名称可防止跨 Team 访问；它们不隔离文件或操作系统进程。
-3. **Codex sandbox：**限制 tool access。`approval_policy = "never"` 会改变提示行为，但不会禁用 sandbox。
+3. **Codex sandbox 与 command network：**角色 permission profile 限制本地
+   filesystem access，并启用出站 command network。`approval_policy = "never"`
+   会改变提示行为，但不会禁用 sandbox，也不会限制远端 SSH 账号能做什么。
 4. **Role prompt：**在语义上约束行为。它是有用策略，不是安全原语。
 5. **Git 和验证：**在 Git 历史存在时提供最终决策所依据的客观记录。Non-Git touched-path inventory 只是最大努力证据，不能证明完整变更集或 baseline。
 6. **启动记录：**保留 startup helper 观察和预期的内容。它不是当前 liveness、delivery、task completion、approval 或 writer identity 的证据。

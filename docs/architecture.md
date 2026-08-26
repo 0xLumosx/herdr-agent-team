@@ -93,13 +93,14 @@ The files under `profiles/` are distributable templates. `scripts/install.sh` in
 $CODEX_HOME/planner.config.toml
 $CODEX_HOME/coder.config.toml
 $CODEX_HOME/reviewer.config.toml
+$CODEX_HOME/herdr-codex-team/herdr_mcp.py
 ```
 
 `CODEX_HOME` defaults to `~/.codex`. Codex CLI selects a file with `--profile
 planner`, `--profile coder`, or `--profile reviewer` and layers it over the
 base user configuration. These profiles are reusable role policy, not team
-identity. Every team uses the same three files; prefixed profile copies are
-neither needed nor installed.
+identity. Every team uses the same three profiles and the same Planner bridge;
+prefixed copies are neither needed nor installed.
 
 ### Prompts
 
@@ -107,17 +108,19 @@ The Markdown files under `prompts/` are the readable source of each role contrac
 
 ### Setup scripts
 
-- `install.sh` validates prerequisites, backs up conflicts, and installs profiles.
+- `install.sh` validates prerequisites, backs up conflicts, and installs profiles
+  plus the exact managed Planner bridge.
 - `doctor.sh` checks binaries, installed profiles, Herdr runtime, exact legacy
   or prefixed live names, state, workspace/pane/cwd association, and foreground
-  profile, sandbox, managed writable-root override, and role-specific
-  additional-root argv binding. With no explicit roots, it can load the latest
+  profile, named permission profile, effective filesystem sandbox and network,
+  and role-specific additional-root argv binding. With no explicit roots, it can load the latest
   Team launch record and verify its exact runtime binding against Herdr.
 - `start.sh` prepares one legacy or prefixed three-pane team using only CLI
   capabilities exposed by the installed Herdr. It rejects name collisions and
   does not rename or delete existing agents. It also rejects complete-root-set
-  overlaps; repeatable Codex `--add-dir` values apply only to the
-  `workspace-write` Planner and Coder roles. A short-lived startup lock
+  overlaps; repeatable Codex `--add-dir` values give Planner read-only workspace
+  context and Coder writable context. Reviewer remains on the primary root. A
+  short-lived startup lock
   serializes current helpers using the same `CODEX_HOME` across preflight and
   workspace creation, and an atomic user-local record captures that helper
   invocation's launch observations.
@@ -126,7 +129,7 @@ The Markdown files under `prompts/` are the readable source of each role contrac
   stops, or schedules an Agent.
 - `test.sh` exercises team-aware direct pings, Planner-mediated communication,
   the full loop, and—when two real teams are available—routing isolation.
-- `uninstall.sh` moves only project-managed profile files into a recoverable dated backup.
+- `uninstall.sh` moves only project-managed profiles and bridge into a recoverable dated backup.
 
 ### Test prompts
 
@@ -149,9 +152,8 @@ to stay unchanged, script-owned Python assertions and fixture tests to pass,
 and Planner to emit a run-specific approval token. The harness commit disables
 user-level signing and hooks. It is not a filesystem audit and does not detect
 modifications to ignored host files. It also cannot provide writer attribution:
-Planner has `workspace-write`, and the project installs no operating-system
-audit mechanism. “Only Coder writes” is hard-enforced for Reviewer but remains
-prompt/workflow policy for Planner.
+managed Planner and Reviewer are read-only, but the project installs no
+operating-system audit mechanism for unmanaged processes.
 
 The harness requires a Git-backed primary host. If the team's primary cwd is
 non-Git, `full` and `policy` are `NOT RUN`. A result under a Git-backed primary
@@ -195,11 +197,37 @@ launch record may persist pane IDs only as freshness expectations for one
 | Schedule same-team Reviewer | yes | no | no |
 | Address another team | no | no | no |
 | Modify application source by policy | no | yes | no |
-| Filesystem sandbox | `workspace-write` | `workspace-write` | `read-only` |
+| Filesystem sandbox | `read-only` | `workspace-write` | `read-only` |
+| Command network | enabled | enabled | enabled |
 | Inspect available change evidence | Git diff per Git root; touched-path limits per non-Git root | same for own report | independently inspect both and preserve gaps |
 | Declare final approval | yes | no | no |
 
-The Planner's no-write boundary is a prompt and workflow rule, not a hard filesystem restriction. `workspace-write` is retained because a read-only Planner has previously produced `Operation not permitted` while attempting Herdr communication. Coder has the same technical write scope and is the only intended implementation writer. Reviewer is forced to `read-only` and launched without `--add-dir`; it can inspect the requested roots without an additional writable-root grant. Managed startup clears inherited `sandbox_workspace_write.writable_roots`, then passes the exact additional writable-root set only to Planner and Coder. This tradeoff must be understood rather than described as perfect isolation.
+Planner and Reviewer have a direct `read-only` filesystem boundary. Planner
+receives `--add-dir` as workspace context, Reviewer does not, and Coder is the
+only managed implementation writer.
+Managed startup selects a beta permission profile extending `:read-only` for
+Planner and Reviewer and another extending `:workspace` for Coder; all three
+enable command network. It repeats the exact permission settings in argv,
+passes the same additional-root context to Planner and Coder while only Coder
+can write it, and rejects legacy
+`--sandbox` or `sandbox_workspace_write.writable_roots` conflicts. Startup and
+Doctor also verify the effective model-visible filesystem sandbox and network
+state. Planner reaches
+Herdr through a required local stdio MCP bridge because Linux shell sandboxes
+can reject AF_UNIX socket creation. The bridge validates the current pane,
+socket ownership, exact same-workspace team identities, readiness, and
+lifecycle correlation; its tool surface accepts only `inspect_team` and
+role-only `prompt_agent`, never an arbitrary agent name or Herdr command. Every
+role profile disables Codex-native multi-agent tools with
+`agents.enabled = false`; managed launch repeats the setting in argv and live
+validation rejects older processes without it. Herdr is therefore the only
+managed agent topology.
+
+Command network is broad outbound capability, not an SSH-host allowlist. The
+local filesystem sandbox does not constrain remote operations made through
+SSH, and `approval_policy = "never"` adds no interactive checkpoint before an
+allowed remote command. Remote-account and server-side restrictions are a
+separate trust boundary.
 
 ## Handoff contracts
 
@@ -228,8 +256,10 @@ There are six distinct boundaries:
 2. **Team-name boundary:** exact `<prefix>-<role>` names prevent cross-team
    addressing when Planner follows the fail-closed contract. They do not
    isolate files or operating-system processes.
-3. **Codex sandbox:** constrains tool access. `approval_policy = "never"`
-   changes prompting behavior but does not disable this sandbox.
+3. **Codex sandbox and command network:** the role permission profile
+   constrains local filesystem access and enables outbound command network.
+   `approval_policy = "never"` changes prompting behavior but does not disable
+   the sandbox or limit what the remote SSH account may do.
 4. **Role prompt:** constrains behavior semantically. It is useful policy, not
    a security primitive.
 5. **Git and validation:** provide the objective record used for final

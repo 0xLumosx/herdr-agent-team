@@ -398,7 +398,7 @@ run_state_render_current() {
         herdr: {
           workspace_id: $workspace_id,
           agents: {
-            planner: {name: $planner_name, pane_id: $planner_pane, sandbox: "workspace-write"},
+            planner: {name: $planner_name, pane_id: $planner_pane, sandbox: "read-only"},
             coder: {name: $coder_name, pane_id: $coder_pane, sandbox: "workspace-write"},
             reviewer: {name: $reviewer_name, pane_id: $reviewer_pane, sandbox: "read-only"}
           }
@@ -465,7 +465,7 @@ payload = {
     "herdr": {
         "workspace_id": workspace_id,
         "agents": {
-            "planner": {"name": planner_name, "pane_id": planner_pane, "sandbox": "workspace-write"},
+            "planner": {"name": planner_name, "pane_id": planner_pane, "sandbox": "read-only"},
             "coder": {"name": coder_name, "pane_id": coder_pane, "sandbox": "workspace-write"},
             "reviewer": {"name": reviewer_name, "pane_id": reviewer_pane, "sandbox": "read-only"},
         },
@@ -588,7 +588,7 @@ run_state_parse_current() {
          ((all(["planner", "coder", "reviewer"][];
            ($s.herdr.agents[.].name | safe_nonempty) and
            ($s.herdr.agents[.].pane_id | safe_string))) | not) or
-         ($s.herdr.agents.planner.sandbox != "workspace-write") or
+         ($s.herdr.agents.planner.sandbox != "read-only") or
          ($s.herdr.agents.coder.sandbox != "workspace-write") or
          ($s.herdr.agents.reviewer.sandbox != "read-only") or
          (($s.status == "ready") and
@@ -688,7 +688,7 @@ try:
     for role in ("planner", "coder", "reviewer"):
         if not safe(agents[role].get("name"), True) or not safe(agents[role].get("pane_id")):
             raise TypeError
-    if agents["planner"].get("sandbox") != "workspace-write":
+    if agents["planner"].get("sandbox") != "read-only":
         raise TypeError
     if agents["coder"].get("sandbox") != "workspace-write":
         raise TypeError

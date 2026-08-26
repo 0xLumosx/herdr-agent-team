@@ -58,10 +58,13 @@ configuration. See [Launch state](launch-state.md).
 
 | Setting | Planner | Coder | Reviewer |
 | --- | --- | --- | --- |
-| `sandbox_mode` | `workspace-write` | `workspace-write` | `read-only` |
+| effective local filesystem policy | `read-only` | `workspace-write` | `read-only` |
 | `approval_policy` | `never` | `never` | `never` |
+| managed `default_permissions` | `herdr_read_only_network` | `herdr_workspace_network` | `herdr_read_only_network` |
+| permission parent | `:read-only` | `:workspace` | `:read-only` |
+| command network | enabled | enabled | enabled |
 | reasoning default | `xhigh` | `high` | `xhigh` |
-| application-source edits | forbidden by prompt | allowed and expected | blocked by sandbox and prompt |
+| application-source edits | blocked by sandbox and prompt | allowed and expected | blocked by sandbox and prompt |
 
 The Coder template also provides this default recommendation:
 
@@ -73,7 +76,12 @@ model_reasoning_effort = "high"
 The workflow does not branch on that model name. Users may override it with any
 model supported by their current Codex account and CLI.
 
-Do not change Planner to `read-only` without retesting Herdr communication. A read-only Planner has previously failed with `Operation not permitted`. Do not change Reviewer to a writable sandbox merely to let it fix a finding; that destroys the independent-review boundary.
+Planner's required `herdr_codex_team` stdio MCP server exposes only
+`inspect_team` and `prompt_agent`. It is the supported workaround for Linux
+shell sandboxes rejecting Herdr's Unix socket; do not replace it with
+`danger-full-access` or an arbitrary shell/Herdr MCP server. Do not change
+Planner or Reviewer to a writable sandbox merely to work around a validation
+failure.
 
 ## Models
 
@@ -90,7 +98,7 @@ model = "<available-model>"
 `model_reasoning_effort` is managed policy rather than a direct local override.
 To change it, edit the matching repository template under `profiles/`, run the
 static checks, and reinstall. The same source-and-reinstall rule applies to
-sandbox, approval, role instructions, and future managed policy fields.
+sandbox, approval, role instructions, the Planner bridge, and future managed policy fields.
 
 Suggested selection criteria:
 
@@ -150,9 +158,9 @@ reload the file into an existing session. After changing the repository
 5. recover the task from available Git diffs or reported non-Git touched paths,
    preserve every evidence limitation, and use a self-contained handoff.
 
-Do not restart with plain `codex --profile <role>`. That omits the managed empty
-inherited-writable-roots override, explicit sandbox, role-specific additional
-roots, and managed launch evidence required by `doctor.sh`. Restarting a team
+Do not restart with plain `codex --profile <role>`. That omits the managed
+permission profile, explicit network grant, role-specific additional roots,
+and managed launch evidence required by `doctor.sh`. Restarting a team
 can clear its Herdr live names because each name belongs to the pane occupant.
 Do not stop or rename an unrelated team.
 
@@ -163,19 +171,48 @@ does not establish team membership.
 
 `approval_policy = "never"` means Codex does not pause at ordinary approval points. It does not grant filesystem access that the sandbox forbids. Conversely, `workspace-write` still grants meaningful write capability even when the prompt says not to use it.
 
-Managed startup also supplies
-`-c 'sandbox_workspace_write.writable_roots=[]'` before any explicit writable
-roots. This neutralizes writable roots inherited from the base configuration or
-role profile so they cannot silently broaden a team's managed scope. Planner
-and Coder receive the primary cwd plus each repeatable `--add-dir` under
-`workspace-write`. Reviewer is forced back to `read-only` and receives no
-`--add-dir`; it can inspect the requested roots without a writable-root grant.
+Managed startup composes Codex's beta permission profiles on the command line.
+Planner and Reviewer select `herdr_read_only_network`, which extends
+`:read-only`; Coder selects `herdr_workspace_network`, which extends
+`:workspace`. Each launch repeats the exact `default_permissions`, `extends`,
+and `network.enabled=true` settings. It does not pass the legacy `--sandbox` or
+`sandbox_workspace_write.writable_roots` overrides, because those can conflict
+with or suppress the effective network policy on supported Codex versions.
+Planner and Coder receive the primary cwd plus each repeatable `--add-dir`.
+Planner remains locally read-only; Coder can write; Reviewer remains locally
+read-only on the primary root.
 
-Keep these two mechanisms conceptually separate:
+Command network is enabled for every role so standard SSH can connect directly.
+It is broad outbound network access, not an SSH-only or host-specific rule.
+Local `read-only` does not constrain actions performed through SSH on a remote
+host, and `approval_policy = "never"` supplies no interactive checkpoint.
+`start.sh` and `doctor.sh` therefore check both the exact managed argv and the
+effective model-visible filesystem sandbox plus network state; incompatible
+CLI behavior and conflicting legacy arguments fail closed.
+
+Every managed role profile also sets `agents.enabled = false`, and startup
+repeats it as `-c 'agents.enabled=false'`. The CLI override prevents a base
+configuration from re-enabling Codex-native collaboration tools; exact argv
+validation makes older live processes fail closed. Planner's required Herdr
+bridge remains available because it is a separate bounded MCP surface. Restart
+the affected Team after changing or reinstalling profiles; a running Codex
+session does not hot reload them.
+
+The Reviewer profile also sets `PYTHONDONTWRITEBYTECODE=1` and
+`PYTEST_ADDOPTS="--capture=sys -p no:cacheprovider"`. This lets ordinary
+`pytest` collection and output capture run without pytest creating its usual
+capture files, `.pytest_cache`, or `.pyc` files. It does not create a writable
+temporary directory: tests and plugins that require `tmp_path`, `capfd`,
+coverage data, compiler output, or application scratch files must still be
+reported as not runnable under the independent read-only review boundary.
+
+Keep these mechanisms conceptually separate:
 
 ```text
 approval policy  when Codex asks before an operation
 sandbox mode     what the operation is allowed to access
+command network  whether shell commands can open outbound connections
+agent topology   whether Codex-native collaboration tools exist
 role prompt      what the agent is instructed to do
 ```
 
@@ -189,7 +226,7 @@ Before updating from a newer repository revision, inspect the local role
 settings and managed policy currently in use:
 
 ```bash
-grep -E '^(model|model_reasoning_effort|sandbox_mode|approval_policy)[[:space:]]*=' \
+grep -E '^(model|model_reasoning_effort|sandbox_mode|approval_policy|agents[.]enabled)[[:space:]]*=' \
   "$HOME/.codex/planner.config.toml"
 ```
 
@@ -232,10 +269,10 @@ checks the exact generated names before workspace creation and stops on a
 collision; it does not rename, replace, or delete an existing live agent.
 
 `--cwd` selects the primary Herdr workspace/pane directory. `--add-dir` is
-repeatable and selects additional writable roots for Planner and Coder;
-Reviewer remains `read-only` and receives none. Diagnostics require `--cwd`
-when any `--add-dir` is supplied and validate role-specific argv: the exact
-ordered list for Planner/Coder and no `--add-dir` for Reviewer. All requested
+repeatable and selects additional read-only Planner context plus writable Coder
+context; Reviewer receives none. Diagnostics require `--cwd` when any
+`--add-dir` is supplied and validate role-specific argv: the exact ordered list
+for Planner and Coder and no `--add-dir` for Reviewer. All requested
 directories must already exist, must not be the filesystem root, and must be
 mutually disjoint after physical-path and Git-worktree resolution.
 
@@ -282,4 +319,4 @@ HERDR_TEST_PROJECT_DIR=/path/to/project \
   /path/to/herdr-codex-team/scripts/test.sh --team github full
 ```
 
-The host must be inside a Git-clean worktree with a committed `HEAD`. This placement keeps the nested fixture inside the `workspace-write` root of the live Planner and Coder, while the baseline check rejects Git-visible outside changes, commits, and branch switches. Git status does not audit ignored files, so use a disposable worktree without sensitive ignored content; choosing an unrelated, unborn, or dirty directory fails safely. A team whose primary cwd is non-Git must record `full` and `policy` as `NOT RUN`; a fixture result under a Git-backed primary does not cover any non-Git additional root.
+The host must be inside a Git-clean worktree with a committed `HEAD`. This placement keeps the nested fixture inside the live Coder's `workspace-write` root, while the baseline check rejects Git-visible outside changes, commits, and branch switches. Git status does not audit ignored files, so use a disposable worktree without sensitive ignored content; choosing an unrelated, unborn, or dirty directory fails safely. A team whose primary cwd is non-Git must record `full` and `policy` as `NOT RUN`; a fixture result under a Git-backed primary does not cover any non-Git additional root.

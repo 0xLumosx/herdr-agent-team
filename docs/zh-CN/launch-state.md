@@ -40,7 +40,7 @@ State 目录权限为 `0700`；`current.json` 和 lock owner 文件为 `0600`。
 | 事实 | 权威所有者 |
 | --- | --- |
 | 实时 workspace、pane、Agent identity、lifecycle、prompt transport | Herdr |
-| 角色 profile、sandbox 和 writable-root argv | 实时 Codex process |
+| 角色 profile、permission-profile argv、实际 sandbox/network 和额外 root argv | 实时 Codex process |
 | 当前代码与变更证据 | Git 或 filesystem |
 | 本 startup helper 之前写入的值 | 启动记录 |
 

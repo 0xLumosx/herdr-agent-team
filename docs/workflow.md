@@ -147,7 +147,8 @@ Planner compares the available changed-file and validation evidence to the
 plan. If Coder changed unrelated files or the available evidence is materially
 incomplete, Planner sends a focused correction to Coder before review.
 
-Planner must not edit the source itself to “save a round.” Its `workspace-write` sandbox exists for Herdr compatibility, not implementation authority.
+Planner must not edit the source itself to “save a round.” Its managed sandbox
+is `read-only`; Herdr communication goes through the bounded Planner bridge.
 
 ## 4. Planner to Reviewer
 
@@ -257,18 +258,18 @@ Only then may Planner return `APPROVED`, summarizing changes, validation, and re
 
 ## Communication semantics
 
-On the inspected Herdr 0.8.2 surface, Planner submits work to the exact derived
-name. For an `auth-planner`, for example:
+Planner first calls the managed `mcp__herdr_codex_team__inspect_team` tool. It
+then submits work only through `mcp__herdr_codex_team__prompt_agent` with
+`target_role` exactly `coder` or `reviewer`. For an `auth-planner`, the bridge
+derives `auth-coder` or `auth-reviewer`; callers cannot provide an arbitrary
+live name.
 
-```bash
-herdr agent prompt auth-coder "<self-contained task>" --wait --timeout 120000
-```
-
-`--wait` observes lifecycle state, not a cryptographically bound
-request/response turn. If an agent is already working, its current turn can
-satisfy a wait. The workflow therefore combines self-identity derivation,
-exact target-name verification, visible pane observation, run-specific tests,
-and result inspection instead of treating any one signal as conclusive.
+The bridge re-proves current pane ownership and both same-workspace peers before
+and after prompting, waits for a settled state, requires Herdr's lifecycle
+sequence to advance, and returns a bounded transcript. These remain
+correlated observations, not a cryptographically bound request/response turn.
+The workflow therefore also uses handoff IDs, run-specific tests, visible pane
+observation, and result inspection instead of treating one signal as conclusive.
 
 The user-local launch record does not change these semantics. It stores no
 prompt, acknowledgement, delivery receipt, `TASK_ID`, `ROUND`, `HANDOFF_ID`,
@@ -302,7 +303,8 @@ Coder report, Reviewer decision, and delivery uncertainty still require
 conversation and filesystem evidence. See [Launch state](launch-state.md) and
 [Multi-team isolation](multi-team.md).
 
-Multi-root access changes evidence, not authority: Coder remains the only role
-allowed by policy to edit project files, Planner retains technical
-`workspace-write` capability but is forbidden to use it for implementation,
-and Reviewer's sandbox remains `read-only` across every root.
+Multi-root access changes evidence, not authority: Coder remains the only
+managed write-capable role. Planner and Reviewer remain `read-only` across
+every root. Planner receives additional roots as read-only workspace context;
+only Coder receives additional writable-root grants, and Reviewer remains on
+the primary root.

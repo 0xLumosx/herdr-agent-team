@@ -9,6 +9,7 @@ JSON_LIB="$SCRIPT_DIR/lib/json.sh"
 DIGEST_LIB="$SCRIPT_DIR/lib/digest.sh"
 SCOPE_LIB="$SCRIPT_DIR/lib/scope.sh"
 RUN_STATE_LIB="$SCRIPT_DIR/lib/run-state.sh"
+BRIDGE_SOURCE="$SCRIPT_DIR/herdr_mcp.py"
 [[ -f "$TEAM_LIB" && -f "$JSON_LIB" && -f "$DIGEST_LIB" && -f "$SCOPE_LIB" && \
    -f "$RUN_STATE_LIB" ]] || {
   printf '[FAIL] Missing script helper under %s/lib.\n' "$SCRIPT_DIR" >&2
@@ -33,6 +34,7 @@ if [[ -d "$CODEX_DIR" ]]; then
   CODEX_DIR=$(CDPATH= cd -- "$CODEX_DIR" && pwd -P)
 fi
 export CODEX_HOME="$CODEX_DIR"
+BRIDGE_TARGET="$CODEX_DIR/herdr-codex-team/herdr_mcp.py"
 NO_FOCUS=0
 PROJECT_ARG=''
 PROJECT_POSITIONAL_SET=0
@@ -64,7 +66,7 @@ usage() {
     'PROJECT_DIR defaults to the current directory.' \
     'Existing Git and non-Git project directories are both supported.' \
     'Non-Git roots start normally with explicit degraded Git-evidence warnings.' \
-    '--add-dir is repeatable and grants Planner/Coder additional writable roots; Reviewer remains read-only without writable-root grants.' \
+    '--add-dir is repeatable: Planner receives each root as read-only workspace context, Coder as writable context, and Reviewer receives none.' \
     'Use either --cwd or the positional PROJECT_DIR, not both.' \
     '' \
     'Optional per-run model overrides:' \
@@ -201,7 +203,7 @@ scope_path_has_control "$PROJECT_ARG" && \
 [[ -d "$PROJECT_ARG" ]] || die "Project directory does not exist: $PROJECT_ARG"
 PROJECT_DIR=$(scope_physical_dir "$PROJECT_ARG") || \
   die 'Project directory cannot be resolved safely.'
-[[ "$PROJECT_DIR" != '/' ]] || die 'Refusing to start workspace-write agents at the filesystem root.'
+[[ "$PROJECT_DIR" != '/' ]] || die 'Refusing to start a managed team at the filesystem root.'
 
 for add_dir_arg in ${ADD_DIR_ARGS[@]+"${ADD_DIR_ARGS[@]}"}; do
   [[ -n "$add_dir_arg" ]] || die '--add-dir requires a non-empty directory.'
@@ -253,6 +255,17 @@ fi
 
 command -v codex >/dev/null 2>&1 || die 'Codex CLI was not found in PATH.'
 command -v herdr >/dev/null 2>&1 || die 'Herdr was not found in PATH.'
+command -v python3 >/dev/null 2>&1 || die 'Python 3 was not found in PATH.'
+PYTHON_BIN=$(managed_python_executable) || \
+  die 'Python 3 could not be resolved to a safe absolute executable.'
+HERDR_BIN=$(managed_command_executable herdr "$PYTHON_BIN") || \
+  die 'Herdr could not be resolved to a safe absolute executable.'
+if ! bridge_integrity_error=$(managed_bridge_integrity \
+     "$BRIDGE_TARGET" "$BRIDGE_SOURCE" 2>&1); then
+  die "$bridge_integrity_error. Rerun $SCRIPT_DIR/install.sh before starting a team."
+fi
+"$PYTHON_BIN" "$BRIDGE_TARGET" --check >/dev/null 2>&1 || \
+  die "Installed Herdr MCP bridge failed its self-check. Rerun $SCRIPT_DIR/install.sh."
 if [[ ${#ADD_DIRS[@]} -gt 0 ]]; then
   codex_help=$(codex --help 2>&1) || \
     die 'Could not inspect the Codex CLI command surface.'
@@ -261,6 +274,13 @@ if [[ ${#ADD_DIRS[@]} -gt 0 ]]; then
 fi
 JSON_BACKEND=$(json_backend_name) || \
   die 'A real JSON parser is required: install jq or make python3 available.'
+
+if [[ -f "$CODEX_DIR/config.toml" ]] && \
+   grep -Eq '^[[:space:]]*(sandbox_mode[[:space:]]*=|\[sandbox_workspace_write\])' \
+     "$CODEX_DIR/config.toml"; then
+  printf '[WARN] %s still contains legacy sandbox settings. Current startup will verify the effective permission prompt; migrate the base config to permission profiles for documented forward compatibility.\n' \
+    "$CODEX_DIR/config.toml" >&2
+fi
 
 for role in planner coder reviewer; do
   case "$role" in
@@ -283,29 +303,53 @@ for role in planner coder reviewer; do
   grep -Eq '^approval_policy[[:space:]]*=[[:space:]]*"never"[[:space:]]*$' \
     "$CODEX_DIR/$role.config.toml" || \
     die "$role profile must use approval_policy = \"never\". Rerun $SCRIPT_DIR/install.sh."
-  case "$role" in
-    planner|coder) expected_sandbox=workspace-write ;;
-    reviewer) expected_sandbox=read-only ;;
-  esac
-  grep -Eq '^sandbox_mode[[:space:]]*=[[:space:]]*"'"$expected_sandbox"'"[[:space:]]*$' \
+  grep -Eq '^agents[.]enabled[[:space:]]*=[[:space:]]*false[[:space:]]*$' \
     "$CODEX_DIR/$role.config.toml" || \
-    die "$role profile must use sandbox_mode = \"$expected_sandbox\". Rerun $SCRIPT_DIR/install.sh."
+    die "$role profile must set agents.enabled = false so Herdr remains the only agent topology. Rerun $SCRIPT_DIR/install.sh."
+  managed_role_permission_policy "$role" || \
+    die "Could not resolve the managed permission policy for role: $role"
+  expected_sandbox=$MANAGED_ROLE_SANDBOX
+  if grep -Eq '^sandbox_mode[[:space:]]*=' "$CODEX_DIR/$role.config.toml"; then
+    die "$role profile still uses legacy sandbox_mode, which disables managed network permissions. Rerun $SCRIPT_DIR/install.sh."
+  fi
+  grep -Eq '^default_permissions[[:space:]]*=[[:space:]]*"'"$MANAGED_ROLE_PERMISSION_NAME"'"[[:space:]]*$' \
+    "$CODEX_DIR/$role.config.toml" || \
+    die "$role profile does not select $MANAGED_ROLE_PERMISSION_NAME. Rerun $SCRIPT_DIR/install.sh."
+  grep -Eq '^permissions[.]'"$MANAGED_ROLE_PERMISSION_NAME"'[.]extends[[:space:]]*=[[:space:]]*"'"$MANAGED_ROLE_PERMISSION_PARENT"'"[[:space:]]*$' \
+    "$CODEX_DIR/$role.config.toml" || \
+    die "$role profile does not preserve the $expected_sandbox filesystem boundary. Rerun $SCRIPT_DIR/install.sh."
+  grep -Eq '^permissions[.]'"$MANAGED_ROLE_PERMISSION_NAME"'[.]network[.]enabled[[:space:]]*=[[:space:]]*true[[:space:]]*$' \
+    "$CODEX_DIR/$role.config.toml" || \
+    die "$role profile does not enable command network access. Rerun $SCRIPT_DIR/install.sh."
   if ! policy_integrity_error=$(profile_policy_integrity \
-       "$CODEX_DIR/$role.config.toml" "$PROJECT_ROOT/profiles/$role.config.toml" 2>&1); then
+       "$CODEX_DIR/$role.config.toml" "$PROJECT_ROOT/profiles/$role.config.toml" \
+       "$PYTHON_BIN" "$BRIDGE_TARGET" 2>&1); then
     die "$role $policy_integrity_error. Rerun $SCRIPT_DIR/install.sh before starting a team."
   fi
   validation_args=(
     --profile "$role"
-    -c 'sandbox_workspace_write.writable_roots=[]'
-    --sandbox "$expected_sandbox"
+    -c 'agents.enabled=false'
   )
+  for permission_config in "${MANAGED_ROLE_PERMISSION_CONFIGS[@]}"; do
+    validation_args+=(-c "$permission_config")
+  done
   if [[ "$role" != reviewer ]]; then
     for add_dir in ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}; do
       validation_args+=(--add-dir "$add_dir")
     done
   fi
-  codex "${validation_args[@]}" debug prompt-input 'profile validation' >/dev/null 2>&1 || \
+  if ! rendered_permissions=$(CDPATH= cd -- "$PROJECT_DIR" && \
+       HERDR_BIN_PATH="$HERDR_BIN" \
+       codex "${validation_args[@]}" \
+       debug prompt-input 'profile validation' 2>/dev/null); then
     die "Codex cannot load $CODEX_DIR/$role.config.toml. Restore a backup or rerun $SCRIPT_DIR/install.sh."
+  fi
+  json_prompt_has_effective_role_permissions "$rendered_permissions" "$role" || \
+    die "$role does not resolve to local $expected_sandbox with command network enabled. Remove conflicting legacy sandbox settings or use a compatible Codex release."
+  json_prompt_has_role_workspace_roots \
+    "$rendered_permissions" "$role" "$PROJECT_DIR" \
+    ${ADD_DIRS[@]+"${ADD_DIRS[@]}"} || \
+    die "$role does not expose the exact managed workspace-root context. Use a compatible Codex release."
 done
 
 herdr agent start --help >/dev/null 2>&1 || \
@@ -405,18 +449,14 @@ while IFS= read -r candidate_name; do
 
   candidate_role=$(team_role_from_live_name "$candidate_name") || \
     die "${scope_conflict_tag}_unverified: could not derive the role for live Herdr agent '$candidate_name'."
-  case "$candidate_role" in
-    planner|coder) candidate_expected_sandbox=workspace-write ;;
-    reviewer) candidate_expected_sandbox=read-only ;;
-  esac
   if ! candidate_process_payload=$(herdr pane process-info --pane "$candidate_pane_id" 2>&1); then
     printf '%s\n' "$candidate_process_payload" >&2
     die "${scope_conflict_tag}_unverified: could not inspect the process argv for live Herdr role agent '$candidate_name'."
   fi
   json_process_uses_profile "$candidate_process_payload" "$candidate_role" || \
     die "${scope_conflict_tag}_unverified: '$candidate_name' is not verifiably using generic --profile $candidate_role."
-  json_process_has_managed_scope "$candidate_process_payload" "$candidate_expected_sandbox" || \
-    die "${scope_conflict_tag}_unverified: '$candidate_name' lacks the managed writable-roots override. Restart older teams with this start.sh before retrying."
+  json_process_has_managed_scope "$candidate_process_payload" "$candidate_role" || \
+    die "${scope_conflict_tag}_unverified: '$candidate_name' lacks the exact managed native-agent/network-permission argv. Restart older teams with this start.sh before retrying."
   if ! candidate_add_dirs=$(json_process_codex_add_dirs "$candidate_process_payload"); then
     die "${scope_conflict_tag}_unverified: '$candidate_name' exposes malformed or unstructured --add-dir arguments."
   fi
@@ -561,21 +601,20 @@ start_agent() {
   local live_name=$2
   local pane_id=$3
   local model=$4
-  local expected_sandbox
   local add_dir
   local native_args
+  local permission_config
   local start_result
 
-  case "$role" in
-    planner|coder) expected_sandbox=workspace-write ;;
-    reviewer) expected_sandbox=read-only ;;
-    *) die "Unknown role passed to start_agent: $role" ;;
-  esac
+  managed_role_permission_policy "$role" || \
+    die "Unknown role passed to start_agent: $role"
   native_args=(
     --profile "$role"
-    -c 'sandbox_workspace_write.writable_roots=[]'
-    --sandbox "$expected_sandbox"
+    -c 'agents.enabled=false'
   )
+  for permission_config in "${MANAGED_ROLE_PERMISSION_CONFIGS[@]}"; do
+    native_args+=(-c "$permission_config")
+  done
 
   if [[ "$role" != reviewer ]]; then
     for add_dir in ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}; do
@@ -605,8 +644,10 @@ start_agent() {
     printf '       No live name was retained. After repairing the pane, retry exactly:\n' >&2
     printf '       herdr agent start %q --kind codex --pane %q --timeout %q -- --profile %q' \
       "$live_name" "$pane_id" "$START_TIMEOUT_MS" "$role" >&2
-    printf ' -c %q --sandbox %q' \
-      'sandbox_workspace_write.writable_roots=[]' "$expected_sandbox" >&2
+    printf ' -c %q' 'agents.enabled=false' >&2
+    for permission_config in "${MANAGED_ROLE_PERMISSION_CONFIGS[@]}"; do
+      printf ' -c %q' "$permission_config" >&2
+    done
     if [[ "$role" != reviewer ]]; then
       for add_dir in ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}; do
         printf ' --add-dir %q' "$add_dir" >&2
@@ -631,9 +672,9 @@ startup_issues=0
 for role in planner coder reviewer; do
   live_name_expected=$(team_agent_for_role "$role")
   case "$role" in
-    planner) pane_expected=$root_pane_id; expected_sandbox=workspace-write ;;
-    coder) pane_expected=$coder_pane_id; expected_sandbox=workspace-write ;;
-    reviewer) pane_expected=$reviewer_pane_id; expected_sandbox=read-only ;;
+    planner) pane_expected=$root_pane_id ;;
+    coder) pane_expected=$coder_pane_id ;;
+    reviewer) pane_expected=$reviewer_pane_id ;;
   esac
   if agent_payload=$(herdr agent get "$live_name_expected" 2>&1); then
     live_name=''
@@ -648,7 +689,7 @@ for role in planner coder reviewer; do
        agent_kind=$(json_agent_required_string "$agent_payload" agent) && \
        agent_status=$(json_agent_required_string "$agent_payload" agent_status) && \
        interactive_ready=$(json_agent_required_boolean "$agent_payload" interactive_ready) && \
-       launch_pending=$(json_agent_required_boolean "$agent_payload" launch_pending) && \
+       launch_pending=$(json_agent_boolean_or_false_if_absent "$agent_payload" launch_pending) && \
        live_pane_id=$(json_agent_required_string "$agent_payload" pane_id) && \
        live_workspace_id=$(json_agent_required_string "$agent_payload" workspace_id); then
       identity_fields_ready=true
@@ -675,7 +716,7 @@ for role in planner coder reviewer; do
     if [[ -n "$live_pane_id" ]] && \
        process_payload=$(herdr pane process-info --pane "$live_pane_id" 2>&1) && \
        json_process_uses_profile "$process_payload" "$role" && \
-       json_process_has_managed_scope "$process_payload" "$expected_sandbox" && \
+       json_process_has_managed_scope "$process_payload" "$role" && \
        process_add_dirs_match "$process_payload" "$role"; then
       process_scope_ready=true
     fi

@@ -27,6 +27,7 @@ BUNDLE_FILES=(
   scripts/start.sh
   scripts/doctor.sh
   scripts/install.sh
+  scripts/herdr_mcp.py
   scripts/lib/team.sh
   scripts/lib/json.sh
   scripts/lib/digest.sh
@@ -47,7 +48,7 @@ usage() {
     '' \
     'Shows the Herdr interface locally while the three Codex agents and project files stay on the SSH host.' \
     'The same command creates an absent Team or reopens a verified current live Team.' \
-    'If Herdr needs remote setup/update, detach its first UI with Ctrl+B then Q; this command continues automatically.' \
+    'If Herdr needs remote setup/update, detach its first UI with Ctrl+B then q; this command continues automatically.' \
     '--repair-profiles explicitly backs up and refreshes remote managed profiles, only when the named session has no live Agent.' \
     '--install-integration explicitly permits Herdr to install/update remote Codex hooks and configuration.' \
     'The current launcher is streamed to a private temporary directory; no remote repository checkout is required.'
@@ -190,7 +191,7 @@ shift
   printf '[FAIL] Remote HOME must be an absolute path other than /.\n' >&2
   exit 2
 }
-for remote_tool in tar mktemp find grep awk sed chmod rm; do
+for remote_tool in tar mktemp find grep awk sed chmod rm python3; do
   command -v "$remote_tool" >/dev/null 2>&1 || {
     printf '[FAIL] Required remote tool is missing: %s\n' "$remote_tool" >&2
     exit 1
@@ -221,6 +222,7 @@ if find "$runtime_dir" -type l -print -quit | grep -q .; then
 fi
 required_files=(
   scripts/open.sh scripts/start.sh scripts/doctor.sh scripts/install.sh \
+  scripts/herdr_mcp.py \
   scripts/lib/team.sh scripts/lib/json.sh scripts/lib/digest.sh \
   scripts/lib/scope.sh scripts/lib/run-state.sh \
   scripts/lib/remote-bootstrap.sh \
@@ -299,7 +301,7 @@ prepare_remote_team() {
 prepare_remote_team
 if [[ $prepare_status -eq 12 || $prepare_status -eq 16 ]]; then
   printf '\nFirst-time Herdr remote setup/update is required.\n'
-  printf 'Herdr will open its supported remote flow now; when it is ready, press Ctrl+B then Q.\n'
+  printf 'Herdr will open its supported remote flow now; when it is ready, press Ctrl+B then q.\n'
   printf 'If Herdr asks to update or restart an existing server, review that prompt before approving it.\n'
   printf 'This command will then continue automatically and open the three-agent Team.\n\n'
   set +e
