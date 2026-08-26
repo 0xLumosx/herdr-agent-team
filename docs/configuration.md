@@ -29,6 +29,31 @@ same profile. Herdr live names carry runtime team identity; Codex profile names
 carry reusable role configuration. `install.sh` therefore always manages
 exactly these three role files regardless of team count.
 
+## User-local launch state
+
+Managed startup keeps the latest launch record for each Team under the same
+`CODEX_HOME` namespace:
+
+```text
+$CODEX_HOME/herdr-codex-team/state/v1/teams/{legacy|prefixed-<team-prefix>}/current.json
+```
+
+The state directories use mode `0700` and the JSON file uses `0600`. It
+contains absolute primary/additional project paths and Herdr workspace/pane
+IDs, so treat it as private local metadata and never copy it into this
+repository or a public report without redaction. It contains no prompt,
+conversation, source, diff, credential, or task/review result.
+
+`CODEX_HOME` therefore selects both the role-profile namespace and the
+launch-record/startup-lock namespace. Run `start.sh` and a rootless
+`doctor.sh --team <prefix>` with the same `CODEX_HOME`; otherwise Doctor will
+correctly have no matching saved expectations. Supplying explicit `--cwd` and
+ordered `--add-dir` bypasses launch-record workspace/pane binding and remains
+the direct diagnostic form.
+
+This state does not change model, sandbox, role prompt, or Herdr lifecycle
+configuration. See [Launch state](launch-state.md).
+
 ## Role defaults
 
 | Setting | Planner | Coder | Reviewer |

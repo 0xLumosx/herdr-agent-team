@@ -49,9 +49,12 @@ inspect the requested roots without receiving an additional writable-root
 grant. Startup first supplies `sandbox_workspace_write.writable_roots=[]` to
 neutralize additional writable roots inherited from user or profile
 configuration, then adds the requested roots only to Planner and Coder.
-`doctor.sh` verifies that role-specific launch argv when called with the same
-`--cwd` and ordered `--add-dir` list, but argv evidence is not proof that a
-particular read or write occurred.
+After a managed startup, `doctor.sh --team <prefix>` can load the safe latest
+launch record and verify that role-specific launch argv plus the recorded
+workspace and pane identities. Supplying `--cwd` (and any ordered `--add-dir`)
+bypasses the recorded workspace/pane binding and verifies the requested live
+scope directly. Either form provides argv evidence, not proof that a particular
+read or write occurred.
 
 `danger-full-access` is not a project default. Do not enable it to work around `Operation not permitted`, missing hooks, a wrong `CODEX_HOME`, or an incompatible CLI. Diagnose the specific boundary instead.
 
@@ -74,9 +77,13 @@ particular read or write occurred.
 - **Shared-scope races:** startup compares each team's complete managed root
   set. Git-backed paths use their physical worktree root and non-Git paths use
   their physical directory root; same, ancestor, or descendant overlaps fail
-  closed. The preflight is not an atomic lock. Humans, external tools,
-  post-check races, or agents outside the recognized naming scheme can still
-  make attribution and review unreliable.
+  closed. Current `start.sh` processes using the same `CODEX_HOME` also share
+  one short-lived lock around managed preflight and Herdr workspace/agent
+  creation, closing the check/create race only between those helpers. The lock
+  is not a filesystem ACL, per-root reservation, Team-lifetime lease, or
+  Herdr-wide transaction. Different `CODEX_HOME` namespaces, humans, external
+  tools, older helpers, manual Herdr operations, or agents outside the
+  recognized naming scheme can still make attribution and review unreliable.
 - **Cross-team prompt failure:** prefixes create explicit routes, but a
   compromised or incorrectly configured Planner can still attempt to address
   another live team; fail-closed prompts and isolation tests reduce rather than
@@ -100,7 +107,7 @@ isolation design beyond the current project.
 
 ## Recommended operating procedure
 
-Before starting:
+Before managed startup:
 
 1. use a clean branch or disposable worktree when possible; give every
    concurrent team a disjoint complete root set, and use a separate worktree
@@ -108,10 +115,15 @@ Before starting:
 2. commit or safely preserve the baseline;
 3. remove secrets that the task does not need;
 4. inspect repository-level agent instructions and scripts;
-5. review Codex profile overrides and Herdr hooks;
-6. run team-aware `doctor.sh` with the same `--cwd` and every `--add-dir`, then
-   the matching communication tests;
-7. confirm Reviewer remains `read-only`.
+5. review Codex profile overrides and Herdr hooks.
+
+Immediately after managed startup:
+
+1. run team-aware `doctor.sh --team <prefix>` against
+   its safe latest launch record, or supply the same `--cwd` and every ordered
+   `--add-dir` for a direct scope check, then run the matching communication
+   tests;
+2. confirm Reviewer remains `read-only`.
 
 During work:
 
@@ -161,6 +173,19 @@ Do not use a dangerous hook-trust bypass for normal interactive setup.
 Repository templates must never contain API keys, access tokens, private SSH targets, or user-specific configuration copied from a real machine.
 
 `uninstall.sh` moves managed role profiles into a new timestamped backup and leaves earlier backups, the base configuration, credentials, and unrelated hooks intact. Removing those is a separate user-owned security decision.
+
+Managed startup also stores one latest-run record per Team under
+`$CODEX_HOME/herdr-codex-team/state/v1`. Its directories use mode `0700`, and
+`current.json` plus the short-lived startup-lock owner file use mode `0600`.
+Those modes limit ordinary local access; they are not encryption, a sandbox, or
+an ACL against a process already acting as the same user. The record contains
+absolute project paths and Herdr workspace/pane IDs, so treat it as private and
+redact it before sharing. It contains no task prompt, transcript, source,
+Reviewer decision, or conversation state, and it does not participate in Agent
+communication: Herdr remains the only live identity and prompt-transport
+authority. `uninstall.sh` deliberately leaves these records in place; inspect
+and remove them separately only when you intend to discard the diagnostic
+history. See [Launch state](launch-state.md).
 
 ## Sensitive repositories
 

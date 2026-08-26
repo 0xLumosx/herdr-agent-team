@@ -40,8 +40,9 @@ named `planner`. Prefixed and legacy teams all reuse the same three profiles.
 
 > **Project scope:** this repository is configuration, role policy, setup, and
 > verification around Herdr and Codex CLI. It is not another multi-agent
-> runtime, daemon, scheduler, workflow engine, branch manager, or state
-> database.
+> runtime, daemon, scheduler, workflow engine, branch manager, or task/workflow
+> database. It keeps only one user-local launch record per Team for diagnosis;
+> Herdr remains the live runtime authority.
 
 ## Why
 
@@ -95,8 +96,11 @@ permission to edit application source: the Planner prompt forbids it. This is a
 policy boundary, not an operating-system guarantee; see
 [Security](docs/security.md).
 
-Read [Architecture](docs/architecture.md) and
-[Multi-team isolation](docs/multi-team.md) for the complete model.
+Read [Architecture](docs/architecture.md),
+[Launch state](docs/launch-state.md), and
+[Multi-team isolation](docs/multi-team.md) for the complete model. The design
+choices borrowed from and rejected after reviewing oh-my-codex are recorded in
+[Comparison with oh-my-codex](docs/omx-comparison.md).
 
 ## Requirements
 
@@ -121,6 +125,55 @@ demo requires Python 3 specifically, even when `jq` is installed.
 
 ## Quick start
 
+### Remote project, local Herdr interface
+
+Install and authenticate Codex remotely; the remote host does not need a
+checkout of this repository. From the local checkout, remember one command:
+
+```bash
+cd /path/to/herdr-codex-team
+./scripts/remote.sh \
+  --host my-server \
+  --team dex \
+  --cwd /home/REMOTE_USER/Dex_Teleop
+```
+
+Herdr's TUI runs locally. The three Codex agents, shells, and all file access
+run on `my-server`. If the remote Herdr binary needs its first install or an
+update, the same command first opens its supported setup flow. Detach once with
+`Ctrl+B`, then `Q`; the script
+continues automatically, creates `dex-planner`, `dex-coder`, and
+`dex-reviewer`, and reopens the local UI with the Team. If the remote Codex
+integration is missing, the same command first explains its hook/config
+changes and installs only after an explicit `y`; it does not silently cross
+that global configuration boundary.
+
+Only a still-live named remote session and three live Agent processes preserve
+the original panes and conversations. The launch record verifies saved
+workspace/pane expectations; it stores neither a PID nor a Codex conversation
+ID and cannot prove or restore conversation continuity. A partial team or managed-policy
+mismatch fails closed and is not overwritten; an opened UI in that state is
+for inspection, not a successful resume. The launcher streams the current
+small helper bundle to a private remote temporary directory and removes it
+after preparation, avoiding a second-checkout sync step. If all three managed
+profiles are absent, it performs their first install; it never overwrites a
+partial profile set automatically.
+
+Detach the local UI with `Ctrl+B`, then `Q`; do not exit the three remote
+agents. Run the same command to continue a still-live conversation later.
+
+See [Installation](docs/installation.md#remote-mode-local-ui-remote-agents-and-files)
+for the one-time setup and cold-restart boundary. Matching a directory and Team
+name is not itself a resume key; the stable entry is the same SSH host and the
+same `--team`-selected Herdr named session. Codex recovery after a real Herdr
+server restart remains best-effort. When a launch record exists, reuse also
+binds its workspace and pane IDs. That excludes a different pane/workspace but
+does not prove that a process or conversation inside the pane is the previous
+one. The record itself cannot restore a conversation; `open.sh` never reports a
+bare restore as a healthy managed Team unless `doctor.sh` validates it.
+
+### Local project
+
 Install the three reusable profiles once:
 
 ```bash
@@ -129,14 +182,18 @@ cd /path/to/herdr-codex-team
 ./scripts/test.sh static
 ```
 
-Start a prefixed team from a Herdr-managed shell:
+Open a prefixed team from a Herdr-managed shell:
 
 ```bash
-/path/to/herdr-codex-team/scripts/start.sh \
+/path/to/herdr-codex-team/scripts/open.sh \
   --team github \
   --cwd /absolute/path/to/primary-project \
   --add-dir /absolute/path/to/second-project
 ```
+
+The same `open.sh` command is the daily resume entry: it reuses a complete,
+healthy live team, calls `start.sh` only when all three names are absent, and
+does not replace a 1/3, 2/3, or unhealthy team.
 
 That creates these live Herdr names while selecting the generic profiles:
 
@@ -149,7 +206,7 @@ github-reviewer   → codex --profile reviewer
 Start another isolated team without stopping the first:
 
 ```bash
-/path/to/herdr-codex-team/scripts/start.sh \
+/path/to/herdr-codex-team/scripts/open.sh \
   --team auth \
   --cwd /absolute/path/to/another-project
 ```
@@ -161,27 +218,30 @@ role policy to edit project files. Reviewer stays `read-only` and is
 deliberately launched without `--add-dir`; it can inspect the requested roots
 without receiving an additional writable-root grant.
 
-Check each team explicitly, repeating the same root arguments used at startup:
+Check each team. After a managed startup, Doctor can load the saved launch
+scope and runtime IDs from the Team's user-local record:
 
 ```bash
 /path/to/herdr-codex-team/scripts/doctor.sh \
-  --team github \
-  --cwd /absolute/path/to/primary-project \
-  --add-dir /absolute/path/to/second-project
+  --team github
 /path/to/herdr-codex-team/scripts/test.sh --team github ping
 /path/to/herdr-codex-team/scripts/test.sh --team github communication
 
 /path/to/herdr-codex-team/scripts/doctor.sh \
-  --team auth \
-  --cwd /absolute/path/to/another-project
+  --team auth
 ```
+
+The explicit `--cwd` and ordered `--add-dir` form remains available and bypasses
+saved workspace/pane binding when diagnosing a deliberately replaced session.
+The record is an expectation only: Doctor always checks the live Herdr and
+Codex process evidence again.
 
 `TEAM_PREFIX=github` is an environment alternative to `--team github`. For
 legacy compatibility, omit the team prefix to create one team named exactly
 `planner`, `coder`, and `reviewer`:
 
 ```bash
-/path/to/herdr-codex-team/scripts/start.sh --cwd /absolute/path/to/project
+/path/to/herdr-codex-team/scripts/open.sh --cwd /absolute/path/to/project
 /path/to/herdr-codex-team/scripts/doctor.sh --cwd /absolute/path/to/project
 ```
 
@@ -210,9 +270,12 @@ compares the complete requested root set—primary `--cwd` plus every
 `--add-dir`—with the managed primary and additional roots exposed by other
 inspectable Herdr Codex role agents. Git-backed paths compare at their physical
 worktree roots; non-Git paths compare at their physical directory roots. Any
-same, ancestor, or descendant scope overlap fails closed. This is a preflight
-guard, not an atomic reservation or ACL; a post-check race or a writer outside
-Herdr remains possible.
+same, ancestor, or descendant scope overlap fails closed. A user-local startup
+lock serializes current `start.sh` processes that use the same `CODEX_HOME`
+across this preflight and workspace creation. The lock is released after
+startup; it is not a persistent root reservation or ACL. Different
+`CODEX_HOME` namespaces, older helpers, manual Herdr operations, and writers
+outside Herdr remain outside it.
 
 - Different repositories can run concurrently with different `--cwd` values.
 - Concurrent tasks in one repository should use one Git worktree and branch per
@@ -414,24 +477,26 @@ Routing is fail-closed:
 - native/internal workers, hidden subagents, pane-layout guesses, and fixed
   pane IDs are never substitutes for exact live Herdr names;
 - Coder reports `BLOCKED` when implementation cannot continue;
-- Planner preserves the working tree and reconstructs state after interruption.
+- Planner preserves the working tree and reconstructs task state after
+  interruption. The launch record can verify prior roots/workspace/panes but
+  does not restore task progress or a Codex conversation.
 
 Read [Workflow](docs/workflow.md) for handoff contracts and recovery.
 
 ## Troubleshooting
 
-Start with the exact team:
+Start with the exact team. If it was created by the current `start.sh`, use the
+saved launch expectations:
 
 ```bash
 ./scripts/doctor.sh \
-  --team github \
-  --cwd /absolute/path/to/primary-project \
-  --add-dir /absolute/path/to/second-project
+  --team github
 herdr agent list
 ```
 
-Use the exact `--cwd` and ordered `--add-dir` list from startup; omitting them
-does not validate a multi-root team and can correctly report an argv mismatch.
+If the saved record is absent or stale, pass the exact `--cwd` and ordered
+`--add-dir` list from startup. Explicit roots bypass recorded workspace/pane
+binding but still validate the live role-specific argv.
 
 If Herdr reports `agent_name_taken`, do not overwrite or continue a partial
 team; choose a unique team prefix. If Planner addresses the wrong Coder, inspect
@@ -458,6 +523,9 @@ repositories and prompts, review hooks, and inspect every available Git diff
 before merging; for non-Git roots, inspect reported touched paths directly and
 preserve the evidence gaps. Read
 [Security](docs/security.md) before using the team on sensitive code.
+
+Launch records contain absolute project paths and stay under `$CODEX_HOME` with
+private permissions. Do not commit or publish them without redaction.
 
 ## Uninstall
 

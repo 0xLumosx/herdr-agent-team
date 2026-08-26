@@ -270,6 +270,13 @@ satisfy a wait. The workflow therefore combines self-identity derivation,
 exact target-name verification, visible pane observation, run-specific tests,
 and result inspection instead of treating any one signal as conclusive.
 
+The user-local launch record does not change these semantics. It stores no
+prompt, acknowledgement, delivery receipt, `TASK_ID`, `ROUND`, `HANDOFF_ID`,
+agent response, or task transition. Herdr remains the only production prompt
+transport, and this project makes no durable or exactly-once delivery claim.
+Transport acceptance, lifecycle movement, a correlated response, and the
+resulting filesystem change are separate evidence.
+
 If a target is `blocked`, inspect the agent state and visible terminal. Do not answer an approval or question automatically on the user's behalf.
 
 ## Recovery after interruption
@@ -281,17 +288,19 @@ Do not discard or reset project files merely because Planner or Herdr restarted.
    root; for a non-Git root, record `Git evidence: NOT AVAILABLE` and inspect
    the last reported touched-path inventory directly;
 3. inspect validation artifacts and current processes;
-4. run `doctor.sh --team <prefix> --cwd <primary> --add-dir <extra> ...` with
-   the same ordered root list used at startup (or the legacy unprefixed form)
-   and confirm all three exact live names and managed process scopes;
+4. run `doctor.sh --team <prefix>` to verify saved launch expectations when a
+   current record exists, or supply explicit `--cwd <primary> --add-dir
+   <extra> ...` to bypass stale workspace/pane binding; confirm all three exact
+   live names and managed process scopes;
 5. decide whether Coder must continue or Reviewer can inspect the available
    Git/non-Git change evidence;
 6. send a fresh, self-contained handoff.
 
-The project does not persist a formal state machine. Human-readable file-backed
-checkpoints are a possible future extension, not a hidden dependency of the
-current workflow. See [Multi-team isolation](multi-team.md) for concurrent-team
-and Git-worktree guidance.
+The project does not persist a task/workflow state machine. The launch record
+can recover root and runtime-ID expectations only; the goal, current handoff,
+Coder report, Reviewer decision, and delivery uncertainty still require
+conversation and filesystem evidence. See [Launch state](launch-state.md) and
+[Multi-team isolation](multi-team.md).
 
 Multi-root access changes evidence, not authority: Coder remains the only role
 allowed by policy to edit project files, Planner retains technical

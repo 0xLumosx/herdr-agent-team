@@ -10,9 +10,10 @@ Herdr Codex Team 是围绕两个既有系统构建的轻量协调包：
 Herdr       可见 terminal runtime、live-agent 身份、通信
 Codex CLI   交互式软件工程 Agent 和 sandbox 策略
 本仓库      profile、角色 prompt、脚本、测试和文档
+            以及每个 Team 一份用户本地启动记录
 ```
 
-它不会替代 Herdr、实现 agent protocol、维护 daemon 或持久化工作流状态。它刻意不包含 database、Web UI、queue、autonomous state machine，也不自动管理 Git branch/worktree 生命周期。
+它不会替代 Herdr、实现 agent protocol、维护 daemon 或持久化 task/workflow 状态。它刻意不包含 workflow database、Web UI、queue、autonomous state machine，也不自动管理 Git branch/worktree 生命周期。启动记录只是 observation 和恢复 metadata，不是 runtime truth。
 
 ## 系统层级
 
@@ -93,8 +94,9 @@ $CODEX_HOME/reviewer.config.toml
 ### 设置脚本
 
 - `install.sh` 验证前置条件、备份冲突文件并安装 profile。
-- `doctor.sh` 检查 binary、已安装 profile、Herdr runtime、精确 legacy 或带前缀的实时名称、状态、workspace/pane/cwd 关联，以及前台 profile、sandbox、受管 writable-root 覆盖和角色专属额外 root argv 绑定。
-- `start.sh` 仅使用已安装 Herdr 公开的 CLI 能力，准备一个 legacy 或带前缀的三 pane Team。它拒绝名称冲突和完整 root-set 重叠，不会重命名或删除现有 Agent。可重复 Codex `--add-dir` 只应用到使用 `workspace-write` 的 Planner 和 Coder。
+- `doctor.sh` 检查 binary、已安装 profile、Herdr runtime、精确 legacy 或带前缀的实时名称、状态、workspace/pane/cwd 关联，以及前台 profile、sandbox、受管 writable-root 覆盖和角色专属额外 root argv 绑定。未显式提供 root 时，它可以读取最近 Team 启动记录，再向 Herdr 核实精确 runtime binding。
+- `start.sh` 仅使用已安装 Herdr 公开的 CLI 能力，准备一个 legacy 或带前缀的三 pane Team。它拒绝名称冲突和完整 root-set 重叠，不会重命名或删除现有 Agent。可重复 Codex `--add-dir` 只应用到使用 `workspace-write` 的 Planner 和 Coder。短期 startup lock 会把使用同一 `CODEX_HOME` 的当前 helper 在 preflight 到 workspace 创建之间串行化，并以原子方式记录该次 helper 调用的启动 observation。
+- `lib/run-state.sh` 只拥有 schema validation、原子启动记录写入、state-backed scope loading 和 startup lock。它绝不 prompt、启动、停止或调度 Agent。
 - `test.sh` 检查 Team-aware direct ping、经 Planner 的通信、完整循环，并在两个真实 Team 可用时检查路由隔离。
 - `uninstall.sh` 只把本项目管理的 profile 文件移到可恢复的日期备份中。
 
@@ -124,7 +126,7 @@ kind: codex, name: auth-reviewer
 
 `codex --profile coder` 选择的 profile 描述 Agent 可以做什么；Herdr 实时名称 `auth-coder` 描述所属 Team 的 Planner 应向哪里路由。Prompt 使用精确实时名称。名为“coder”的 process、pane、Codex internal worker 或 session-local path 都不是替代品。如果 Herdr 无法识别预期的同 Team 目标，工作流必须停止。
 
-在 Herdr 0.8.2 中，名称跟随当前 pane occupant，并会在 Agent 退出、被 release 或被替换时清除。名称是 runtime state，而不是永久 profile metadata；因此 startup、Planner handoff 和 diagnostics 每次都必须重新检查。Pane ID 和布局同样是 runtime data，绝不能嵌入为永久 Team 身份。
+在 Herdr 0.8.2 中，名称跟随当前 pane occupant，并会在 Agent 退出、被 release 或被替换时清除。名称是 runtime state，而不是永久 profile metadata；因此 startup、Planner handoff 和 diagnostics 每次都必须重新检查。Pane ID 和布局同样是 runtime data。启动记录只能把 pane ID 作为某个 `run_id` 的 freshness expectation 保存；它绝不是永久 Team 身份，必须实时复核。
 
 ## 角色与权限矩阵
 
@@ -161,19 +163,20 @@ Coder 实现或修复 → Reviewer 审查 → Planner 分诊
 
 ## 信任边界
 
-系统有五个不同边界：
+系统有六个不同边界：
 
 1. **Herdr runtime：**提供实时身份和可观察路由。可见 pane 是 process identity 的证据，不证明其输出正确。
 2. **Team-name boundary：**当 Planner 遵守 fail-closed 契约时，精确 `<prefix>-<role>` 名称可防止跨 Team 访问；它们不隔离文件或操作系统进程。
 3. **Codex sandbox：**限制 tool access。`approval_policy = "never"` 会改变提示行为，但不会禁用 sandbox。
 4. **Role prompt：**在语义上约束行为。它是有用策略，不是安全原语。
 5. **Git 和验证：**在 Git 历史存在时提供最终决策所依据的客观记录。Non-Git touched-path inventory 只是最大努力证据，不能证明完整变更集或 baseline。
+6. **启动记录：**保留 startup helper 观察和预期的内容。它不是当前 liveness、delivery、task completion、approval 或 writer identity 的证据。
 
-即使两个 Team 在 Herdr 名称上完全隔离，只要任一主 scope 或额外 scope 重叠，仍可能破坏彼此的工作。Startup 会比较完整受管 root set：Git-backed 路径按物理 worktree root，non-Git 路径按物理目录 root。同一仓库内的并发任务要使用不同 Git worktree 和 branch，每个额外 root 也必须互不重叠。Preflight 不是操作系统锁。
+即使两个 Team 在 Herdr 名称上完全隔离，只要任一主 scope 或额外 scope 重叠，仍可能破坏彼此的工作。Startup 会比较完整受管 root set：Git-backed 路径按物理 worktree root，non-Git 路径按物理目录 root。同一仓库内的并发任务要使用不同 Git worktree 和 branch，每个额外 root 也必须互不重叠。Preflight 不是操作系统锁。Startup lock 只关闭使用同一 `CODEX_HOME` 的当前受管 `start.sh` 进程之间的竞态，并在 startup 后释放；不同 `CODEX_HOME` namespace、外部 writer 和旧/手工启动路径不受其约束。
 
-## 重启与未来持久化
+## 重启与持久化边界
 
-项目不维护工作流 database。Planner 重启时，应保留所有文件。对每个 Git-backed root，从以下命令开始恢复：
+项目不维护 task/workflow database，只在 `$CODEX_HOME` 下为每个 Team 保留最近一份带 schema 版本的启动记录；详见[启动状态](launch-state.md)。Planner 重启时，应保留所有文件。对每个 Git-backed root，从以下命令开始恢复：
 
 ```bash
 git status --short
@@ -183,18 +186,8 @@ git diff --staged
 
 对每个 non-Git root，记录 `Git evidence: NOT AVAILABLE` 并直接检查上次所报 touched path；这无法重建完整 baseline。
 
-新的 Planner 从可用 diff 和所报 touched path 重建目标与当前状态，保留 non-Git 证据缺口，重新推导当前 Team 身份、验证精确的同 Team live Herdr agent，并从合适的 handoff 继续。它不能假定 Coder report 或 Reviewer result 被保留下来。
+新的 Planner 从可用 diff 和所报 touched path 重建目标与当前状态，保留 non-Git 证据缺口，重新推导当前 Team 身份、验证精确的同 Team live Herdr agent，并从合适的 handoff 继续。它不能假定 Coder report 或 Reviewer result 被保留下来。启动记录可以核实预期 root、workspace 和 pane ID，但不能恢复 Codex 对话。
 
-未来版本可能在 `.herdr-codex/` 下增加基于文件的 handoff：
+持久 handoff packet、response、delivery receipt、task transition 和 review decision 仍不在当前范围内。要增加这些能力，必须在 Planner 的 Herdr delivery 外围建立单一 interception Interface；terminal scraping 或第二套 mailbox 会制造冲突的状态所有者。
 
-```text
-task.md
-plan.md
-coder-result.md
-review.md
-state.json
-```
-
-这仍被刻意排除在当前范围之外；添加它会引入 state ownership、recovery 和 stale-data 问题，应当明确设计。
-
-运行示例和文件系统边界见[多 Team 隔离与动态路由](multi-team.md)。
+运行示例和文件系统边界见[多 Team 隔离与动态路由](multi-team.md)。形成此边界的上游设计比较见[与 oh-my-codex 的比较](omx-comparison.md)。

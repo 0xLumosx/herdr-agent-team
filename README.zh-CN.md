@@ -32,7 +32,7 @@ Codex profile: reviewer       Herdr 实时名称: auth-reviewer
 
 `planner` profile 并不要求 Herdr agent 必须直接命名为 `planner`。带前缀的 Team 与 legacy Team 都复用同一组三个 profile。
 
-> **项目范围：**本仓库围绕 Herdr 和 Codex CLI 提供配置、角色策略、安装和验证。它不是新的多 Agent runtime、daemon、scheduler、workflow engine、branch manager 或 state database。
+> **项目范围：**本仓库围绕 Herdr 和 Codex CLI 提供配置、角色策略、安装和验证。它不是新的多 Agent runtime、daemon、scheduler、workflow engine、branch manager 或 task/workflow database。它只为每个 Team 保留一份用户本地启动记录用于诊断；Herdr 始终是实时 runtime 的权威所有者。
 
 ## 为什么需要这个项目
 
@@ -70,7 +70,7 @@ Herdr
 
 Planner profile 使用 `workspace-write`，因为只读 Planner 可能无法访问 Herdr 通信接口。这项能力并不授权其修改应用源码：Planner prompt 明确禁止这样做。这是策略边界，不是操作系统级保证；详见[安全](docs/zh-CN/security.md)。
 
-完整模型请阅读[架构](docs/zh-CN/architecture.md)和[多 Team 隔离](docs/zh-CN/multi-team.md)。
+完整模型请阅读[架构](docs/zh-CN/architecture.md)、[启动状态](docs/zh-CN/launch-state.md)和[多 Team 隔离](docs/zh-CN/multi-team.md)。审查 oh-my-codex 后采用和拒绝的设计见[与 oh-my-codex 的比较](docs/zh-CN/omx-comparison.md)。
 
 ## 要求
 
@@ -89,6 +89,46 @@ Planner profile 使用 `workspace-write`，因为只读 Planner 可能无法访�
 
 ## 快速开始
 
+### 远程项目，本地 Herdr 界面
+
+远端先安装并登录 Codex；远端不需要 clone 本仓库。本地进入本仓库后只需记住
+一条命令：
+
+```bash
+cd /path/to/herdr-codex-team
+./scripts/remote.sh \
+  --host my-server \
+  --team dex \
+  --cwd /home/REMOTE_USER/Dex_Teleop
+```
+
+这条命令在本地显示 Herdr TUI；三个 Codex Agent、shell 和文件读写都发生在
+`my-server`。若远端 Herdr binary 需要首次安装或更新，同一命令会先打开其官方
+setup；按
+`Ctrl+B`、再按 `Q` detach 一次后，脚本会自动继续并创建 `dex-planner`、
+`dex-coder`、`dex-reviewer`，最后重新打开带 Team 的本地界面。以后仍运行完全相同
+的命令。若远端 Codex integration 缺失，同一命令会先说明它将修改 hook/config；
+你明确输入 `y` 后才安装并自动继续，不会静默跨过这一全局配置边界。
+
+只有远端 named session 和三个 Agent 进程仍存活时，原 pane 和对话才会原样续接；
+启动记录只校验 workspace/pane 预期，不记录 PID 或 Codex conversation ID，也不
+存储或恢复对话。入口会把本地当前版本的少量启动文件临时
+传到远端并自动清理，因此没有两份仓库的同步问题。三个受管 profile 全部不存在时
+会自动完成首次安装；若只剩部分 Agent、profile 已部分存在或安全参数不匹配，则
+fail closed，不会覆盖旧进程或已有配置。此时打开界面只是供检查，不代表恢复成功。
+
+关闭本地界面时按 `Ctrl+B`，再按 `Q` detach；不要结束三个远端 Agent。下次执行
+同一条命令即可继续仍存活的对话。
+
+首次远端准备和冷重启边界见[安装](docs/zh-CN/installation.md#远程模式本地界面远端-agent-和文件)。
+同目录和同 Team 名本身不是恢复凭据；稳定入口是同一 SSH host、同一
+`--team` 对应的 Herdr named session。存在本项目启动记录时，检查还会绑定保存的
+workspace/pane ID；这能排除不同 pane/workspace，却不能证明 pane 内仍是上次的
+进程或对话。Herdr 进程真正冷重启后的 Codex 恢复仍是 best-effort；记录本身不能
+恢复对话，`open.sh` 也不会把未通过 `doctor.sh` 的裸恢复误报为健康 Team。
+
+### 本机项目
+
 一次性安装三个可复用 profile：
 
 ```bash
@@ -97,14 +137,17 @@ cd /path/to/herdr-codex-team
 ./scripts/test.sh static
 ```
 
-从 Herdr 管理的 shell 启动带前缀的 Team：
+从 Herdr 管理的 shell 打开带前缀的 Team：
 
 ```bash
-/path/to/herdr-codex-team/scripts/start.sh \
+/path/to/herdr-codex-team/scripts/open.sh \
   --team github \
   --cwd /absolute/path/to/primary-project \
   --add-dir /absolute/path/to/second-project
 ```
+
+同一条 `open.sh` 命令也是日常恢复入口：完整且健康的三个 live Agent 会原样
+复用；三个都不存在时才调用 `start.sh` 创建；1/3、2/3 或验证失败时不做替换。
 
 这会创建以下 Herdr 实时名称，同时选择通用 profile：
 
@@ -117,32 +160,31 @@ github-reviewer   → codex --profile reviewer
 无需停止第一个 Team，即可启动另一个隔离 Team：
 
 ```bash
-/path/to/herdr-codex-team/scripts/start.sh \
+/path/to/herdr-codex-team/scripts/open.sh \
   --team auth \
   --cwd /absolute/path/to/another-project
 ```
 
 `--add-dir` 可重复使用。主 `--cwd` 仍是 Herdr workspace 和 pane 的工作目录。Planner 和 Coder 在 `workspace-write` 下把每个额外目录作为可写 root，但 Planner 的角色策略仍禁止其修改项目文件。Reviewer 保持 `read-only`，启动时有意不传 `--add-dir`；它仍可只读检查请求的 root，但不会获得额外可写 root。
 
-显式检查每个 Team，并重复 startup 时使用的同一组 root 参数：
+检查每个 Team。经过受管 startup 后，Doctor 可以从该 Team 的用户本地记录读取保存的启动 scope 和 runtime ID：
 
 ```bash
 /path/to/herdr-codex-team/scripts/doctor.sh \
-  --team github \
-  --cwd /absolute/path/to/primary-project \
-  --add-dir /absolute/path/to/second-project
+  --team github
 /path/to/herdr-codex-team/scripts/test.sh --team github ping
 /path/to/herdr-codex-team/scripts/test.sh --team github communication
 
 /path/to/herdr-codex-team/scripts/doctor.sh \
-  --team auth \
-  --cwd /absolute/path/to/another-project
+  --team auth
 ```
+
+显式 `--cwd` 和有序 `--add-dir` 形式仍然可用；诊断有意替换的 session 时，它会绕过所保存的 workspace/pane binding。记录只是预期值，Doctor 始终重新核实实时 Herdr 和 Codex process evidence。
 
 `TEAM_PREFIX=github` 是 `--team github` 的环境变量替代方式。为兼容 legacy 模式，省略 Team 前缀会创建名称严格为 `planner`、`coder` 和 `reviewer` 的一个 Team：
 
 ```bash
-/path/to/herdr-codex-team/scripts/start.sh --cwd /absolute/path/to/project
+/path/to/herdr-codex-team/scripts/open.sh --cwd /absolute/path/to/project
 /path/to/herdr-codex-team/scripts/doctor.sh --cwd /absolute/path/to/project
 ```
 
@@ -162,7 +204,7 @@ github-reviewer   → codex --profile reviewer
 
 ## 并发 Team 的工作树
 
-精确名称路由配合 fail-closed prompt contract，在各 Agent 遵守约定时可降低误发跨 Team 消息的风险。创建 workspace 之前，`start.sh` 会把请求的完整 root set（主 `--cwd` 加所有 `--add-dir`）与其他可核实 Herdr Codex 角色暴露的受管主 root 和额外 root 比较。Git-backed 路径按物理 worktree root 比较，non-Git 路径按物理目录 root 比较；任何相同、祖先或后代 scope 重叠都会 fail closed。这只是启动前 guard，不是原子 reservation 或 ACL；检查后的竞态与 Herdr 外部 writer 仍然可能存在。
+精确名称路由配合 fail-closed prompt contract，在各 Agent 遵守约定时可降低误发跨 Team 消息的风险。创建 workspace 之前，`start.sh` 会把请求的完整 root set（主 `--cwd` 加所有 `--add-dir`）与其他可核实 Herdr Codex 角色暴露的受管主 root 和额外 root 比较。Git-backed 路径按物理 worktree root 比较，non-Git 路径按物理目录 root 比较；任何相同、祖先或后代 scope 重叠都会 fail closed。用户本地 startup lock 会把使用同一 `CODEX_HOME` 的当前 `start.sh` 进程在这次 preflight 到 workspace 创建之间串行化。锁在 startup 后释放；它不是持久 root reservation 或 ACL。不同 `CODEX_HOME` namespace、旧 helper、手工 Herdr 操作和 Herdr 外部 writer 不受它约束。
 
 - 不同仓库可使用不同 `--cwd` 并发运行。
 - 同一仓库中的并发任务应为每个 Team 使用独立 Git worktree 和 branch。
@@ -296,23 +338,21 @@ Coder 实现或修复 → Reviewer 审查 → Planner 分诊
 - 另一个 Team 可用的 Coder 或 Reviewer 永远不是 fallback；
 - native/internal worker、hidden subagent、pane 布局猜测和固定 pane ID 永远不能替代精确 Herdr 实时名称；
 - 无法继续实现时，Coder 报告 `BLOCKED`；
-- Planner 在中断后保留工作树并重建状态。
+- Planner 在中断后保留工作树并重建 task state。启动记录可以核实以前的 root/workspace/pane，但不会恢复 task progress 或 Codex 对话。
 
 交接约定和恢复方式见[工作流](docs/zh-CN/workflow.md)。
 
 ## 故障排查
 
-从精确 Team 开始：
+从精确 Team 开始。如果它由当前 `start.sh` 创建，请使用保存的启动预期值：
 
 ```bash
 ./scripts/doctor.sh \
-  --team github \
-  --cwd /absolute/path/to/primary-project \
-  --add-dir /absolute/path/to/second-project
+  --team github
 herdr agent list
 ```
 
-必须复用 startup 的精确 `--cwd` 和有序 `--add-dir` 列表；省略它们不能验证 multi-root Team，并可能正确报告 argv mismatch。
+如果保存的记录不存在或已经 stale，请传入 startup 的精确 `--cwd` 和有序 `--add-dir`。显式 root 会绕过所记录的 workspace/pane binding，但仍会核实实时角色专属 argv。
 
 如果 Herdr 报告 `agent_name_taken`，不要覆盖，也不要继续启动一个不完整 Team；请选择唯一 Team 前缀。如果 Planner 访问了错误 Coder，请检查它推导出的 `SELF_AGENT`、`TEAM_PREFIX`、`CODER_AGENT` 和 `REVIEWER_AGENT`。如果两个 Coder 修改了相互重叠的主 root 或额外 root，请修正完整 root-set collision；不同目录应互不重叠，同一仓库内并发任务应使用独立 Git worktree。这不是路由问题。
 
@@ -323,6 +363,8 @@ herdr agent list
 此工作流为 Planner 和 Coder 提供可写 sandbox，并禁用交互式审批暂停。Prompt 和前缀可减少歧义，但无法形成抵御 compromised model、恶意仓库指令、不安全 hook、共享文件系统或 sandbox 允许的破坏性命令的硬边界。
 
 请尽可能使用 clean branch 或 disposable worktree，不要在仓库和 prompt 中放置 secret，审查 hook，并在 merge 前检查全部可用 Git diff；对 non-Git root 则直接检查所报 touched path 并保留证据缺口。在敏感代码上使用 Team 前，请阅读[安全](docs/zh-CN/security.md)。
+
+启动记录包含项目绝对路径，并以私有权限保存在 `$CODEX_HOME` 下。不要在未脱敏时提交或发布它们。
 
 ## 卸载
 

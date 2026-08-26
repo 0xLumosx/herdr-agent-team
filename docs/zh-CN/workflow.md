@@ -244,6 +244,8 @@ herdr agent prompt auth-coder "<self-contained task>" --wait --timeout 120000
 
 `--wait` 观察 lifecycle state，而不是 cryptographically bound request/response turn。如果 Agent 已经在工作，它的当前 turn 就可能满足 wait。因此工作流组合 self-identity derivation、exact target-name verification、visible pane observation、run-specific test 和 result inspection，而不是把单个 signal 当作决定性证据。
 
+用户本地启动记录不会改变这些语义。它不保存 prompt、ACK、delivery receipt、`TASK_ID`、`ROUND`、`HANDOFF_ID`、Agent response 或 task transition。Herdr 仍是唯一 production prompt transport，本项目不声称 durable 或 exactly-once delivery。Transport acceptance、lifecycle movement、相关 response 和最终 filesystem change 是不同证据。
+
 如果 target 是 `blocked`，检查 Agent state 和可见 terminal。不要代替用户自动回答 approval 或 question。
 
 ## 中断后恢复
@@ -253,10 +255,10 @@ herdr agent prompt auth-coder "<self-contained task>" --wait --timeout 120000
 1. 恢复用户 goal 和 acceptance criteria；
 2. 对每个 Git-backed root 运行 `git status`、`git diff` 和 `git diff --staged`；对 non-Git root 记录 `Git evidence: NOT AVAILABLE`，并直接检查上次所报 touched-path inventory；
 3. 检查 validation artifact 和当前 process；
-4. 使用 startup 时相同的有序 root 列表运行 `doctor.sh --team <prefix> --cwd <primary> --add-dir <extra> ...`（或 legacy 不带前缀形式），确认三个精确实时名称和受管 process scope；
+4. 存在 current record 时运行 `doctor.sh --team <prefix>` 核实保存的启动预期值；或显式提供 `--cwd <primary> --add-dir <extra> ...` 以绕过 stale workspace/pane binding；确认三个精确实时名称和受管 process scope；
 5. 判断 Coder 是否必须继续，或 Reviewer 是否可以检查现有 Git/non-Git 变更证据；
 6. 发送新的自包含 handoff。
 
-项目不持久化 formal state machine。基于人类可读文件的 checkpoint 是可能的未来扩展，不是当前工作流的 hidden dependency。并发 Team 和 Git worktree 指南见[多 Team 隔离](multi-team.md)。
+项目不持久化 task/workflow state machine。启动记录只能恢复 root 和 runtime-ID 预期值；goal、当前 handoff、Coder report、Reviewer decision 和 delivery uncertainty 仍必须从 conversation 与 filesystem evidence 重建。详见[启动状态](launch-state.md)和[多 Team 隔离](multi-team.md)。
 
 Multi-root 访问改变证据，不改变权限：Coder 仍是策略上唯一允许修改项目文件的角色；Planner 仍具有技术上的 `workspace-write` 能力，但禁止将其用于实现；Reviewer 的 sandbox 在每个 root 上仍为 `read-only`。

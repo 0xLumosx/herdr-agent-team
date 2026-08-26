@@ -125,13 +125,16 @@ Planner 不得寻找模糊匹配的 Coder、使用另一个 Team 的 Agent，或
 诊断和测试应使用同一个前缀：
 
 ```bash
+/path/to/herdr-codex-team/scripts/doctor.sh --team auth
+
+# 不依赖保存的 workspace/pane ID，显式检查 scope：
 /path/to/herdr-codex-team/scripts/doctor.sh \
   --team auth --cwd /path/to/backend
 /path/to/herdr-codex-team/scripts/test.sh --team auth ping
 /path/to/herdr-codex-team/scripts/test.sh --team auth communication
 ```
 
-对 multi-root Team，运行 doctor 时必须按相同顺序重复 startup 的每个 `--add-dir`。它会验证受管的空继承-writable-roots 覆盖、角色 sandbox 和角色专属 process argv：Planner/Coder 必须携带精确列表，Reviewer 必须不携带 `--add-dir`。这是 launch 证据，不是文件访问或变更归属证明。
+未提供 root option 时，Doctor 使用该 Team 最近的安全启动记录，并向 Herdr 重新核实其 root、workspace 和 pane ID。显式形式必须按相同顺序重复 startup 的每个 `--add-dir`，并绕过保存的 ID binding。两种形式都会验证受管的空继承-writable-roots 覆盖、角色 sandbox 和角色专属 process argv：Planner/Coder 必须携带精确列表，Reviewer 必须不携带 `--add-dir`。这是 launch 证据，不是文件访问或变更归属证明。
 
 还要使用已安装 Herdr 版本提供的命令直接检查 runtime：
 
@@ -165,7 +168,7 @@ Harness 将 Coder 保留终端中的 challenge-derived standalone token、lifecy
 
 ## 工作目录隔离
 
-精确名称路由配合 fail-closed prompt contract，在各 Agent 遵守约定时可降低误发跨 Team 消息的风险；它不是 ACL 或安全边界。`start.sh` 会为请求 Team 和其他可核实 Herdr Codex 角色构建完整 effective scope：主/foreground cwd 加受管 process argv 中所有结构化 `--add-dir` 值。Git-backed 目录映射到物理 worktree root，non-Git 目录映射到物理目录。两个完整 root set 间任何相等、祖先或后代重叠都会被拒绝。无法检查的角色、malformed add-dir argv 或缺少受管空 writable-roots 覆盖的旧 process 都会 fail closed。这仍是非原子 preflight；它不能防止检查后竞态或 Herdr 外部 writer。
+精确名称路由配合 fail-closed prompt contract，在各 Agent 遵守约定时可降低误发跨 Team 消息的风险；它不是 ACL 或安全边界。`start.sh` 会为请求 Team 和其他可核实 Herdr Codex 角色构建完整 effective scope：主/foreground cwd 加受管 process argv 中所有结构化 `--add-dir` 值。Git-backed 目录映射到物理 worktree root，non-Git 目录映射到物理目录。两个完整 root set 间任何相等、祖先或后代重叠都会被拒绝。无法检查的角色、malformed add-dir argv 或缺少受管空 writable-roots 覆盖的旧 process 都会 fail closed。带 owner 校验的用户本地 startup lock 会把使用同一 `CODEX_HOME` 的当前受管 `start.sh` 进程在 preflight 到 workspace 创建之间串行化。它在启动后释放，不占用项目 root、不介入文件访问，也不是 ACL 或操作系统隔离边界。不同 `CODEX_HOME` namespace、直接 Herdr/Codex 命令、旧脚本、人工操作和外部 writer 不受其约束。
 
 不同仓库可以用独立 `--cwd` 并发运行：
 
@@ -208,7 +211,9 @@ Non-Git root 在 single-root 与显式 multi-root 模式中都允许。它们没
 - **`shared_git_worktree`：**另一个可核实的 Herdr Codex 角色已经使用请求的物理 worktree。复用或关闭该 Team，或改用独立 Git worktree；不要绕过 guard。
 - **`shared_workspace_scope`：**包含 non-Git scope 的请求 root set 与另一受管 Team 的主 root 或额外 root 重叠。复用或关闭该 Team，或选择互不重叠的目录；不要绕过 guard。
 - **`*_unverified`：**startup 无法证明另一角色的受管 sandbox 或完整 root set。尝试并发前，先用当前 `start.sh` 重启该旧 Team。
+- **Active 或无法核实的 startup lock：**等待所报同主机 PID 结束。同主机死亡 owner 由 helper 恢复；malformed 或 foreign-host ownership 会 fail closed。不要递归删除 state root。
+- **Stale 启动记录：**用显式 `--cwd` 和有序 `--add-dir` 运行 Doctor，检查目标 live scope。记录绝不授权停止或替换其中命名的 workspace。
 - **启动前检查后仍有两个 writer：**这是 filesystem/Git 竞态或外部 writer，不是路由隔离证明。停止两条工作流，并人工恢复全部可用 Git diff 与所报 non-Git touched-path inventory。
 - **只有另一个 Team 的 Coder 存在：**以 `HERDR_COMMUNICATION_FAILED` 停止。另一个 Team 的可用性永远不能修复同 Team Agent 缺失。
 
-证据收集命令和恢复边界见[故障排查](troubleshooting.md)。
+证据收集命令和恢复边界见[启动状态](launch-state.md)和[故障排查](troubleshooting.md)。

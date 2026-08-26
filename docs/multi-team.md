@@ -152,14 +152,19 @@ or fall back to a native/internal subagent.
 Use the same prefix for diagnostics and tests:
 
 ```bash
+/path/to/herdr-codex-team/scripts/doctor.sh --team auth
+
+# Explicit scope check, independent of saved workspace/pane IDs:
 /path/to/herdr-codex-team/scripts/doctor.sh \
   --team auth --cwd /path/to/backend
 /path/to/herdr-codex-team/scripts/test.sh --team auth ping
 /path/to/herdr-codex-team/scripts/test.sh --team auth communication
 ```
 
-For a multi-root team, repeat every startup `--add-dir` in the same order when
-running doctor. It validates the managed empty inherited-writable-roots
+With no root options, Doctor uses this Team's latest safe launch record and
+rechecks its roots, workspace, and pane IDs against Herdr. The explicit form
+must repeat every startup `--add-dir` in the same order and bypasses saved ID
+binding. Both forms validate the managed empty inherited-writable-roots
 override, role sandbox, and role-specific process argv: the exact list on
 Planner/Coder and none on Reviewer. That is launch evidence, not proof of file
 access or change attribution.
@@ -207,8 +212,12 @@ their physical worktree root; non-Git directories map to their physical
 directory. Startup refuses any equal, ancestor, or descendant overlap between
 the two complete root sets. An uninspectable role, malformed add-dir argv, or
 older process without the managed empty writable-roots override fails closed.
-This remains a non-atomic preflight: a race after the check and writers outside
-Herdr are not prevented.
+An owner-checked, user-local startup lock serializes current managed `start.sh`
+processes using the same `CODEX_HOME` across this preflight and workspace
+creation. It is released after startup, reserves no project root, mediates no
+file access, and is not an ACL or operating-system isolation boundary.
+Different `CODEX_HOME` namespaces, direct Herdr/Codex commands, older scripts,
+humans, and external writers remain outside it.
 
 Different repositories may run concurrently with separate `--cwd` values:
 
@@ -267,6 +276,12 @@ that loss.
 - **`*_unverified`:** startup could not prove another role's managed sandbox or
   complete root set. Restart that older team through the current `start.sh`
   before attempting concurrency.
+- **Active or unverifiable startup lock:** wait for the reported same-host PID.
+  A dead same-host owner is recovered by the helper; malformed or foreign-host
+  ownership fails closed. Do not recursively delete the state root.
+- **Stale launch record:** use explicit `--cwd` and ordered `--add-dir` with
+  Doctor to inspect the intended live scope. A record never authorizes stopping
+  or replacing the workspace it names.
 - **Two Coders changed one checkout despite preflight:** this is a
   filesystem/Git race or an external writer, not proof of routing isolation.
   Stop both workflows and recover every available Git diff and reported
@@ -275,5 +290,5 @@ that loss.
   `HERDR_COMMUNICATION_FAILED`. Another team's availability is never a repair
   for a missing same-team agent.
 
-See [Troubleshooting](troubleshooting.md) for evidence-gathering commands and
-recovery boundaries.
+See [Launch state](launch-state.md) and [Troubleshooting](troubleshooting.md)
+for evidence-gathering commands and recovery boundaries.

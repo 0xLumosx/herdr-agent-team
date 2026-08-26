@@ -114,6 +114,80 @@ Team 尚未存在时，binary 和 profile 检查应通过，而 live-agent 检�
 
 ## 启动 Team
 
+### 远程模式：本地界面，远端 Agent 和文件
+
+不要使用 SSHFS 把项目伪装成本地目录。本模式采用 Herdr 官方的 SSH thin
+client：本地只渲染 TUI，远端 Herdr server 持有 pane、三个 Codex 进程和项目
+文件。因此这里的 `--cwd` 与 `--add-dir` 都必须是远端绝对路径。
+
+本地需要本仓库、Herdr、OpenSSH 和 `tar`。远端需要 Codex、Bash、Git、`tar`、
+`jq` 或 Python 3，以及 `sha256sum`、`shasum`、`openssl` 中任意一个；常见 Ubuntu
+通常已具备除 `jq` 外的大部分工具。远端项目目录必须已经存在，并允许 SSH 用户
+访问。
+
+首次只需在远端完成 Codex 登录；headless SSH 主机优先使用 device auth：
+
+```bash
+# 远端：安装 Codex 并完成登录。无需 clone herdr-codex-team。
+ssh my-server
+codex login status || codex login --device-auth
+exit
+```
+
+之后首次创建 Team 和继续仍存活的对话，都在本地运行同一条命令：
+
+```bash
+cd /path/to/local/herdr-codex-team
+./scripts/remote.sh \
+  --host my-server \
+  --team dex \
+  --cwd /home/REMOTE_USER/Dex_Teleop
+```
+
+如果远端 Herdr binary 需要首次安装/更新，或已有 named server 与当前 binary
+不兼容，`remote.sh` 会自动先打开 Herdr 支持的 setup/update 流程。它准备好后按
+`Ctrl+B`、再按 `Q` detach；同一个脚本会
+自动继续，无需再输入第二条命令。随后它通过 SSH 选择名为 `dex` 的远端 Herdr
+session，把本地当前版本的固定白名单启动文件流式传到远端私有临时目录，执行
+`open.sh` 的 create-or-reuse 判定，清理临时目录，然后运行本地 thin client。
+所以远端不需要第二份仓库，也没有两份脚本版本漂移的问题。远端使用明确的
+`$HOME/.codex`；三个受管 profile 全部不存在时会自动完成首次安装。若 Herdr
+Codex integration 缺失或过期，同一命令会显示其 hook/config
+修改边界，并等待一次明确的 `y`；确认后才安装并自动继续。已有或部分存在的
+profile 不会由便利路径自动覆盖。
+
+setup/update attach 会显式请求 Herdr `--handoff`，尽量在 binary 交接时保留 live
+pane 进程。它不是无条件保证：若 Herdr 提示需要 stop/restart 旧 server，而原对话
+仍然重要，不要批准停止；先退出并保留当前 server，检查版本与 handoff 失败原因。
+
+只有脚本明确报告 profile 缺失或漂移、并且该 named session 中没有 live Agent 时，
+才在原命令加一个修复开关：
+
+```bash
+./scripts/remote.sh --repair-profiles \
+  --host my-server \
+  --team dex \
+  --cwd /home/REMOTE_USER/Dex_Teleop
+```
+
+该开关调用 `install.sh`，先备份已有三个受管 profile，再以当前版本替换；只要所选
+session 中还有任一 Agent，它就拒绝修改。正常创建和日常续接不需要这个开关。
+
+日常关闭请按 `Ctrl+B`、再按 `Q` detach Herdr client，不要停止远端 server 或
+退出三个 Agent。再次运行同一条 `remote.sh` 命令时，完整且通过 Doctor 的 live
+Team 会输出 `TEAM_REUSED`。若存在启动记录，Doctor 还会绑定保存的
+workspace/pane ID；这能排除不同 pane/workspace，但记录没有 PID 或 conversation ID，
+不能独自证明仍是上次对话。如果三个名称都不存在，会创建新对话并输出
+`TEAM_CREATED`；只剩 1/3 或 2/3 时输出 `TEAM_PARTIAL`，三个都在但验证失败时输出
+`TEAM_UNSAFE`。后两种情况仍会打开界面供检查，但命令最终返回非零；这不是恢复
+成功，也不会自动停止、覆盖或补建 Agent。
+
+这项简化针对最常见的“关闭本地窗口后继续”。远端主机或 Herdr server 真正
+重启后，Herdr 0.8.2 可能尝试原生 `codex resume`，但它不会重放本项目全部受管
+启动参数；因此对话文本可能恢复，而 `doctor.sh` 仍可能正确拒绝该进程。启动记录
+只校验身份，不保存或恢复对话；当前入口不会为追求表面成功而放宽
+sandbox/profile/root 验证。
+
 ### 1. 通过 Herdr 进入主项目目录
 
 ```bash
@@ -148,6 +222,8 @@ start.sh [--no-focus] [--team PREFIX] [--cwd PROJECT_DIR] [--add-dir DIR]... [PR
 
 `PROJECT_DIR` 默认为当前目录，并成为 Herdr workspace 和 pane 的主 cwd。位置参数形式为向后兼容而保留；不要与 `--cwd` 同时提供。`--add-dir` 可重复，并为 Planner 和 Coder 提供请求的额外可写 root。Reviewer 保持 `read-only`，启动时不传 `--add-dir`。每个目录都必须存在、能安全解析、不是 `/`，且与其他请求 root 物理上互不重叠。`--no-focus` 要求 startup 保留当前 focus。`--team github` 生成 `github-planner`、`github-coder` 和 `github-reviewer`；省略后保留 legacy 名称 `planner`、`coder` 和 `reviewer`。
 
+Herdr 返回 workspace ID 后，startup 会在 `$CODEX_HOME/herdr-codex-team/state/v1/teams/{legacy|prefixed-<team-prefix>}/current.json` 写入一份私有、原子替换的启动记录。它保存每次 helper 调用的 `run_id`、有序 root、精确实时名称、workspace/pane ID 和最近启动 observation（`starting`、`partial` 或 `ready`）。`partial` 表示可能留下了 workspace 供诊断；应先检查，不能盲目重跑 startup。记录不包含 task 或 conversation state。详见[启动状态](launch-state.md)。
+
 位于 Git worktree 中不再是 startup 前置条件。Single-root 与 multi-root 模式都允许使用现有 non-Git 目录；Git CLI 仍用于保守识别 worktree scope。对每个 non-Git root，`git status`、完整 diff、untracked-file enumeration、rollback 和预存变更归属都不可用。Agent 必须把该 Git 证据标为 `NOT AVAILABLE`，不得从直接文件检查中推断。
 
 `TEAM_PREFIX=github` 是环境变量替代方式。如果环境变量和 `--team` 均指定值，则必须一致。Startup 会验证三个生成名称，并在创建 workspace 前检查所有名称是否冲突。如果出现 `agent_name_taken` 等冲突，它会停止，不会重命名、删除或替换现有 Team。
@@ -180,7 +256,7 @@ herdr agent list
 
 对于 `--team github`，这三个名称是 `github-planner`、`github-coder` 和 `github-reviewer`；legacy 模式中是 `planner`、`coder` 和 `reviewer`。三个 pane 仅仅包含 kind 为 `codex` 的 process，不能满足名称要求。
 
-这只确认进程已启动，并不确认完整安全姿态。发出工作前，使用同样的 `--cwd` 和有序 `--add-dir` 列表运行 Team-aware doctor。它会验证已安装 sandbox/approval 设置、profile load、integration、精确身份、readiness、lifecycle state、workspace/pane/cwd 关联、前台 `--profile <role>` 绑定、受管的空 `sandbox_workspace_write.writable_roots` 覆盖、显式 sandbox 和角色专属额外 root argv。Working agent 会报告为 warning；communication 测试要求所有相关目标都 settled 为 `idle` 或 `done`，并绑定匹配的通用角色 profile。
+这只确认进程已启动，并不确认完整安全姿态。发出工作前运行 Team-aware Doctor。存在记录时，`doctor.sh --team github` 会读取保存的启动预期值；显式复用同一 `--cwd` 和有序 `--add-dir` 则直接检查 scope，并绕过所记录的 workspace/pane binding。Doctor 会验证已安装 sandbox/approval 设置、profile load、integration、精确身份、readiness、lifecycle state、workspace/pane/cwd 关联、前台 `--profile <role>` 绑定、受管的空 `sandbox_workspace_write.writable_roots` 覆盖、显式 sandbox 和角色专属额外 root argv。Working agent 会报告为 warning；communication 测试要求所有相关目标都 settled 为 `idle` 或 `done`，并绑定匹配的通用角色 profile。
 
 ### 已验证的手动原语
 
@@ -235,13 +311,16 @@ doctor.sh [--team PREFIX] [--cwd PROJECT_DIR] [--add-dir DIR]...
 ```
 
 ```bash
+/absolute/path/to/herdr-codex-team/scripts/doctor.sh --team github
+
+# 用显式 scope 诊断 stale/已替换 runtime：
 /absolute/path/to/herdr-codex-team/scripts/doctor.sh \
   --team github \
   --cwd /absolute/path/to/primary-project \
   --add-dir /absolute/path/to/second-project
 ```
 
-必须按 `start.sh` 使用的相同顺序传入同一组额外 root；在诊断中，`--add-dir` 要求同时传入 `--cwd`。Doctor 会验证角色专属 argv：Planner/Coder 必须携带精确的有序列表，Reviewer 必须不携带 `--add-dir`。此时 binary、on-disk profile、前台 profile/sandbox/root 绑定、runtime、name 和 state 检查应该都有足够 live data 可供评估。这只证明 launch argv，不证明实际读写成功或 Git 历史。如果平台无法公开前台 process arguments，诊断会 fail closed，而不是把 renamed stale session 当作有效角色。
+未提供任何 root option 时，Doctor 会读取请求 Team 最近的安全启动记录，把其中的 root、workspace ID 和 pane ID 作为待向 Herdr 重新核实的预期值。显式提供时，必须按 `start.sh` 的相同顺序传入全部额外 root；`--add-dir` 要求同时传入 `--cwd`。显式形式绕过记录的 workspace/pane binding，但不修改记录。Doctor 会验证角色专属 argv：Planner/Coder 必须携带精确的有序列表，Reviewer 必须不携带 `--add-dir`。此时 binary、on-disk profile、前台 profile/sandbox/root 绑定、runtime、name 和 state 检查应该都有足够 live data 可供评估。这只证明 launch argv，不证明实际读写成功或 Git 历史。如果平台无法公开前台 process arguments，诊断会 fail closed，而不是把 renamed stale session 当作有效角色。
 
 ### 4. 建立通信证据
 
@@ -314,4 +393,4 @@ Static 模式检查必需文件、shell 语法、角色 guardrail、安装渲染
 ./scripts/uninstall.sh
 ```
 
-卸载范围刻意保持最小：本项目安装的角色 profile 会被移到新的时间戳备份中。它不会卸载 Codex 或 Herdr、删除 credential、删除基础 Codex 配置、移除无关 hook 或删除备份目录。
+卸载范围刻意保持最小：本项目安装的角色 profile 会被移到新的时间戳备份中。它不会卸载 Codex 或 Herdr、删除 credential、删除基础 Codex 配置、移除无关 hook、删除备份目录或移除用户本地启动记录。

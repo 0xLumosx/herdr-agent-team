@@ -41,7 +41,7 @@ approval_policy = "never"
 
 “只有 Coder 写源码”对 Reviewer 完全由 sandbox 强制，但对 Planner 只由策略强制。模型可能违反 prompt。Planner 最终检查可用的 Git/non-Git 变更证据有助于事后发现违规，却不能阻止违规，而且 non-Git 证据并不完整。
 
-每个可重复 `--add-dir` 都会扩大 Planner 和 Coder 的受管可写 path set。它们在 `workspace-write` 下技术上可写主 cwd 与每个额外 root；Planner 的禁止编辑规则仍属 prompt 策略。Reviewer 使用显式 `--sandbox read-only` 启动且不携带 `--add-dir`，因此可只读检查请求的 root，但不会获得额外可写 root。Startup 先传入 `sandbox_workspace_write.writable_roots=[]` 中和从用户或 profile 配置继承的额外 writable root，再只向 Planner 和 Coder 添加请求的 root。使用同一 `--cwd` 和有序 `--add-dir` 列表运行时，`doctor.sh` 会验证角色专属 launch argv，但 argv 证据不能证明某次具体读写已发生。
+每个可重复 `--add-dir` 都会扩大 Planner 和 Coder 的受管可写 path set。它们在 `workspace-write` 下技术上可写主 cwd 与每个额外 root；Planner 的禁止编辑规则仍属 prompt 策略。Reviewer 使用显式 `--sandbox read-only` 启动且不携带 `--add-dir`，因此可只读检查请求的 root，但不会获得额外可写 root。Startup 先传入 `sandbox_workspace_write.writable_roots=[]` 中和从用户或 profile 配置继承的额外 writable root，再只向 Planner 和 Coder 添加请求的 root。受管 startup 后，`doctor.sh --team <prefix>` 可以读取安全的最新启动记录，并核实角色专属 launch argv 以及所记录的 workspace/pane identity。显式提供 `--cwd`（及有序 `--add-dir`）会绕过所记录的 workspace/pane binding，直接核实请求的 live scope。两种形式都只提供 argv 证据，不能证明某次具体读写已发生。
 
 `danger-full-access` 不是项目默认值。不要用它绕过 `Operation not permitted`、missing hook、错误 `CODEX_HOME` 或不兼容 CLI。应诊断具体边界。
 
@@ -54,7 +54,7 @@ approval_policy = "never"
 - **Secret disclosure：**Agent 可以读取可访问 credential、`.env` 文件、proprietary source 或 log，并在 terminal/report 中复述。
 - **虚假 report：**Agent 可以声称测试通过或另一个 Agent 已回复；必须根据 process state、command output、可用 Git 证据，以及对所报 non-Git touched path 的直接检查进行验证。
 - **Profile source 真实性：**SHA-256 marker 只能检测已安装 prompt 或 policy 是否与当前 checkout 发生漂移，它不是签名。能同时修改 checkout 和已安装文件的 writer 也能同时改变两者，因此 marker 不能建立可信 provenance，也无法抵抗恶意本地 writer。
-- **共享 scope 竞态：**startup 会比较每个 Team 的完整受管 root set。Git-backed 路径使用物理 worktree root，non-Git 路径使用物理目录 root；相同、祖先或后代 scope 重叠都会 fail closed。该 preflight 不是原子锁。Human、外部 tool、检查后竞态或不符合受识别命名规则的 Agent 仍会使 attribution 和 review 不可靠。
+- **共享 scope 竞态：**startup 会比较每个 Team 的完整受管 root set。Git-backed 路径使用物理 worktree root，non-Git 路径使用物理目录 root；相同、祖先或后代 scope 重叠都会 fail closed。使用同一 `CODEX_HOME` 的当前 `start.sh` 进程还会在受管 preflight 和 Herdr workspace/Agent 创建期间共享一把短期锁，从而只关闭这些 helper 之间的 check/create 竞态。这把锁不是 filesystem ACL、per-root reservation、Team 全生命周期 lease 或 Herdr-wide transaction。不同 `CODEX_HOME` namespace、human、外部 tool、旧 helper、手工 Herdr 操作或不符合受识别命名规则的 Agent 仍会使 attribution 和 review 不可靠。
 - **跨 Team prompt failure：**前缀会创建明确路由，但 compromised 或错误配置的 Planner 仍可尝试访问另一个 live Team；fail-closed prompt 和 isolation test 只能降低风险，不能以 cryptographic 方式消除风险。
 - **依赖和测试副作用：**仓库命令可能访问网络、修改外部 service，或在其可用权限内运行不可信 build step。
 
@@ -64,15 +64,18 @@ approval_policy = "never"
 
 ## 推荐操作流程
 
-启动前：
+受管 startup 前：
 
 1. 尽可能使用 clean branch 或 disposable worktree；为每个并发 Team 提供互不重叠的完整 root set，并为同一仓库中的并发任务使用独立 worktree 和 `--cwd`；
 2. commit 或安全保留 baseline；
 3. 移除任务不需要的 secret；
 4. 检查仓库级 Agent instruction 和脚本；
-5. 检查 Codex profile override 和 Herdr hook；
-6. 使用同一 `--cwd` 和所有 `--add-dir` 运行 Team-aware `doctor.sh`，再运行匹配的 communication test；
-7. 确认 Reviewer 仍为 `read-only`。
+5. 检查 Codex profile override 和 Herdr hook。
+
+受管 startup 后立即执行：
+
+1. 使用 Team-aware `doctor.sh --team <prefix>` 核实安全的最新启动记录；也可以提供同一 `--cwd` 和全部有序 `--add-dir` 直接核实 scope，然后运行匹配的 communication test；
+2. 确认 Reviewer 仍为 `read-only`。
 
 工作期间：
 
@@ -116,6 +119,8 @@ git diff --staged
 仓库模板绝不能包含从真实机器复制的 API key、access token、private SSH target 或 user-specific configuration。
 
 `uninstall.sh` 会把受管理角色 profile 移到新的时间戳备份，并保留早期备份、基础配置、credential 和无关 hook。删除这些内容属于另一项由用户负责的安全决策。
+
+受管 startup 还会在 `$CODEX_HOME/herdr-codex-team/state/v1` 下为每个 Team 保存一份 latest-run 记录。其目录权限为 `0700`，`current.json` 与短期 startup-lock owner 文件权限为 `0600`。这些 mode 会限制普通本地访问，但不是 encryption、sandbox，也不能作为抵抗同一用户进程的 ACL。记录包含项目绝对路径和 Herdr workspace/pane ID，应视为私有信息，分享前必须脱敏。它不包含 task prompt、transcript、源码、Reviewer decision 或 conversation state，也不参与 Agent 通讯：Herdr 仍是唯一的实时 identity 和 prompt-transport 权威。`uninstall.sh` 刻意保留这些记录；只有在确实要丢弃诊断历史时，才另行检查并删除。详见[启动状态](launch-state.md)。
 
 ## 敏感仓库
 

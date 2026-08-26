@@ -15,6 +15,15 @@ every additional project:
   --cwd /projects/api \
   --add-dir /projects/web
 
+/path/to/herdr-codex-team/scripts/doctor.sh --team product
+```
+
+After successful managed startup, the short Doctor command loads the safe
+latest launch record and binds diagnostics to its recorded workspace, panes,
+and ordered roots. For a deliberately replaced session or a direct scope
+check, bypass that recorded workspace/pane binding with explicit roots:
+
+```bash
 /path/to/herdr-codex-team/scripts/doctor.sh \
   --team product \
   --cwd /projects/api \
@@ -63,10 +72,8 @@ The teams can run at the same time. `backend-planner` must only address
 Check each one explicitly:
 
 ```bash
-/path/to/herdr-codex-team/scripts/doctor.sh \
-  --team backend --cwd /projects/backend-api
-/path/to/herdr-codex-team/scripts/doctor.sh \
-  --team docs --cwd /projects/product-docs
+/path/to/herdr-codex-team/scripts/doctor.sh --team backend
+/path/to/herdr-codex-team/scripts/doctor.sh --team docs
 
 /path/to/herdr-codex-team/scripts/test.sh --team backend communication
 /path/to/herdr-codex-team/scripts/test.sh --team docs communication
@@ -76,6 +83,10 @@ Check each one explicitly:
 /path/to/herdr-codex-team/scripts/test.sh \
   --team docs --against-team backend isolation
 ```
+
+The saved record is only latest-run diagnostic metadata. It does not supply
+roots to a later `start.sh`, restore a task or conversation, or replace Herdr
+as the live identity and communication authority.
 
 ## One repository, two Git worktrees
 

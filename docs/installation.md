@@ -129,6 +129,96 @@ expected missing team from a binary, profile, or integration problem.
 
 ## Start the team
 
+### Remote mode: local UI, remote agents and files
+
+Do not use SSHFS to make the project look local. This mode uses Herdr's SSH
+thin client: only the TUI is rendered locally; the remote Herdr server owns the
+panes, three Codex processes, and project files. Every `--cwd` and `--add-dir`
+below is therefore an absolute path on the remote host.
+
+Locally, install Herdr, OpenSSH, and `tar` and keep this repository checkout.
+Remotely, provide Codex, Bash, Git, `tar`, `jq` or Python 3, and one of
+`sha256sum`, `shasum`, or `openssl`. The remote project directory must already
+exist and be accessible to the SSH user.
+
+Complete only the remote Codex login first. Prefer device auth on a headless
+SSH host:
+
+```bash
+# Remote: install and authenticate Codex. No herdr-codex-team checkout is needed.
+ssh my-server
+codex login status || codex login --device-auth
+exit
+```
+
+Then use the same local command to create the Team or continue a still-live
+conversation:
+
+```bash
+cd /path/to/local/herdr-codex-team
+./scripts/remote.sh \
+  --host my-server \
+  --team dex \
+  --cwd /home/REMOTE_USER/Dex_Teleop
+```
+
+If the remote Herdr binary needs its first install/update, or an existing named
+server is incompatible with that binary, `remote.sh` first opens Herdr's
+supported setup/update flow. When it is ready, press `Ctrl+B` and then `Q`; the
+same script continues automatically without a second command. It then
+selects the remote session named `dex`, streams the fixed current launcher
+files into a private remote temporary directory, runs the `open.sh`
+create-or-reuse decision, removes that directory, and launches the local thin
+client. A second remote checkout is not required and cannot drift from the
+local launcher. The remote Codex home is explicitly `$HOME/.codex`; when all
+three managed profiles are absent, their first install happens automatically.
+If the Herdr Codex integration is missing or outdated, the same command shows
+the hook/config mutation boundary and waits for one explicit `y`; only then
+does it install and continue. Existing or partial profile sets are never
+overwritten by this convenience path.
+
+The setup/update attach explicitly requests Herdr `--handoff` so a binary
+handoff can preserve live pane processes when supported. This is not an
+unconditional guarantee: if Herdr says it must stop/restart the old server and
+the live conversation still matters, do not approve that stop. Exit while
+leaving the current server intact, then inspect the version and handoff
+failure.
+
+Only when the launcher explicitly reports missing or drifted profiles and no
+Agent is live in the named session, add one repair flag to the same command:
+
+```bash
+./scripts/remote.sh --repair-profiles \
+  --host my-server \
+  --team dex \
+  --cwd /home/REMOTE_USER/Dex_Teleop
+```
+
+That flag runs `install.sh`, backing up existing managed profiles before
+replacing them from the current launcher. It refuses to modify shared profiles
+while any Agent remains live in the selected session. Normal creation and
+daily continuation do not need this flag.
+
+For daily shutdown, press `Ctrl+B` and then `Q` to detach the Herdr client; do
+not stop the remote server or exit the three agents. The same `remote.sh`
+invocation then prints `TEAM_REUSED` for a complete live team that passes
+Doctor. When a launch record exists, Doctor also binds the original workspace
+and pane IDs instead of trusting names alone. This excludes a different
+pane/workspace, but the record contains no PID or conversation ID and cannot
+prove prior conversation continuity by itself. It prints `TEAM_CREATED` when
+all three names are absent, `TEAM_PARTIAL` for 1/3 or 2/3, and `TEAM_UNSAFE` when
+all names exist but managed validation fails. The latter two states never stop,
+overwrite, or fill in agents automatically. Their UI opens for inspection, but
+the command ultimately exits nonzero; that is not a successful resume.
+
+This simplification covers the common case of closing a local window and
+continuing later. After a real remote-host or Herdr-server restart, Herdr 0.8.2
+may attempt a native `codex resume`, but that does not replay every managed
+launch argument from this project. Conversation text may return while
+`doctor.sh` still correctly rejects the process. The launch record verifies
+identity; it does not store or restore conversations. The launcher does not
+weaken profile, sandbox, or root validation to manufacture a successful result.
+
 ### 1. Enter the primary project directory through Herdr
 
 ```bash
@@ -171,6 +261,15 @@ other requested root. `--no-focus` asks startup to preserve the current focus.
 `--team github` produces `github-planner`, `github-coder`, and
 `github-reviewer`. Omitting it preserves legacy `planner`, `coder`, and
 `reviewer` names.
+
+After Herdr returns a workspace ID, startup writes one private, atomic launch
+record under
+`$CODEX_HOME/herdr-codex-team/state/v1/teams/{legacy|prefixed-<team-prefix>}/current.json`.
+It records a per-invocation `run_id`, ordered roots, exact live names, workspace/pane
+IDs, and the latest startup observation (`starting`, `partial`, or `ready`). A
+`partial` record means a workspace may have been left for diagnosis; inspect it
+instead of rerunning startup blindly. The record contains no task or
+conversation state. See [Launch state](launch-state.md).
 
 A Git worktree is not a startup prerequisite. Existing non-Git directories are
 accepted in both single-root and multi-root mode. The Git CLI remains required
@@ -221,8 +320,10 @@ shows the three exact requested live names. For `--team github`, those are
 kind `codex` do not satisfy the naming requirement.
 
 This confirms process startup, not the whole security posture. Before sending
-work, run the team-aware doctor with the same `--cwd` and ordered `--add-dir`
-list. It verifies installed sandbox/approval settings, profile load,
+work, run the team-aware Doctor. `doctor.sh --team github` loads the saved
+launch expectations when available; the explicit same-`--cwd`, ordered
+`--add-dir` form performs a direct scope check and bypasses recorded
+workspace/pane binding. Doctor verifies installed sandbox/approval settings, profile load,
 integration, exact identity, readiness, lifecycle state, workspace/pane/cwd
 association, the foreground `--profile <role>` binding, the managed empty
 `sandbox_workspace_write.writable_roots` override, the explicit sandbox, and
@@ -287,16 +388,22 @@ doctor.sh [--team PREFIX] [--cwd PROJECT_DIR] [--add-dir DIR]...
 ```
 
 ```bash
+/absolute/path/to/herdr-codex-team/scripts/doctor.sh --team github
+
+# Explicit scope override for stale/replaced runtime diagnosis:
 /absolute/path/to/herdr-codex-team/scripts/doctor.sh \
   --team github \
   --cwd /absolute/path/to/primary-project \
   --add-dir /absolute/path/to/second-project
 ```
 
-Pass the same additional roots in the same order used by `start.sh`;
-`--add-dir` requires `--cwd` in diagnostics. Doctor validates role-specific
-argv: Planner and Coder must carry the exact ordered list, while Reviewer must
-carry no `--add-dir`. Binary, on-disk profile, foreground
+With neither root option, Doctor loads the latest safe launch record for the
+requested Team and treats its roots, workspace ID, and pane IDs as expectations
+to re-check against Herdr. With explicit roots, pass every additional root in
+the same order used by `start.sh`; `--add-dir` requires `--cwd`. The explicit
+form bypasses recorded workspace/pane binding without modifying the record.
+Doctor validates role-specific argv: Planner and Coder must carry the exact
+ordered list, while Reviewer must carry no `--add-dir`. Binary, on-disk profile, foreground
 profile/sandbox/root binding, runtime, name, and state checks should then have
 enough live data to evaluate. This proves launch argv, not successful reads,
 writes, or Git history. If the platform cannot expose foreground process
@@ -399,4 +506,4 @@ To uninstall the profiles:
 ./scripts/uninstall.sh
 ```
 
-The uninstall scope is intentionally narrow: project-installed role profiles are moved to a fresh timestamped backup. It does not uninstall Codex or Herdr, remove credentials, delete the base Codex configuration, remove unrelated hooks, or delete backup directories.
+The uninstall scope is intentionally narrow: project-installed role profiles are moved to a fresh timestamped backup. It does not uninstall Codex or Herdr, remove credentials, delete the base Codex configuration, remove unrelated hooks, delete backup directories, or remove user-local launch records.

@@ -4,7 +4,15 @@
 
 ## 从证据开始
 
-使用 startup 时的同一组 root 运行诊断：
+受管 startup 后，先使用保存的启动预期值运行诊断：
+
+```bash
+./scripts/doctor.sh --team <prefix>
+```
+
+这个短命令会从同一 `CODEX_HOME` 读取该 Team 的安全最新记录，并把检查绑定到所记录的 workspace、pane 和 root。Legacy `planner`/`coder`/`reviewer` Team 省略 `--team`。
+
+对于有意替换的 session、缺失或 stale 的记录，或需要直接检查目标 scope 时，显式提供 root：
 
 ```bash
 ./scripts/doctor.sh --team <prefix> \
@@ -12,7 +20,7 @@
   --add-dir /path/to/second-project
 ```
 
-对于 legacy `planner`/`coder`/`reviewer` Team，省略 `--team`。只有不需要诊断验证 Team 工作目录时，才省略 `--cwd`。每个诊断 `--add-dir` 都要求 `--cwd`；必须重复 `start.sh` 使用的精确有序列表。
+显式 `--cwd` 会绕过所记录的 workspace/pane binding，直接核实请求的 live scope。每个诊断 `--add-dir` 都要求 `--cwd`；必须重复 `start.sh` 使用的精确有序列表。这个快捷方式只适用于 Doctor：`start.sh` 仍需要通过 `--cwd`、有序 `--add-dir` 或当前目录默认值指定目标 root。
 
 在 Herdr 管理的 pane 内，还要检查：
 
@@ -145,7 +153,7 @@ herdr agent rename <agent-name-or-pane-id> <team-prefix>-reviewer
 
 在已检查的 Herdr 0.8.2 行为中，实时名称跟随当前 pane occupant；Agent 退出、被 release 或被替换时会清除。Codex profile 不会永久分配 Herdr 名称。
 
-保留 context 和项目变更后，通过当前 `start.sh` 使用原来的 `--team`、`--cwd` 和有序 `--add-dir` 参数，只重建请求的 Team。然后使用同一组参数运行 `doctor.sh` 再恢复任务。普通 profile launch 后再执行 `herdr agent rename` 不会复现受管 sandbox/root argv。这是预期 runtime lifecycle，并不说明 profile 已丢失。
+保留 context 和项目变更后，通过当前 `start.sh` 使用原来的 `--team`、`--cwd` 和有序 `--add-dir` 参数，只重建请求的 Team；启动状态不会替 `start.sh` 提供 root。然后使用短命令 `doctor.sh --team <prefix>` 核实新记录，或用显式 root 直接检查 scope，再恢复任务。普通 profile launch 后再执行 `herdr agent rename` 不会复现受管 sandbox/root argv。这是预期 runtime lifecycle，并不说明 profile 已丢失。启动记录和新 process 都不会恢复旧对话；只有仍 live 的原 pane 保留它。
 
 ## Profile 变更没有生效
 
@@ -157,7 +165,7 @@ herdr agent rename <agent-name-or-pane-id> <team-prefix>-reviewer
 ~/.codex/reviewer.config.toml
 ```
 
-它们通过 `codex --profile <name>` 选择。受管理文件分别包含已嵌入角色 prompt 与规范化 profile policy 的 digest。为保留文档约定的模型选择自由，`model = ...` 行被刻意排除；reasoning、sandbox、approval 和其他 policy/template 字段仍受管理。应修改 `prompts/` 或 `profiles/` 下的 source 并重新运行 `scripts/install.sh`；直接修改已安装策略会被 `doctor.sh` 与 `start.sh` 拒绝。现有 Codex session 不会自动重新加载新安装的 profile。保留 context 和项目变更，只关闭请求 Team 的旧 session，再通过当前 `start.sh` 使用原 root 参数重建该 Team，并用相同参数运行 `doctor.sh` 验证；不要把普通 profile launch 加 rename 当作受管重启。
+它们通过 `codex --profile <name>` 选择。受管理文件分别包含已嵌入角色 prompt 与规范化 profile policy 的 digest。为保留文档约定的模型选择自由，`model = ...` 行被刻意排除；reasoning、sandbox、approval 和其他 policy/template 字段仍受管理。应修改 `prompts/` 或 `profiles/` 下的 source 并重新运行 `scripts/install.sh`；直接修改已安装策略会被 `doctor.sh` 与 `start.sh` 拒绝。现有 Codex session 不会自动重新加载新安装的 profile。保留 context 和项目变更，只关闭请求 Team 的旧 session，再通过当前 `start.sh` 使用原 root 参数重建该 Team；启动状态是诊断 metadata，不会向 `start.sh` 重放参数。用短命令 `doctor.sh --team <prefix>` 核实替换后的新记录，或显式提供 root 直接检查；不要把普通 profile launch 加 rename 当作受管重启。
 
 还要检查安装和启动时是否设置了不同 `CODEX_HOME`。不匹配会使 Codex 读取另一个目录。
 
@@ -183,6 +191,30 @@ herdr
 ```
 
 从该 session 中的 shell pane 运行 `start.sh`；也可以从外部 shell 运行，但要先确认 `herdr status server` 能访问预期 server。脚本会创建新 workspace，并定位 Herdr 返回的 ID；它不依赖 UI 当前聚焦 pane。
+
+## Doctor 拒绝保存的启动记录
+
+Doctor 短命令会读取 `$CODEX_HOME/herdr-codex-team/state/v1/teams` 下对应 Team 的 `current.json`。过大、malformed、不支持 schema、symlink、unsafe path 或错误 Team 的记录会在 Doctor 联系 Herdr 前被拒绝。请保留文件供检查；不要编辑其中的 workspace/pane ID 或 status 来伪造健康结果。
+
+如需在不信任所记录 workspace/pane binding 的情况下检查目标 live scope，请使用显式形式：
+
+```bash
+./scripts/doctor.sh --team <prefix> \
+  --cwd /path/to/primary-project \
+  --add-dir /path/to/second-project
+```
+
+显式 root 只在本次 Doctor 调用中绕过记录，不会修改它。如果文件缺失，短命令仍可检查 live Team identity，但没有保存的 multi-root 或 workspace/pane 预期；需要这些证据时请显式提供 root。该记录不是 task、handoff、transcript 或 conversation state，不能恢复被替换的 Codex session。哪个 workspace、pane 和 Agent 处于 live 仍以 Herdr 为权威。
+
+## `start.sh` 报告 startup-lock owner
+
+同一 `CODEX_HOME` 下的所有当前 `start.sh` 进程会共享一把短期 startup lock，用于串行执行 live name/root set 检查和 Herdr workspace/Agent 创建。有效的同主机 owner 且 PID 仍存活，表示另一受管 startup 仍处在该 critical section；让它结束并检查结果后再重试。这与 Herdr server 是否运行无关。
+
+下次受管 startup 会自动恢复格式正确、同主机但 PID 已死亡的 owner。Malformed owner 或不同/未知 host 会 fail closed，因为无法证明 ownership。请保留并检查意外 lock state；不要递归删除 state root。这把锁不会阻止手工 Herdr command、旧 helper、外部 writer 或使用不同 `CODEX_HOME` 的当前 helper，也不会在 startup 后继续保留项目 root。
+
+## 启动状态显示 `partial`
+
+`partial` 只表示 `start.sh` 创建了 Herdr workspace，但没有完成并持久化 `ready` 结论；实时角色仍可能已经 ready。它不表示 task progress 或 conversation state。请把记录的 workspace/pane ID 与 `herdr agent list`、`herdr agent get` 和 pane output 一起检查，在定位失败点时保留 live process 和项目变更。不要盲目重跑 startup、停止 workspace，或把 `current.json` 改成 `ready`；重试可能撞上仍 live 的名称，也可能掩盖有用证据。详见[启动状态](launch-state.md)。
 
 ## Agent 状态是 `blocked` 或 `unknown`
 
@@ -300,7 +332,13 @@ git -C /path/to/project rev-parse --show-toplevel
 
 ## Doctor 报告额外 root 不匹配
 
-使用启动 Team 时的同一主路径和额外 root，并保持相同顺序：
+受管 startup 后，先使用短命令，让 Doctor 一起检查保存的有序 root 和所记录的 workspace/pane identity：
+
+```bash
+./scripts/doctor.sh --team <prefix>
+```
+
+如需绕过所记录的 workspace/pane binding 并直接诊断请求的 live scope，请使用启动 Team 时的同一主路径和额外 root，并保持相同顺序：
 
 ```bash
 ./scripts/doctor.sh --team <prefix> \
@@ -308,7 +346,7 @@ git -C /path/to/project rev-parse --show-toplevel
   --add-dir /path/to/second-project
 ```
 
-Doctor 会比较每个角色的结构化 process argv，包括 generic profile、显式 sandbox、空继承-writable-roots 覆盖和角色专属额外 root 策略。Planner/Coder 必须携带精确的有序列表，Reviewer 必须不携带 `--add-dir`。缺失、多余、重排、malformed 或 stale writable root 都是失败。使用当前 `start.sh` 重启三个角色；不要通过编辑私有全局配置来隐藏 mismatch。Doctor 通过只证明 launch argument，不证明实际文件访问或变更归属。
+Doctor 会比较每个角色的结构化 process argv，包括 generic profile、显式 sandbox、空继承-writable-roots 覆盖和角色专属额外 root 策略。Planner/Coder 必须携带精确的有序列表，Reviewer 必须不携带 `--add-dir`。缺失、多余、重排、malformed 或 stale writable root 都是失败。短命令 mismatch 也可能表示保存的 workspace/pane ID 已 stale；显式 root 可以在不修改记录的情况下区分这一情形。只有在保留证据并明确提供目标 root 后，才通过当前 `start.sh` 重启三个角色；不要通过编辑私有全局配置或 `current.json` 隐藏 mismatch。Doctor 通过只证明 launch argument，并在短命令形式中证明所记录 identity 一致；它不证明实际文件访问或变更归属。
 
 ## Doctor 在较新版本上报告命令缺失
 

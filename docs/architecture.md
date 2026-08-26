@@ -10,11 +10,13 @@ Herdr Codex Team is a thin coordination package around two existing systems:
 Herdr       visible terminal runtime, live-agent identity, communication
 Codex CLI   interactive software-engineering agents and sandbox policies
 This repo   profiles, role prompts, scripts, tests, and documentation
+            plus one user-local launch record per Team
 ```
 
 It does not replace Herdr, implement an agent protocol, maintain a daemon, or
-persist workflow state. It intentionally has no database, web UI, queue,
-autonomous state machine, or automated Git branch/worktree lifecycle.
+persist task/workflow state. It intentionally has no workflow database, web UI,
+queue, autonomous state machine, or automated Git branch/worktree lifecycle.
+The launch record is observation and recovery metadata, not runtime truth.
 
 ## System hierarchy
 
@@ -109,12 +111,19 @@ The Markdown files under `prompts/` are the readable source of each role contrac
 - `doctor.sh` checks binaries, installed profiles, Herdr runtime, exact legacy
   or prefixed live names, state, workspace/pane/cwd association, and foreground
   profile, sandbox, managed writable-root override, and role-specific
-  additional-root argv binding.
+  additional-root argv binding. With no explicit roots, it can load the latest
+  Team launch record and verify its exact runtime binding against Herdr.
 - `start.sh` prepares one legacy or prefixed three-pane team using only CLI
   capabilities exposed by the installed Herdr. It rejects name collisions and
   does not rename or delete existing agents. It also rejects complete-root-set
   overlaps; repeatable Codex `--add-dir` values apply only to the
-  `workspace-write` Planner and Coder roles.
+  `workspace-write` Planner and Coder roles. A short-lived startup lock
+  serializes current helpers using the same `CODEX_HOME` across preflight and
+  workspace creation, and an atomic user-local record captures that helper
+  invocation's launch observations.
+- `lib/run-state.sh` owns only schema validation, atomic launch-record writes,
+  state-backed scope loading, and the startup lock. It never prompts, starts,
+  stops, or schedules an Agent.
 - `test.sh` exercises team-aware direct pings, Planner-mediated communication,
   the full loop, and—when two real teams are available—routing isolation.
 - `uninstall.sh` moves only project-managed profile files into a recoverable dated backup.
@@ -173,8 +182,9 @@ the expected same-team target, the workflow stops.
 In Herdr 0.8.2, a name follows the current pane occupant and is cleared when
 that agent exits, is released, or is replaced. Names are runtime state, not
 permanent profile metadata; startup, Planner handoffs, and diagnostics must
-therefore check them every time. Pane IDs and layout are also runtime data and
-must never be embedded as permanent team identity.
+therefore check them every time. Pane IDs and layout are also runtime data. A
+launch record may persist pane IDs only as freshness expectations for one
+`run_id`; they are never permanent Team identity and must be rechecked live.
 
 ## Role and permission matrix
 
@@ -211,7 +221,7 @@ The cap prevents an unbounded Coder/Reviewer conversation and keeps final respon
 
 ## Trust boundaries
 
-There are five distinct boundaries:
+There are six distinct boundaries:
 
 1. **Herdr runtime:** supplies live identity and observable routing. A visible
    pane is evidence of process identity, not proof that its output is correct.
@@ -225,6 +235,9 @@ There are five distinct boundaries:
 5. **Git and validation:** provide the objective record used for final
    decisions where Git history exists. A non-Git touched-path inventory is
    best-effort evidence and cannot prove a complete change set or baseline.
+6. **Launch record:** preserves what the startup helper observed and expected.
+   It is not proof of current liveness, delivery, task completion, approval, or
+   writer identity.
 
 Two teams can be perfectly separated by Herdr name and still corrupt each
 other's work if any primary or additional scope overlaps. Startup compares the
@@ -232,10 +245,16 @@ complete managed root sets: Git-backed paths at their physical worktree root,
 and non-Git paths at their physical directory root. Concurrent tasks in one
 repository require separate Git worktrees and branches, and every additional
 root must remain disjoint. This preflight is not an operating-system lock.
+The startup lock closes the race only between current managed `start.sh`
+processes using the same `CODEX_HOME` and is released after startup; different
+`CODEX_HOME` namespaces, external writers, and older/manual launch paths remain
+outside it.
 
-## Restart and future persistence
+## Restart and persistence boundary
 
-The project keeps no workflow database. If Planner restarts, preserve all files.
+The project keeps no task/workflow database. It keeps only the latest
+schema-versioned launch record per Team under `$CODEX_HOME`; see
+[Launch state](launch-state.md). If Planner restarts, preserve all files.
 For each Git-backed root, begin recovery with:
 
 ```bash
@@ -250,21 +269,15 @@ reported touched paths directly; this cannot reconstruct a complete baseline.
 The new Planner reconstructs the goal and current state, re-derives its current
 team identity, verifies the exact same-team live Herdr agents, and resumes at
 the appropriate handoff. It must not assume the Coder report or Reviewer result
-survived.
+survived. A launch record can verify expected roots, workspace, and pane IDs,
+but cannot restore a Codex conversation.
 
-A later version may add file-backed handoffs under `.herdr-codex/`:
-
-```text
-task.md
-plan.md
-coder-result.md
-review.md
-state.json
-```
-
-That remains deliberately outside the current scope; adding it would introduce
-state ownership, recovery, and stale-data questions that should be designed
-explicitly.
+Durable handoff packets, responses, delivery receipts, task transitions, and
+review decisions remain outside the current scope. Adding them would require a
+single interception Interface around Planner's Herdr delivery; terminal
+scraping or a second mailbox would create conflicting state owners.
 
 For operational examples and the filesystem boundary, see
-[Multi-team isolation and dynamic routing](multi-team.md).
+[Multi-team isolation and dynamic routing](multi-team.md). The upstream design
+comparison that motivated this boundary is in
+[Comparison with oh-my-codex](omx-comparison.md).

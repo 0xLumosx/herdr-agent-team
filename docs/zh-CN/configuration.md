@@ -25,6 +25,20 @@ codex --profile <name>
 
 Profile 不编码 Team 前缀。实时 Agent `github-coder` 仍以 `--profile coder` 启动；`auth-coder` 独立复用同一个 profile。Herdr 实时名称携带 runtime Team 身份，Codex profile 名称携带可复用角色配置。因此无论 Team 数量是多少，`install.sh` 始终只管理这三个角色文件。
 
+## 用户本地启动状态
+
+受管 startup 会在同一个 `CODEX_HOME` namespace 下保存每个 Team 最近的启动记录：
+
+```text
+$CODEX_HOME/herdr-codex-team/state/v1/teams/{legacy|prefixed-<team-prefix>}/current.json
+```
+
+State 目录使用 `0700`，JSON 文件使用 `0600`。其中包含主/额外项目绝对路径和 Herdr workspace/pane ID，因此必须把它视为私有本地 metadata；不要在未脱敏时复制进本仓库或公开报告。它不包含 prompt、conversation、源码、diff、credential 或 task/review result。
+
+因此 `CODEX_HOME` 同时选择 role-profile namespace 和启动记录/startup-lock namespace。`start.sh` 与不带 root 的 `doctor.sh --team <prefix>` 必须使用相同 `CODEX_HOME`；否则 Doctor 会正确地找不到匹配的保存预期值。显式提供 `--cwd` 和有序 `--add-dir` 会绕过启动记录的 workspace/pane binding，仍是直接诊断形式。
+
+这份状态不会改变 model、sandbox、role prompt 或 Herdr lifecycle 配置。详见[启动状态](launch-state.md)。
+
 ## 角色默认值
 
 | 设置 | Planner | Coder | Reviewer |
