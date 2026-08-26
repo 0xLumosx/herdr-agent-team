@@ -27,6 +27,29 @@ All notable changes to this project are documented here.
   for non-Git directories.
 - Complete managed-root-set collision checks across primary and additional
   Git-backed or non-Git scopes.
+- A versioned, user-local latest-launch record for each Team, written with
+  atomic same-directory replacement and including per-invocation correlation,
+  root scope, Herdr workspace/pane IDs, role names, and expected sandboxes
+  without storing task, transcript, source, or conversation content.
+- Record-backed short-form Doctor diagnostics that fail closed on unsafe state;
+  explicit `--cwd` continues to bypass recorded workspace/pane binding for a
+  direct live-scope check.
+- An owner-checked, short-lived same-`CODEX_HOME` managed-start lock with
+  conservative same-host stale-owner recovery, closing concurrent
+  current-helper check/create races without claiming a filesystem lease or
+  Herdr-wide lock.
+- Pinned-source OMX architecture comparison and launch-state documentation in
+  English and Simplified Chinese.
+- A create-or-reuse `open.sh` entry and an SSH `remote.sh` launcher that keeps
+  the Herdr UI local while running the fixed three-agent workflow and project
+  file access in one version-checked remote named session. The launcher streams
+  the current policy bundle instead of requiring a second checkout, verifies
+  the detached server identity before Team operations, and binds recorded
+  workspace/pane expectations when verifying a current live Team. An explicit
+  `--repair-profiles` path backs up and refreshes drifted remote profiles only
+  while the selected named session has no live Agent. Remote setup requests
+  Herdr live handoff, and Codex integration hook/config installation now
+  requires explicit approval before mutation.
 
 ### Changed
 
@@ -50,6 +73,11 @@ All notable changes to this project are documented here.
   `Git evidence: NOT AVAILABLE` limits. Git-hosted `full` and `policy` remain
   `NOT RUN` when the primary cwd is non-Git; routing-only modes do not claim
   filesystem or Git isolation.
+- Managed recovery now distinguishes saved launch expectations from live
+  authority: Herdr remains the sole owner of live identity and prompt
+  transport, while the local record never becomes task/workflow state or
+  restores a conversation. The fixed Planner/Coder/Reviewer architecture does
+  not add an OMX-style scheduler, mailbox, or automatic per-role worktrees.
 
 ### Backward compatibility
 
