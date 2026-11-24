@@ -6,6 +6,9 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- Select Codex, Claude Code, or Antigravity independently for each role. Each Codex role embeds Stop That Shit with its role-specific mode.
+- Managed launches link the three native conversations. Resuming a registered Planner chat switches its Coder and Reviewer and verifies both before handoff. The team's SSH host and directory follow the selected conversation.
+
 - Prefixed Herdr team names for multiple concurrent three-agent teams.
 - Runtime Planner identity derivation and same-team dynamic routing.
 - A required Planner-only stdio MCP bridge with bounded `inspect_team` and
@@ -80,7 +83,7 @@ All notable changes to this project are documented here.
   project directory; legacy labels remain `codex-team:<project>`.
 - Planner no longer assumes that downstream agents use the generic live names
   `coder` and `reviewer`.
-- The Coder template now recommends `gpt-5.6-luna` with `high` reasoning while
+- The Coder template now recommends `gpt-6.2-sol` with `xhigh` reasoning while
   keeping model selection user-configurable and workflow-independent.
 - Normal Coder and Reviewer responses now echo `TASK_ID`, `ROUND`, and
   `HANDOFF_ID`; Planner fails closed before interpreting a mismatched response.

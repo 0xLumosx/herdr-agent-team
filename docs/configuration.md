@@ -1,6 +1,29 @@
 # Configuration
 
+## CLI per role
+
+Select `codex`, `claude`, or `agy` independently with `--planner-cli`, `--coder-cli`, and `--reviewer-cli`. The equivalent environment variables are `PLANNER_CLI`, `CODER_CLI`, and `REVIEWER_CLI`. All default to `codex`. The corresponding local `*_MODEL` variable selects a model supported by that CLI.
+
+All three CLIs receive the role instructions. Only Codex profiles include Stop That Shit. A Codex Reviewer uses review mode, a Codex Coder uses change mode for implementation, and a Codex Planner follows the mode of the request. Claude and Antigravity read-only roles inspect the local project with file tools. All three CLIs can inspect the remote project through the team SSH tools. Claude Coder enables its native shell sandbox. Antigravity Coder uses its terminal sandbox and workspace editing mode. Its managed agent definitions live under `~/.gemini/config/agents/`. On first use the launcher also registers `herdr_codex_team` and `herdr_team_ssh` in the Antigravity MCP configuration. These servers expose tools only inside the matching managed Herdr panes. Startup checks the connections. Uninstall removes registrations belonging to this installation.
+
+
 [简体中文](zh-CN/configuration.md)
+
+
+## Shared SSH from a local team
+
+Tell the Planner which SSH host and remote directory to use, for example “Inspect this on `lab-dev` under `/srv/project`.” The Planner calls `select_remote` to verify the destination with the local OpenSSH client. Handoffs include the verified host and directory. Each worker accesses the remote files from its own pane.
+
+| Role | Remote operations |
+| --- | --- |
+| Planner | Select or clear the destination, inspect directories, files, status and diffs |
+| Coder | Read files and run authorized edits, builds and tests in the selected directory |
+| Reviewer | List, read, search, inspect Git status and staged or unstaged diffs |
+
+The destination belongs to the linked conversation group. Resuming an older Planner restores that group's host and working directory. Ask the Planner to switch back to local work to clear it with `use_local`. A one-off shell `ssh` command does not register a team destination.
+
+Use an SSH alias with a verified host key and noninteractive login. OpenSSH uses your local configuration, keys and SSH agent. Set `HERDR_SSH_CONFIG=/absolute/path/to/config` when launching if you need a separate SSH configuration. The three clients run locally in this workflow. Use `remote.sh` to launch the entire team on the remote machine.
+
 
 ## Profile locations and precedence
 
@@ -63,14 +86,15 @@ configuration. See [Launch state](launch-state.md).
 | managed `default_permissions` | `herdr_read_only_network` | `herdr_workspace_network` | `herdr_read_only_network` |
 | permission parent | `:read-only` | `:workspace` | `:read-only` |
 | command network | enabled | enabled | enabled |
-| reasoning default | `xhigh` | `high` | `xhigh` |
+| model default | host Codex default | `gpt-6.2-sol` | host Codex default |
+| reasoning default | `xhigh` | `xhigh` | `xhigh` |
 | application-source edits | blocked by sandbox and prompt | allowed and expected | blocked by sandbox and prompt |
 
 The Coder template also provides this default recommendation:
 
 ```toml
-model = "gpt-5.6-luna"
-model_reasoning_effort = "high"
+model = "gpt-6.2-sol"
+model_reasoning_effort = "xhigh"
 ```
 
 The workflow does not branch on that model name. Users may override it with any
@@ -128,6 +152,8 @@ At install time, each set variable is rendered into the corresponding installed 
 ## Developer instructions and readable prompts
 
 The canonical role text is kept under `prompts/` so maintainers can review it without decoding a long TOML string. The installation path combines the role-specific configuration with those instructions using a simple shell process; no external template engine is required.
+
+When a role runs Codex, the installer embeds Stop That Shit 0.2.5 in its developer instructions. Codex loads it on every task, including on an SSH host. Claude Code and Antigravity receive the role instructions without the bundled skill. Managed Claude sessions also deny invoking the skill when the user already has its plugin installed. Antigravity saves the agent instructions with its chat. If a prototype Gemini chat contains the former skill requirement, Herdr stops the handoff. Select the current role in the native `/agents` menu to fork the conversation, then register a new group with a fresh Planner ID using `--link-current`. Groups created with the current prompts resume with their original IDs. Users can submit ordinary prompts. The skill guides the model within its Herdr role. The optional Guard hooks have their own activation process. [Bundled skill](../prompts/stop-that-shit/SKILL.md)
 
 When changing a role:
 

@@ -68,6 +68,13 @@ if [[ -e "$bridge" || -L "$bridge" ]]; then
     fi
     mkdir -p -- "$backup_dir/herdr-codex-team"
     chmod 700 "$backup_dir/herdr-codex-team" 2>/dev/null || true
+    if [[ -f "$HOME/.gemini/config/mcp_config.json" ]]; then
+      script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+      python3 "$script_dir/providers.py" unconfigure-agy "$bridge" || {
+        printf '[FAIL] Could not remove the managed Antigravity MCP entries. Retained the installed bridge.\n' >&2
+        exit 1
+      }
+    fi
     mv -- "$bridge" "$backup_dir/herdr-codex-team/herdr_mcp.py"
     moved=$((moved + 1))
     printf '[OK] Moved the managed Planner Herdr MCP bridge to the uninstall backup.\n'

@@ -60,7 +60,7 @@ OMX 的状态模型范围大，并对其 runtime 具有权威性。它使用 sch
 
 本项目只采用更窄的部分：
 
-1. 每次 helper 调用的 `run_id` 用于关联该次写入的字段；它不注入 Herdr，也不建立实时身份；
+1. Planner 通信桥用 `run_id` 定位本轮的启动记录，并独立核对实时工作区和窗格。
 2. `current.json` 具有显式 schema，并通过同目录临时文件 rename 替换；
 3. 记录精确有序 root、实时名称、workspace ID 和 pane ID；
 4. `doctor.sh --team <prefix>` 可以把这些值作为预期值读取，再向 Herdr 和 Codex process argv 重新核实；

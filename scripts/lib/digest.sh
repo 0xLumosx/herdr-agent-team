@@ -18,12 +18,28 @@ sha256_stream() {
   printf '%s\n' "$digest"
 }
 
-# install.sh embeds the source prompt plus one separator newline before the
-# closing TOML delimiter. Hash that exact payload, not merely the source file.
+render_codex_role_instructions() {
+  local prompt=$1
+  local skill="${prompt%/*}/stop-that-shit/SKILL.md"
+  local mode
+  case "${prompt##*/}" in
+    planner.md) mode="Use the task mode that matches the user's request." ;;
+    coder.md) mode="Use change mode for authorized implementation." ;;
+    reviewer.md) mode="Use review mode for implementation reviews." ;;
+    *) return 2 ;;
+  esac
+  [[ -s "$prompt" && -s "$skill" ]] || return 2
+  if grep -Fq "'''" "$prompt" "$skill"; then
+    printf 'Role instructions contain the closing TOML delimiter.\n' >&2
+    return 2
+  fi
+  command cat -- "$prompt" &&
+    printf '\nApply the embedded Stop That Shit skill on every task. %s\n\n' "$mode" &&
+    command cat -- "$skill" && printf '\n'
+}
+
 prompt_payload_sha256() {
-  local prompt=${1-}
-  [[ -f "$prompt" ]] || return 2
-  { command cat -- "$prompt"; printf '\n'; } | sha256_stream
+  render_codex_role_instructions "$1" | sha256_stream
 }
 
 # Resolve the interpreter selected by the user's current trusted startup
@@ -105,7 +121,7 @@ for value in (python_path, bridge_path):
 text = sys.stdin.read()
 python_marker = "\"__HERDR_CODEX_TEAM_PYTHON__\""
 bridge_marker = "\"__HERDR_CODEX_TEAM_BRIDGE__\""
-if text.count(python_marker) != 1 or text.count(bridge_marker) != 1:
+if not text.count(python_marker) or text.count(python_marker) != text.count(bridge_marker):
     raise SystemExit(2)
 text = text.replace(python_marker, json.dumps(python_path, ensure_ascii=False))
 text = text.replace(bridge_marker, json.dumps(bridge_path, ensure_ascii=False))
@@ -190,12 +206,24 @@ profile_installed_policy_sha256() {
       next
     }
     state == 1 { next }
+    # Native Codex writes notice counters and user-confirmed folder trust below
+    # the managed prompt. Keep all other fields in the policy hash.
+    state == 2 && $0 == "[tui.model_availability_nux]" { blanks = 0; native = "notices"; next }
+    state == 2 && /^\[projects\."([^"\\]|\\.)+"\]$/ { blanks = 0; native = "trust"; next }
+    native == "notices" && /^[[:space:]]*("[[:alnum:]_.-]+"|[[:alnum:]_-]+)[[:space:]]*=[[:space:]]*[0-9]+[[:space:]]*$/ { next }
+    native == "trust" && /^[[:space:]]*trust_level[[:space:]]*=[[:space:]]*"(trusted|untrusted)"[[:space:]]*$/ { next }
+    state == 2 && $0 == "" { if (!native) blanks++; next }
+    state == 2 {
+      while (blanks > 0) { print ""; blanks-- }
+      native = ""
+    }
     $0 == "# Installed by herdr-codex-team. Edit the source template and rerun install.sh." { next }
     index($0, "# herdr-prompt-sha256: ") == 1 { next }
     index($0, "# herdr-profile-policy-sha256: ") == 1 { next }
     /^[[:space:]]*model[[:space:]]*=/ { next }
     { print }
     END {
+      while (blanks > 0) { print ""; blanks-- }
       if (invalid || starts != 1 || closes != 1 || state != 2) exit 2
     }
   ' "$profile" | sha256_stream

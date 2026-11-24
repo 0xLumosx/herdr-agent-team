@@ -7,6 +7,7 @@
 
 set -euo pipefail
 
+
 TEAM=''
 PROJECT_DIR=''
 EXPECTED_HERDR_VERSION=''
@@ -21,6 +22,10 @@ die() {
   printf '[FAIL] %s\n' "$*" >&2
   exit "$status"
 }
+
+TEAM_ROOT=${HERDR_CODEX_TEAM_ROOT:-}
+[[ -f "$TEAM_ROOT/scripts/lib/team.sh" ]] || die 14 "Incomplete launcher: $TEAM_ROOT"
+source "$TEAM_ROOT/scripts/lib/team.sh"
 
 parse_herdr_version() {
   local output=$1
@@ -50,6 +55,10 @@ verify_running_server() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --planner-cli|--coder-cli|--reviewer-cli)
+      [[ $# -ge 2 && -n "$2" ]] || { printf '%s requires a CLI name\n' "$1" >&2; exit 2; }
+      team_set_role_cli "$1" "$2" || exit 2
+      shift 2 ;;
     --team)
       [[ $# -ge 2 && -z "$TEAM" ]] || die 2 '--team requires one value.'
       TEAM=$2
@@ -103,7 +112,6 @@ for add_dir in ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}; do
     die 2 'Each remote --add-dir must be an absolute path other than /.'
 done
 
-TEAM_ROOT=${HERDR_CODEX_TEAM_ROOT:-}
 [[ "$TEAM_ROOT" == /* && "$TEAM_ROOT" != '/' ]] || \
   die 2 'HERDR_CODEX_TEAM_ROOT must select the streamed absolute runtime.'
 [[ -x "$TEAM_ROOT/scripts/open.sh" && -x "$TEAM_ROOT/scripts/start.sh" && \
@@ -121,7 +129,10 @@ REMOTE_HERDR_VERSION=$(parse_herdr_version "$remote_herdr_output") || \
   die 16 "Could not parse the complete remote Herdr version: $remote_herdr_output"
 [[ "$REMOTE_HERDR_VERSION" == "$EXPECTED_HERDR_VERSION" ]] || \
   die 16 "Local Herdr is $EXPECTED_HERDR_VERSION but remote Herdr is $REMOTE_HERDR_VERSION."
-command -v codex >/dev/null 2>&1 || die 13 'Codex CLI is not installed on the remote host.'
+for role in planner coder reviewer; do
+  kind=$(team_role_cli "$role") || exit 2
+  command -v "$kind" >/dev/null || die 13 "Remote $role requires $kind."
+done
 command -v python3 >/dev/null 2>&1 || die 13 'Python 3 is not installed on the remote host.'
 
 # A forwarded socket override takes precedence over a named session. Clear

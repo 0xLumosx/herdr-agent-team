@@ -2,12 +2,17 @@
 
 import importlib.util
 import json
+from itertools import product
 import os
 from pathlib import Path
 import socket
+import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
+from uuid import uuid4
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -72,6 +77,8 @@ class FakeHerdrRunner:
             target = args[2]
             if target == "w2:p1":
                 target = self.self_name
+            elif target not in self.agents:
+                target = self._resolve_target(target)
             if target not in self.agents:
                 raise RuntimeError("agent_not_found")
             return {"result": {"agent": dict(self.agents[target])}}
@@ -84,6 +91,12 @@ class FakeHerdrRunner:
                     "agent": dict(self.agents[target]),
                 }
             }
+        if len(args) == 4 and args[:2] == ("agent", "prompt") and args[3].startswith("/resume "):
+            agent = self.agents[self._resolve_target(args[2])]
+            thread = args[3].split()[1]
+            agent["terminal_title"] = thread[:29] + "..."
+            agent["agent_session"]["value"] = thread
+            return {"result": {"type": "agent_prompted", "agent": dict(agent)}}
         raise AssertionError("unexpected Herdr argv: %r" % (args,))
 
     def read_text(self, args, timeout_ms):
@@ -107,6 +120,26 @@ class HerdrBridgeTests(unittest.TestCase):
             "HERDR_PANE_ID": pane_id,
             "HERDR_SOCKET_PATH": "/tmp/herdr-test.sock",
         }
+        home = tempfile.TemporaryDirectory(prefix="herdr-disposable-bridge-")
+        self.addCleanup(home.cleanup)
+        env.update(CODEX_HOME=os.path.realpath(home.name), HERDR_TEAM_RUN_ID="test-run")
+        directory = self.module.team_directory(env, "dex-vut")
+        directory.mkdir(parents=True)
+        record = directory / "current.json"
+        roles = self.module.ROLES
+        record.write_text(json.dumps({
+            "run_id": "test-run", "launch": {"primary_cwd": "/project", "add_dirs": []},
+            "herdr": {"workspace_id": "w2", "agents": {
+                role: {"pane_id": "w2:p%d" % i} for i, role in enumerate(roles, 1)
+            }}
+        }))
+        threads = [str(uuid4()) for _ in roles]
+        for role, thread in zip(roles, threads):
+            agent = runner.agents.get("dex-vut-" + role)
+            if agent is not None:
+                agent.update(terminal_title=thread, agent_session={
+                    "kind": "id", "agent": "codex", "source": "herdr:codex", "value": thread})
+        self.module.bind_launch(record, threads)
         return self.module.HerdrBridge(
             env=env,
             runner=runner,
@@ -204,6 +237,286 @@ class HerdrBridgeTests(unittest.TestCase):
         self.assertEqual(result["coder_agent"]["name"], "dex-vut-coder")
         self.assertEqual(result["reviewer_agent"]["name"], "dex-vut-reviewer")
 
+    def test_each_provider_can_lead_or_follow_a_linked_switch(self):
+        for kinds in product(("codex", "claude", "agy"), repeat=3):
+            with self.subTest(kinds=kinds):
+                bridge, runner = self.make_bridge()
+                role_map = {}
+                before = [str(uuid4()) for _ in kinds]
+                older = [str(uuid4()) for _ in kinds]
+                for role, kind, thread in zip(self.module.ROLES, kinds, before):
+                    agent = runner.agents["dex-vut-" + role]
+                    agent.update(agent=kind, terminal_title=thread)
+                    source = "herdr:antigravity_cli" if kind == "agy" else "herdr:" + kind
+                    agent["agent_session"] = dict(kind="id", agent=kind, source=source, value=thread)
+                    role_map[role] = dict(pane_id=agent["pane_id"], cli=kind)
+                with tempfile.TemporaryDirectory(prefix="herdr-disposable-providers-") as home:
+                    bridge._env.update(CODEX_HOME=os.path.realpath(home), HERDR_TEAM_RUN_ID="run")
+                    directory = self.module.team_directory(bridge._env, "dex-vut")
+                    directory.mkdir(parents=True)
+                    record = directory / "current.json"
+                    record.write_text(json.dumps({"run_id": "run",
+                        "launch": {"primary_cwd": "/project", "add_dirs": []},
+                        "herdr": {"workspace_id": "w2", "agents": role_map}}))
+                    for group in (older, before):
+                        self.module.bind_launch(record, group)
+                    for group in (older, before):
+                        planner = runner.agents["dex-vut-planner"]
+                        planner["terminal_title"] = group[0]
+                        planner["agent_session"]["value"] = group[0]
+                        self.assertFalse(bridge._follow_selection(group[0], set()))
+                        team = bridge.inspect_team()
+                        self.assertEqual([team[r + "_agent"]["thread_id"] for r in ("coder","reviewer")], group[1:])
+
+    def test_fresh_mixed_chats_are_saved_by_their_native_clients(self):
+        roles = self.module.ROLES
+        kinds = ("claude", "codex", "agy")
+        ids = [str(uuid4()) for _ in roles]
+        agents = {r: dict(cli=k, name="team-" + r) for r, k in zip(roles, kinds)}
+        with tempfile.TemporaryDirectory(prefix="herdr-disposable-native-history-") as temp:
+            home = Path(temp).resolve()
+            codex = home / ".codex"
+            codex.mkdir()
+            claude = home / ".claude"
+            transcript_dir = claude / "projects/project"
+            transcript_dir.mkdir(parents=True)
+            index = home / ".gemini/antigravity-cli/conversation_summaries.db"
+            index.parent.mkdir(parents=True)
+            with sqlite3.connect(index) as db:
+                db.execute("CREATE TABLE conversation_summaries(conversation_id TEXT, title TEXT)")
+
+            def rename(argv, **kwargs):
+                role = argv[3][len("team-"):]
+                thread = ids[roles.index(role)]
+                title = "team-" + role + " run"
+                self.assertEqual(argv[4], "/rename " + title)
+                if role == "planner":
+                    event = {"sessionId": thread, "type": "custom-title", "customTitle": title}
+                    (transcript_dir / (thread + ".jsonl")).write_text(json.dumps(event) + "\n")
+                elif role == "coder":
+                    event = {"id": thread, "thread_name": title}
+                    (codex / "session_index.jsonl").write_text(json.dumps(event) + "\n")
+                else:
+                    with sqlite3.connect(index) as db:
+                        db.execute("INSERT INTO conversation_summaries VALUES (?,?)", (thread, title))
+
+            with mock.patch.dict(os.environ, HOME=str(home), CODEX_HOME=str(codex),
+                                 CLAUDE_CONFIG_DIR=str(claude), HERDR_BIN_PATH="/herdr"):
+                with mock.patch.object(self.module.subprocess, "run", side_effect=rename) as send:
+                    self.module.save_fresh_chats({"herdr": {"agents": agents}, "run_id": "run"}, ids)
+                    self.assertEqual(send.call_count, 3)
+
+    def test_gemini_resume_checks_saved_role_instructions(self):
+        with tempfile.TemporaryDirectory(prefix="herdr-disposable-gemini-snapshot-") as temp:
+            thread = str(uuid4())
+            path = Path(temp) / ".gemini/antigravity-cli/conversations" / (thread + ".db")
+            path.parent.mkdir(parents=True)
+            with sqlite3.connect(path) as db:
+                db.execute("CREATE TABLE trajectory_metadata_blob(id TEXT PRIMARY KEY, data BLOB)")
+                db.execute("INSERT INTO trajectory_metadata_blob VALUES ('main', ?)", (
+                    b"herdr-reviewer-123456789abc Apply the embedded Stop That Shit skill on every task.",))
+            with mock.patch.dict(os.environ, HOME=temp):
+                with self.assertRaisesRegex(self.module.BridgeError, "older role"):
+                    self.module.check_agy_role_snapshot("agy:" + thread, "reviewer")
+                self.module.check_agy_role_snapshot(thread, "reviewer")
+                with sqlite3.connect(path) as db:
+                    db.execute("UPDATE trajectory_metadata_blob SET data=?", (b"herdr-reviewer-123456789abc",))
+                self.module.check_agy_role_snapshot("agy:" + thread, "reviewer")
+
+    def test_native_role_argv_round_trip(self):
+        script = str(PROJECT_ROOT / "scripts/providers.py")
+        with tempfile.TemporaryDirectory(prefix="herdr-disposable-role-argv-") as temp:
+            home = Path(temp).resolve()
+            codex = home / ".codex"
+            bridge = codex / "herdr-codex-team/herdr_mcp.py"
+            env = dict(os.environ, HOME=str(home), CODEX_HOME=str(codex))
+            binary = home / "bin/herdr"
+            binary.parent.mkdir()
+            binary.touch(mode=0o700)
+            env["PATH"] = str(binary.parent) + os.pathsep + env["PATH"]
+            for kind, role in product(("claude", "agy"), self.module.ROLES):
+                with self.subTest(kind=kind, role=role):
+                    folder = bridge.parent / "state/v1/teams/legacy" / (kind + "-run")
+                    folder.mkdir(parents=True, exist_ok=True)
+                    args = subprocess.check_output([sys.executable, script, "prepare", kind, role,
+                        str(folder), str(bridge), str(binary)], env=env, text=True).splitlines()
+                    if kind == "claude":
+                        instructions = Path(args[args.index("--append-system-prompt-file") + 1]).read_text()
+                        self.assertIn("Skill(stop-that-shit:stop-that-shit *)",
+                                      args[args.index("--disallowedTools") + 1])
+                    else:
+                        name = args[args.index("--agent") + 1]
+                        instructions = (home / ".gemini/config/agents" / (name + ".md")).read_text()
+                    self.assertIn((PROJECT_ROOT / "prompts" / (role + ".md")).read_text(), instructions)
+                    self.assertNotIn("stop that shit", instructions.lower())
+                    self.assertNotIn("stop-that-shit", instructions.lower())
+                    if role != "reviewer":
+                        args += ["--add-dir", "/project with spaces"]
+                    command = [sys.executable, script, "inspect", kind, role]
+                    def inspect(argv):
+                        data = {"result": {"process_info": {"foreground_processes": [
+                            {"argv": [kind] + argv, "name": kind}]}}}
+                        return subprocess.run(command, env=env, input=json.dumps(data), text=True, capture_output=True)
+                    result = inspect(args)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.strip(), "" if role == "reviewer" else "/project with spaces")
+                    self.assertNotEqual(inspect(args + ["--dangerously-skip-permissions"]).returncode, 0)
+
+    def test_ssh_context_follows_group_and_reviewer_has_only_reads(self):
+        bridge, runner = self.make_bridge()
+        directory = self.module.team_directory(bridge._env, "dex-vut")
+        record = directory / "current.json"
+        data = json.loads(record.read_text())
+        for role in self.module.ROLES:
+            data["herdr"]["agents"][role]["name"] = "dex-vut-" + role
+        record.write_text(json.dumps(data))
+        first = [runner.agents["dex-vut-" + r]["agent_session"]["value"] for r in self.module.ROLES]
+        older = [str(uuid4()) for _ in first]
+        self.module.bind_launch(record, older)
+
+        def call(role, tool, **args):
+            runner.current_pane = runner.agents["dex-vut-" + role]["pane_id"]
+            bridge._env["HERDR_PANE_ID"] = runner.current_pane
+            return self.module.ssh_tool_call(bridge, role, tool, args)
+
+        def show(group):
+            for r, thread in zip(self.module.ROLES, group):
+                a = runner.agents["dex-vut-" + r]
+                a["terminal_title"] = thread
+                a["agent_session"]["value"] = thread
+
+        with mock.patch.object(self.module, "ssh_command", return_value={
+                "exit_code": 0, "output": "/srv/project\n", "truncated": False}) as ssh:
+            selected = call("planner", "select_remote", host="test-host")
+            for role in self.module.ROLES:
+                self.assertEqual(call(role, "remote_context"), selected)
+                call(role, "ssh_read", operation="status")
+                self.assertEqual(ssh.call_args.args[0], selected)
+            with self.assertRaises(self.module.BridgeError):
+                call("reviewer", "ssh_run", command="touch test")
+            with self.assertRaises(self.module.BridgeError):
+                call("coder", "select_remote", host="other")
+            with self.assertRaises(self.module.BridgeError):
+                call("reviewer", "ssh_read", operation="read", path="../outside")
+            call("coder", "ssh_run", command="pwd")
+            show(older)
+            with self.assertRaisesRegex(self.module.BridgeError, "not selected"):
+                call("reviewer", "remote_context")
+            show(first)
+            self.assertEqual(call("reviewer", "remote_context"), selected)
+            call("planner", "use_local")
+            with self.assertRaisesRegex(self.module.BridgeError, "not selected"):
+                call("coder", "remote_context")
+
+    def test_switched_planner_and_worker_keep_the_groups_ssh_destination(self):
+        bridge, runner = self.make_bridge()
+        directory = self.module.team_directory(bridge._env, "dex-vut")
+        path = directory / "current.json"
+        record = json.loads(path.read_text())
+        agents = record["herdr"]["agents"]
+        for role, agent in agents.items():
+            agent["name"] = "dex-vut-" + role
+        path.write_text(json.dumps(record))
+        root = runner.agents["dex-vut-planner"]["agent_session"]["value"]
+        with mock.patch.object(self.module, "ssh_command", return_value={
+                "exit_code": 0, "output": "/srv/project\n", "truncated": False}):
+            destination = self.module.ssh_tool_call(bridge, "planner", "select_remote", {"host": "test-host"})
+
+        with self.module.link_database(directory, create=True) as db:
+            db.execute("CREATE TABLE role_sessions (planner TEXT, role TEXT, cli TEXT, session TEXT)")
+            for role in ("planner", "coder"):
+                thread = str(uuid4())
+                db.execute("INSERT INTO role_sessions VALUES (?,?,?,?)", (root, role, "claude", "claude:" + thread))
+                runner.agents[agents[role]["name"]].update(agent="claude", terminal_title=thread,
+                    agent_session=dict(kind="id", agent="claude", source="herdr:claude", value=thread))
+                agents[role]["cli"] = "claude"
+        db.close()
+        path.write_text(json.dumps(record))
+        current = [runner.agents[agents[r]["name"]]["agent_session"]["value"] for r in self.module.ROLES]
+        self.module.bind_launch(path, current)
+        for role in self.module.ROLES:
+            pane = agents[role]["pane_id"]
+            runner.current_pane = bridge._env["HERDR_PANE_ID"] = pane
+            self.assertEqual(self.module.ssh_tool_call(bridge, role, "remote_context", {}), destination)
+
+    def test_provider_mismatch_rejects_equal_uuid(self):
+        bridge, runner = self.make_bridge()
+        runner.agents["dex-vut-coder"].update(agent="agy", terminal_title=runner.agents["dex-vut-coder"]["agent_session"]["value"])
+        with self.assertRaisesRegex(self.module.BridgeError, "different CLI"):
+            bridge.inspect_team()
+
+    def test_linked_resume_then_return_and_unknown_planner(self):
+        bridge, runner = self.make_bridge()
+        first = [str(uuid4()) for _ in self.module.ROLES]
+        second = [str(uuid4()) for _ in self.module.ROLES]
+
+        def show(role, thread):
+            agent = runner.agents["dex-vut-" + role]
+            agent["terminal_title"] = thread[:29] + "..."
+            agent["agent_session"] = {"kind": "id", "source": "herdr:codex", "agent": "codex", "value": thread}
+
+        with tempfile.TemporaryDirectory(prefix="herdr-disposable-conversation-test-") as home:
+            bridge._env.update(CODEX_HOME=os.path.realpath(home), HERDR_TEAM_RUN_ID="test-run")
+            directory = self.module.team_directory(bridge._env, "dex-vut")
+            directory.mkdir(parents=True)
+            record = directory / "current.json"
+            record.write_text(json.dumps({
+                "run_id": "test-run", "launch": {"primary_cwd": "/project", "add_dirs": []},
+                "herdr": {"workspace_id": "w2", "agents": {
+                    role: {"pane_id": runner.agents["dex-vut-" + role]["pane_id"]} for role in self.module.ROLES
+                }}
+            }))
+            for group in (first, second):
+                self.module.bind_launch(record, group)
+            with self.assertRaisesRegex(self.module.BridgeError, "different binding"):
+                self.module.bind_launch(record, [first[0], *second[1:]])
+            for role, thread in zip(self.module.ROLES, first):
+                show(role, thread)
+            for group in (second, first):
+                show("planner", group[0])
+                with self.assertRaisesRegex(self.module.BridgeError, "switch incomplete"):
+                    bridge.prompt_agent("coder", "Do not deliver during a switch")
+                runner.agents["dex-vut-reviewer"]["agent_status"] = "working"
+                with self.assertRaisesRegex(self.module.BridgeError, "not settled"):
+                    bridge._follow_selection(group[0], set())
+                runner.agents["dex-vut-reviewer"]["agent_status"] = "idle"
+                self.assertFalse(bridge._follow_selection(group[0], set()))
+                self.assertTrue(bridge._follow_selection(group[0], set()))
+                result = bridge.inspect_team()
+                self.assertEqual([result[r + "_agent"]["thread_id"] for r in ("coder", "reviewer")], group[1:])
+            unknown = str(uuid4())
+            show("planner", unknown)
+            with self.assertRaisesRegex(self.module.BridgeError, "No conversation link"):
+                bridge._follow_selection(unknown, set())
+            submitted = [args[3] for args, _ in runner.calls if args[:2] == ("agent", "prompt")]
+            self.assertEqual(submitted, ["/resume " + item for item in second[1:] + first[1:]])
+
+    def test_thread_before_first_turn_and_delayed_hook_after_resume(self):
+        current, old = str(uuid4()), str(uuid4())
+        agent = {"pane_id": "w2:p1", "terminal_title": current[:29] + "..."}
+        footer = lambda _pane: "  " + current + "\n  ? for shortcuts"
+        self.assertEqual(self.module.active_thread(agent, footer), current)
+        agent["agent_session"] = {"kind": "id", "agent": "codex", "source": "herdr:codex", "value": old}
+        self.assertEqual(self.module.active_thread(agent, footer), current)
+        with self.assertRaisesRegex(self.module.BridgeError, "Cannot verify"):
+            self.module.active_thread(agent, lambda _pane: old)
+
+    def test_matching_names_do_not_authorize_a_different_scope_or_launch(self):
+        bridge, _ = self.make_bridge()
+        directory = self.module.team_directory(bridge._env, "dex-vut")
+        record = directory / "current.json"
+        state = json.loads(record.read_text())
+        state["run_id"] = "another-launch"
+        state["launch"]["add_dirs"] = ["/other"]
+        record.write_text(json.dumps(state))
+        self.module.bind_launch(record, [str(uuid4()) for _ in self.module.ROLES])
+        bridge._env["HERDR_TEAM_RUN_ID"] = state["run_id"]
+        with self.assertRaisesRegex(self.module.BridgeError, "No conversation link"):
+            bridge.prompt_agent("coder", "Wrong scope")
+        del bridge._env["HERDR_TEAM_RUN_ID"]
+        with self.assertRaisesRegex(self.module.BridgeError, "No managed conversation launch"):
+            bridge.prompt_agent("coder", "Unknown launch")
+
     def test_active_planner_need_not_be_interactively_idle(self):
         runner = FakeHerdrRunner()
         runner.agents["dex-vut-planner"]["agent_status"] = "working"
@@ -268,6 +581,36 @@ class HerdrBridgeTests(unittest.TestCase):
                 timeout_ms=120000,
                 read_lines=120,
             )
+
+    def test_codex_handoff_waits_for_the_exact_submitted_turn(self):
+        class EarlyIdleRunner(FakeHerdrRunner):
+            def __call__(self, args, timeout_ms):
+                if tuple(args)[:2] == ("agent", "wait"):
+                    return {"result": {"agent": self.agents[self._resolve_target(args[2])]}}
+                response = super().__call__(args, timeout_ms)
+                if tuple(args)[:2] == ("agent", "prompt"):
+                    with rollout.open("a") as stream:
+                        for turn, prompt, reply in (("other", "unrelated", "stale"), ("wanted", args[3], "PASS")):
+                            events = [
+                                ("event_msg", {"type": "task_started", "turn_id": turn}),
+                                ("response_item", {"type": "message", "role": "user",
+                                                   "content": [{"type": "input_text", "text": prompt}]}),
+                                ("event_msg", {"type": "task_complete", "turn_id": turn, "last_agent_message": reply}),
+                            ]
+                            for kind, payload in events:
+                                stream.write(json.dumps({"type": kind, "payload": payload}) + "\n")
+                    response["result"]["agent"]["agent_status"] = "working"
+                return response
+
+        bridge, runner = self.make_bridge(runner=EarlyIdleRunner())
+        thread = runner.agents["dex-vut-reviewer"]["terminal_title"]
+        rollout = Path(bridge._env["CODEX_HOME"]) / "sessions/2026/11/23" / ("rollout-test-" + thread + ".jsonl")
+        rollout.parent.mkdir(parents=True)
+        rollout.write_text(json.dumps({"type": "session_meta", "payload": {"id": thread, "cli_version": "0.160.1"}}) + "\n")
+        with mock.patch.object(subprocess, "check_output", return_value="codex-cli 0.171.0"):
+            result = bridge.prompt_agent("reviewer", "Check this change")
+        self.assertEqual(result["transcript"]["source"], "codex-turn")
+        self.assertEqual(result["transcript"]["text"], "PASS")
 
     def test_prompt_result_identity_mismatch_fails_before_transcript_read(self):
         class MismatchedPromptRunner(FakeHerdrRunner):

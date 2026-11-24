@@ -54,10 +54,11 @@ RUN_ID=''
 RUN_STARTED_AT=''
 RUN_STATE_ACTIVE=0
 RUN_STATE_FINAL_STATUS=''
+THREAD_IDS=()
 
 usage() {
   printf '%s\n' \
-    'Usage: ./scripts/start.sh [--no-focus] [--team PREFIX] [--cwd PROJECT_DIR] [--add-dir DIR]... [PROJECT_DIR]' \
+    'Usage: ./scripts/start.sh [--planner-cli CLI] [--coder-cli CLI] [--reviewer-cli CLI] [--no-focus] [--team PREFIX] [--cwd PROJECT_DIR] [--add-dir DIR]... [PROJECT_DIR]' \
     '' \
     'Creates one Herdr workspace with three live agents.' \
     'Without --team or TEAM_PREFIX: planner, coder, reviewer (legacy mode).' \
@@ -116,6 +117,10 @@ finish_start_run() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --planner-cli|--coder-cli|--reviewer-cli)
+      [[ $# -ge 2 && -n "$2" ]] || { printf '%s requires a CLI name\n' "$1" >&2; exit 2; }
+      team_set_role_cli "$1" "$2" || exit 2
+      shift 2 ;;
     --no-focus)
       NO_FOCUS=1
       shift
@@ -253,7 +258,10 @@ if [[ $REQUESTED_HAS_NON_GIT -eq 1 ]]; then
   printf '[WARN] Live full/policy tests still require a separate clean committed Git host; do not report them as passing for these roots.\n' >&2
 fi
 
-command -v codex >/dev/null 2>&1 || die 'Codex CLI was not found in PATH.'
+for role in planner coder reviewer; do
+  kind=$(team_role_cli "$role") || exit 2
+  command -v "$kind" >/dev/null || die "$role requires $kind in PATH."
+done
 command -v herdr >/dev/null 2>&1 || die 'Herdr was not found in PATH.'
 command -v python3 >/dev/null 2>&1 || die 'Python 3 was not found in PATH.'
 PYTHON_BIN=$(managed_python_executable) || \
@@ -266,7 +274,7 @@ if ! bridge_integrity_error=$(managed_bridge_integrity \
 fi
 "$PYTHON_BIN" "$BRIDGE_TARGET" --check >/dev/null 2>&1 || \
   die "Installed Herdr MCP bridge failed its self-check. Rerun $SCRIPT_DIR/install.sh."
-if [[ ${#ADD_DIRS[@]} -gt 0 ]]; then
+if [[ ${#ADD_DIRS[@]} -gt 0 ]] && team_integrations | grep -qx codex; then
   codex_help=$(codex --help 2>&1) || \
     die 'Could not inspect the Codex CLI command surface.'
   grep -Fq -- '--add-dir' <<<"$codex_help" || \
@@ -326,6 +334,7 @@ for role in planner coder reviewer; do
        "$PYTHON_BIN" "$BRIDGE_TARGET" 2>&1); then
     die "$role $policy_integrity_error. Rerun $SCRIPT_DIR/install.sh before starting a team."
   fi
+  [[ $(team_role_cli "$role") == codex ]] || continue
   validation_args=(
     --profile "$role"
     -c 'agents.enabled=false'
@@ -374,8 +383,11 @@ if [[ $NO_FOCUS -eq 0 ]]; then
 fi
 
 integration_status=$(herdr integration status 2>&1 || true)
-printf '%s\n' "$integration_status" | grep -Eq '^codex: current([[:space:]]|$)' || \
-  die 'Herdr Codex integration is not current. Review `herdr integration status` and `herdr integration install codex`.'
+needed_integrations=$(team_integrations) || exit 2
+while IFS= read -r integration; do
+  grep -Eq "^$integration: current([[:space:]]|$)" <<<"$integration_status" || \
+    die "Missing or outdated Herdr $integration integration. Use open.sh --install-integration."
+done <<<"$needed_integrations"
 
 if ! server_status=$(herdr status server 2>&1); then
   printf '%s\n' "$server_status" >&2
@@ -445,7 +457,7 @@ while IFS= read -r candidate_name; do
     die "${scope_conflict_tag}_unverified: lookup for '$candidate_name' resolved to '${candidate_reported_name:-unknown}'."
   [[ -n "$candidate_kind" ]] || \
     die "${scope_conflict_tag}_unverified: live Herdr role agent '$candidate_name' did not expose its agent kind."
-  [[ "$candidate_kind" == codex ]] || continue
+  case "$candidate_kind" in codex|claude|agy) ;; *) continue ;; esac
 
   candidate_role=$(team_role_from_live_name "$candidate_name") || \
     die "${scope_conflict_tag}_unverified: could not derive the role for live Herdr agent '$candidate_name'."
@@ -453,11 +465,9 @@ while IFS= read -r candidate_name; do
     printf '%s\n' "$candidate_process_payload" >&2
     die "${scope_conflict_tag}_unverified: could not inspect the process argv for live Herdr role agent '$candidate_name'."
   fi
-  json_process_uses_profile "$candidate_process_payload" "$candidate_role" || \
-    die "${scope_conflict_tag}_unverified: '$candidate_name' is not verifiably using generic --profile $candidate_role."
-  json_process_has_managed_scope "$candidate_process_payload" "$candidate_role" || \
-    die "${scope_conflict_tag}_unverified: '$candidate_name' lacks the exact managed native-agent/network-permission argv. Restart older teams with this start.sh before retrying."
-  if ! candidate_add_dirs=$(json_process_codex_add_dirs "$candidate_process_payload"); then
+  team_process_policy "$candidate_process_payload" "$candidate_role" "$candidate_kind" || \
+    die "${scope_conflict_tag}_unverified: '$candidate_name' lacks the managed role configuration."
+  if ! candidate_add_dirs=$(team_process_dirs "$candidate_process_payload" "$candidate_role" "$candidate_kind"); then
     die "${scope_conflict_tag}_unverified: '$candidate_name' exposes malformed or unstructured --add-dir arguments."
   fi
 
@@ -468,17 +478,17 @@ while IFS= read -r candidate_name; do
     [[ -n "$candidate_path" ]] || continue
     candidate_cwd_count=$((candidate_cwd_count + 1))
     scope_path_has_control "$candidate_path" && \
-      die "${scope_conflict_tag}_unverified: Codex role agent '$candidate_name' reported a cwd with unsupported control characters."
+      die "${scope_conflict_tag}_unverified: Role agent '$candidate_name' reported a cwd with unsupported control characters."
     [[ -d "$candidate_path" ]] || \
-      die "${scope_conflict_tag}_unverified: Codex role agent '$candidate_name' reported a cwd that cannot be inspected: $candidate_path"
+      die "${scope_conflict_tag}_unverified: Role agent '$candidate_name' reported a cwd that cannot be inspected: $candidate_path"
     candidate_path=$(scope_physical_dir "$candidate_path") || \
-      die "${scope_conflict_tag}_unverified: Codex role agent '$candidate_name' reported an unsafe cwd."
+      die "${scope_conflict_tag}_unverified: Role agent '$candidate_name' reported an unsafe cwd."
     [[ "$candidate_path" != '/' ]] || \
       die "${scope_conflict_tag}: live Herdr role agent '$candidate_name' has filesystem-root cwd and can cover every requested root. Refusing unsafe overlap."
     CANDIDATE_DIRS+=("$candidate_path")
   done
   (( candidate_cwd_count > 0 )) || \
-    die "${scope_conflict_tag}_unverified: Codex role agent '$candidate_name' has no inspectable cwd."
+    die "${scope_conflict_tag}_unverified: Role agent '$candidate_name' has no inspectable cwd."
 
   while IFS= read -r candidate_add_dir; do
     [[ -n "$candidate_add_dir" ]] || continue
@@ -535,7 +545,7 @@ process_add_dirs_match() {
     *) return 1 ;;
   esac
 
-  actual_output=$(json_process_codex_add_dirs "$payload") || return 1
+  actual_output=$(team_process_dirs "$payload" "$role" "$(team_role_cli "$role")") || return 1
   while IFS= read -r actual_dir; do
     [[ -n "$actual_dir" ]] || continue
     (( index < expected_count )) || return 1
@@ -565,13 +575,23 @@ if [[ "$TEAM_MODE" == prefixed ]]; then
   workspace_label="codex-team:$TEAM_DISPLAY"
 fi
 
+if grep -qx antigravity-cli <<<"$needed_integrations"; then
+  "$PYTHON_BIN" "$SCRIPT_DIR/providers.py" configure-agy "$BRIDGE_TARGET" "$HERDR_BIN" || die 'Cannot configure the Antigravity MCP servers.'
+fi
+pane_env=(--env "HERDR_TEAM_STATE_FILE=$RUN_STATE_FILE" --env "CODEX_HOME=$CODEX_DIR" --env "HERDR_TEAM_RUN_ID=$RUN_ID" --env "HERDR_BIN_PATH=$HERDR_BIN")
+if [[ -n "${HERDR_SSH_CONFIG:-}" ]]; then
+  [[ -f "$HERDR_SSH_CONFIG" && -r "$HERDR_SSH_CONFIG" ]] || die "Cannot read HERDR_SSH_CONFIG: $HERDR_SSH_CONFIG"
+  ssh_config=$("$PYTHON_BIN" -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$HERDR_SSH_CONFIG")
+  pane_env+=(--env "HERDR_SSH_CONFIG=$ssh_config")
+fi
+if [[ -n "${SSH_AUTH_SOCK:-}" ]]; then pane_env+=(--env "SSH_AUTH_SOCK=$SSH_AUTH_SOCK"); fi
+
 printf 'Creating Herdr workspace for team %s in %s\n' "$TEAM_DISPLAY" "$PROJECT_DIR"
 trap on_error ERR
 create_payload=$(herdr workspace create \
   --cwd "$PROJECT_DIR" \
   --label "$workspace_label" \
-  --env "CODEX_HOME=$CODEX_DIR" \
-  --no-focus)
+  "${pane_env[@]}" --env "HERDR_TEAM_ROLE=planner" --no-focus)
 workspace_id=$(extract_object_string "$create_payload" workspace workspace_id)
 root_pane_id=$(extract_object_string "$create_payload" root_pane pane_id)
 [[ -n "$workspace_id" ]] || die "Could not parse workspace ID from Herdr response: $create_payload"
@@ -582,15 +602,19 @@ run_state_write_current starting || \
 
 coder_split=$(herdr pane split "$root_pane_id" \
   --direction right --ratio 0.5 --cwd "$PROJECT_DIR" \
-  --env "CODEX_HOME=$CODEX_DIR" --no-focus)
+  "${pane_env[@]}" --env "HERDR_TEAM_ROLE=coder" --no-focus)
 coder_pane_id=$(extract_object_string "$coder_split" pane pane_id)
 [[ -n "$coder_pane_id" ]] || die "Could not parse coder pane ID from Herdr response: $coder_split"
 
 reviewer_split=$(herdr pane split "$coder_pane_id" \
   --direction down --ratio 0.5 --cwd "$PROJECT_DIR" \
-  --env "CODEX_HOME=$CODEX_DIR" --no-focus)
+  "${pane_env[@]}" --env "HERDR_TEAM_ROLE=reviewer" --no-focus)
 reviewer_pane_id=$(extract_object_string "$reviewer_split" pane pane_id)
 [[ -n "$reviewer_pane_id" ]] || die "Could not parse reviewer pane ID from Herdr response: $reviewer_split"
+
+if [[ ${HERDR_TEAM_SHORTCUT:-0} == 1 && $NO_FOCUS == 0 ]]; then
+  herdr workspace focus "$workspace_id" >/dev/null
+fi
 
 herdr pane rename "$root_pane_id" "$PLANNER_AGENT" >/dev/null
 herdr pane rename "$coder_pane_id" "$CODER_AGENT" >/dev/null
@@ -601,36 +625,30 @@ start_agent() {
   local live_name=$2
   local pane_id=$3
   local model=$4
-  local add_dir
-  local native_args
-  local permission_config
-  local start_result
+  local kind start_result
+  kind=$(team_role_cli "$role") || return 1
+  team_role_args "$role" "$kind" "$model" || die "Could not prepare $kind $role."
 
-  managed_role_permission_policy "$role" || \
-    die "Unknown role passed to start_agent: $role"
-  native_args=(
-    --profile "$role"
-    -c 'agents.enabled=false'
-  )
-  for permission_config in "${MANAGED_ROLE_PERMISSION_CONFIGS[@]}"; do
-    native_args+=(-c "$permission_config")
-  done
-
-  if [[ "$role" != reviewer ]]; then
-    for add_dir in ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}; do
-      native_args+=(--add-dir "$add_dir")
-    done
-  fi
-
-  if [[ -n "$model" ]]; then
-    native_args+=(--model "$model")
-  fi
-
-  printf 'Starting %s profile as live agent %s in %s\n' "$role" "$live_name" "$pane_id"
-  if start_result=$(herdr agent start "$live_name" --kind codex --pane "$pane_id" \
-      --timeout "$START_TIMEOUT_MS" -- "${native_args[@]}" 2>&1); then
+  printf 'Starting %s with %s as %s in %s\n' "$role" "$kind" "$live_name" "$pane_id"
+  if start_result=$(herdr agent start "$live_name" --kind "$kind" --pane "$pane_id" \
+      --timeout "$START_TIMEOUT_MS" -- "${TEAM_ROLE_ARGS[@]}" 2>&1); then
     printf '%s\n' "$start_result"
+    if [[ "$kind" == agy ]] && herdr pane read "$pane_id" --source visible --lines 80 | grep -Fq 'Terms of Service & Data Use'; then
+      die "Complete Antigravity first-run setup in the retained $role pane before opening the team."
+    fi
     return 0
+  fi
+
+  # Herdr can return as soon as a native startup dialog appears. The agent
+  # already owns the pane, so wait for the user's answer without starting it again.
+  if [[ "$start_result" == *'"code":"agent_not_ready"'* ]]; then
+    if [[ ${HERDR_TEAM_SHORTCUT:-0} == 1 ]]; then
+      herdr agent focus "$live_name" >/dev/null
+    fi
+    printf 'Waiting for %s to finish its startup dialog in %s.\n' "$live_name" "$pane_id"
+    if herdr agent wait "$live_name" --until idle --timeout "$START_TIMEOUT_MS" >/dev/null; then
+      return 0
+    fi
   fi
 
   startup_issues=$((startup_issues + 1))
@@ -642,20 +660,9 @@ start_agent() {
     printf '       herdr agent read %s --source recent-unwrapped --lines 120\n' "$live_name" >&2
   else
     printf '       No live name was retained. After repairing the pane, retry exactly:\n' >&2
-    printf '       herdr agent start %q --kind codex --pane %q --timeout %q -- --profile %q' \
-      "$live_name" "$pane_id" "$START_TIMEOUT_MS" "$role" >&2
-    printf ' -c %q' 'agents.enabled=false' >&2
-    for permission_config in "${MANAGED_ROLE_PERMISSION_CONFIGS[@]}"; do
-      printf ' -c %q' "$permission_config" >&2
-    done
-    if [[ "$role" != reviewer ]]; then
-      for add_dir in ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}; do
-        printf ' --add-dir %q' "$add_dir" >&2
-      done
-    fi
-    if [[ -n "$model" ]]; then
-      printf ' --model %s' "$model" >&2
-    fi
+    printf '       herdr agent start %q --kind %q --pane %q --timeout %q --' \
+      "$live_name" "$kind" "$pane_id" "$START_TIMEOUT_MS" >&2
+    printf ' %q' "${TEAM_ROLE_ARGS[@]}" >&2
     printf '\n' >&2
   fi
   return 1
@@ -715,19 +722,21 @@ for role in planner coder reviewer; do
     process_scope_ready=false
     if [[ -n "$live_pane_id" ]] && \
        process_payload=$(herdr pane process-info --pane "$live_pane_id" 2>&1) && \
-       json_process_uses_profile "$process_payload" "$role" && \
-       json_process_has_managed_scope "$process_payload" "$role" && \
+       team_process_policy "$process_payload" "$role" "$(team_role_cli "$role")" && \
        process_add_dirs_match "$process_payload" "$role"; then
       process_scope_ready=true
     fi
     if [[ "$identity_fields_ready" == 'true' && \
-          "$live_name" == "$live_name_expected" && "$agent_kind" == 'codex' && \
+          "$live_name" == "$live_name_expected" && "$agent_kind" == "$(team_role_cli "$role")" && \
           "$live_pane_id" == "$pane_expected" && "$live_workspace_id" == "$workspace_id" && \
           "$interactive_ready" == 'true' && "$launch_pending" == 'false' && \
           "$primary_scope_ready" == 'true' && \
           "$process_scope_ready" == 'true' && \
           ( "$agent_status" == 'idle' || "$agent_status" == 'done' ) ]]; then
-      printf '[OK] %s ready as %s (state: %s)\n' "$role" "$live_name_expected" "$agent_status"
+      thread_id=$(HERDR_BIN_PATH="$HERDR_BIN" "$PYTHON_BIN" "$BRIDGE_TARGET" --launch-thread-id <<<"$agent_payload") || \
+        die "Could not bind the active $role conversation. Inspect the retained workspace."
+      THREAD_IDS+=("$thread_id")
+      printf '[OK] %s ready as %s (thread: %s)\n' "$role" "$live_name_expected" "$thread_id"
       continue
     fi
     printf '[FAIL] %s final state is not ready (expected_name=%s, name=%s, kind=%s, pane=%s, workspace=%s, state=%s, ready=%s, launch_pending=%s, primary_scope=%s, managed_scope=%s).\n' \
@@ -761,6 +770,9 @@ if [[ $startup_issues -gt 0 ]]; then
   exit 1
 fi
 
+run_state_write_current starting || die "Could not record the three panes before linking conversations."
+HERDR_BIN_PATH="$HERDR_BIN" "$PYTHON_BIN" "$BRIDGE_TARGET" --save-launch "$RUN_STATE_FILE" "${THREAD_IDS[@]}" || \
+  die "Could not register the three conversations. No Planner handoff is allowed."
 run_state_write_current ready || \
   die "All three agents are ready, but the final launch record could not be written atomically at $RUN_STATE_FILE. Do not rerun startup; inspect the live team directly."
 RUN_STATE_FINAL_STATUS=ready

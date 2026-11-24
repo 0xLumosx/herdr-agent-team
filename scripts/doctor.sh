@@ -79,6 +79,10 @@ usage() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --planner-cli|--coder-cli|--reviewer-cli)
+      [[ $# -ge 2 && -n "$2" ]] || { printf '%s requires a CLI name\n' "$1" >&2; exit 2; }
+      team_set_role_cli "$1" "$2" || exit 2
+      shift 2 ;;
     --team)
       [[ $# -ge 2 ]] || { usage >&2; fail '--team requires a prefix.'; exit 2; }
       [[ $TEAM_CLI_SET -eq 0 ]] || { fail '--team may be provided only once.'; exit 2; }
@@ -272,6 +276,21 @@ if [[ $BIND_RECORD_IF_PRESENT -eq 1 && $STATE_SCOPE_LOADED -eq 1 ]]; then
   fi
 fi
 
+if run_state_current_exists; then
+  cli_rows=$(python3 -c 'import json,sys
+a=json.load(open(sys.argv[1]))["herdr"]["agents"]
+for r in ("planner","coder","reviewer"):
+ print(r, a[r].get("cli","codex"))' "$RUN_STATE_FILE") || { fail 'Malformed recorded CLI selection'; exit 2; }
+  while read -r role recorded; do
+    case "$role" in
+      planner) PLANNER_CLI=${PLANNER_CLI:-$recorded} ;;
+      coder) CODER_CLI=${CODER_CLI:-$recorded} ;;
+      reviewer) REVIEWER_CLI=${REVIEWER_CLI:-$recorded} ;;
+    esac
+    [[ $(team_role_cli "$role") == "$recorded" ]] || { fail "$role CLI differs from its launch record"; exit 2; }
+  done <<<"$cli_rows"
+fi
+
 process_uses_profile() {
   local payload=$1
   local role=$2
@@ -293,7 +312,7 @@ process_add_dirs_match() {
     *) return 1 ;;
   esac
 
-  actual_output=$(json_process_codex_add_dirs "$payload") || return 1
+  actual_output=$(team_process_dirs "$payload" "$role" "$(team_role_cli "$role")") || return 1
   while IFS= read -r actual_dir; do
     [[ -n "$actual_dir" ]] || continue
     (( index < expected_count )) || return 1
@@ -316,18 +335,10 @@ if [[ $EXPECTED_HAS_NON_GIT -eq 1 ]]; then
   warn 'Expected scope includes non-Git roots; launch identity can be checked, but complete Git diff/baseline evidence is unavailable.'
 fi
 
-if command -v codex >/dev/null 2>&1; then
-  ok "Codex found: $(codex --version 2>&1 | head -n 1)"
-  if [[ ${#ADD_DIRS[@]} -gt 0 ]]; then
-    if codex_help=$(codex --help 2>&1) && grep -Fq -- '--add-dir' <<<"$codex_help"; then
-      ok 'Codex exposes --add-dir.'
-    else
-      fail 'This Codex CLI does not expose --add-dir.'
-    fi
-  fi
-else
-  fail 'Codex not found. Install Codex CLI and make sure `codex` is in PATH.'
-fi
+for role in planner coder reviewer; do
+  kind=$(team_role_cli "$role") || exit 2
+  if command -v "$kind" >/dev/null; then ok "$role CLI: $kind"; else fail "$role requires $kind in PATH."; fi
+done
 
 if command -v herdr >/dev/null 2>&1; then
   ok "Herdr found: $(herdr --version 2>&1 | head -n 1)"
@@ -405,7 +416,7 @@ for role in planner coder reviewer; do
   else
     fail "$role $policy_integrity_error. Rerun ./scripts/install.sh."
   fi
-  if command -v codex >/dev/null 2>&1; then
+  if [[ $(team_role_cli "$role") == codex ]] && command -v codex >/dev/null 2>&1; then
     managed_role_permission_policy "$role" || {
       fail "Could not resolve the managed permission policy for role: $role"
       continue
@@ -484,11 +495,13 @@ else
 fi
 
 integration_status=$(herdr integration status 2>&1 || true)
-if printf '%s\n' "$integration_status" | grep -Eq '^codex: current([[:space:]]|$)'; then
-  ok 'Herdr Codex integration is current.'
-else
-  fail 'Herdr Codex integration is missing or outdated. Review `herdr integration status`, then run `herdr integration install codex` if appropriate.'
-fi
+while IFS= read -r integration; do
+  if grep -Eq "^$integration: current([[:space:]]|$)" <<<"$integration_status"; then
+    ok "Herdr $integration integration is current."
+  else
+    fail "Missing or outdated integration: $integration"
+  fi
+done < <(team_integrations)
 
 server_running=0
 if server_status=$(herdr status server 2>&1); then
@@ -570,8 +583,8 @@ if [[ $server_running -eq 1 ]]; then
         fail "$live_name_expected target resolved to unexpected live name '${live_name:-unknown}'."
         continue
       fi
-      if [[ "$agent_kind" != 'codex' ]]; then
-        fail "$live_name_expected resolves to agent kind '${agent_kind:-unknown}', not codex."
+      if [[ "$agent_kind" != "$(team_role_cli "$role")" ]]; then
+        fail "$live_name_expected resolves to agent kind '${agent_kind:-unknown}', expected $(team_role_cli "$role")."
         continue
       fi
       identity_failures_before=$failures
@@ -594,15 +607,10 @@ if [[ $server_running -eq 1 ]]; then
       elif [[ "$seen_panes" == *"|$pane_id|"* ]]; then
         fail "$live_name_expected reuses pane $pane_id; every role must occupy a distinct pane."
       elif process_payload=$(herdr pane process-info --pane "$pane_id" 2>&1); then
-        if process_uses_profile "$process_payload" "$role"; then
-          ok "$live_name_expected foreground process uses generic --profile $role"
+        if team_process_policy "$process_payload" "$role" "$agent_kind"; then
+          ok "$live_name_expected uses its managed $agent_kind role configuration"
         else
-          fail "$live_name_expected is not verifiably running with --profile $role. Restart it through start.sh."
-        fi
-        if json_process_has_managed_scope "$process_payload" "$role"; then
-          ok "$live_name_expected disables native agents and carries the managed network-permission argv"
-        else
-          fail "$live_name_expected lacks the exact managed native-agent/network-permission argv. Restart it through the current start.sh."
+          fail "$live_name_expected lacks its managed role configuration."
         fi
         if process_add_dirs_match "$process_payload" "$role"; then
           if [[ "$role" == coder ]]; then

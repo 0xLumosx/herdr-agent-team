@@ -129,6 +129,8 @@ kind: codex, name: auth-reviewer
 
 在 Herdr 0.8.2 中，名称跟随当前 pane occupant，并会在 Agent 退出、被 release 或被替换时清除。名称是 runtime state，而不是永久 profile metadata；因此 startup、Planner handoff 和 diagnostics 每次都必须重新检查。Pane ID 和布局同样是 runtime data。启动记录只能把 pane ID 作为某个 `run_id` 的 freshness expectation 保存；它绝不是永久 Team 身份，必须实时复核。
 
+当 Coder 或 Reviewer 使用 Codex 0.171 及以上版本且本地有会话记录时，通信桥按派单原文和轮次 ID 读取已完成的回复，来源标记为 `codex-turn`。交接完成后，通信桥再次核对 Herdr 窗格、会话 ID 和状态序号。其他 CLI 以及旧版 Codex 通过终端记录返回回复。
+
 ## 角色与权限矩阵
 
 | 能力 | Planner | Coder | Reviewer |
@@ -200,7 +202,7 @@ Coder 实现或修复 → Reviewer 审查 → Planner 分诊
 
 ## 重启与持久化边界
 
-项目不维护 task/workflow database，只在 `$CODEX_HOME` 下为每个 Team 保留最近一份带 schema 版本的启动记录；详见[启动状态](launch-state.md)。Planner 重启时，应保留所有文件。对每个 Git-backed root，从以下命令开始恢复：
+项目在 `$CODEX_HOME` 下保存每个团队最近一次启动的记录和历次关联的对话 ID。在受管 Planner 窗格选中已登记的对话，Coder 和 Reviewer 会恢复各自的对话。详见[恢复对话](launch-state.md#恢复对话)。如果历史对话已经无法打开，应保留项目文件。对于每个 Git 工作树，可先运行以下命令。
 
 ```bash
 git status --short

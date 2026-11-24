@@ -13,7 +13,9 @@ Herdr Codex Team 会为每个 Team identity 保存一份小型、用户本地的
 ├── startup.lock/                 # 通常是短期目录；不安全 stale owner 会保留
 └── teams/
     ├── legacy/current.json
-    └── prefixed-<team-prefix>/current.json
+    └── prefixed-<team-prefix>/
+        ├── current.json
+        └── conversations.sqlite3
 ```
 
 State 目录权限为 `0700`；`current.json` 和 lock owner 文件为 `0600`。本项目在 `$CODEX_HOME` 下管理的每个 path component 都必须是真实目录，不能是 symlink。状态中包含项目绝对路径，因此不要在未脱敏时把它发布到 issue 或 commit。
@@ -31,7 +33,7 @@ State 目录权限为 `0700`；`current.json` 和 lock owner 文件为 `0600`。
 - Herdr workspace ID，以及每个 pane 被观察到后的精确 pane ID；
 - 每个角色的预期 sandbox。
 
-文件刻意不包含 task prompt、response、terminal transcript、diff、源码、token、approval、任务完成状态或 Reviewer 决策。每个 Team 只保留最近一次已创建 run。`run_id` 只用于关联同一次 helper 调用写入的字段；它不会注入 Herdr，也不能证明之后的 live process 属于所记录的 run。
+文件刻意不包含 task prompt、response、terminal transcript、diff、源码、token、approval、任务完成状态或 Reviewer 决策。`current.json` 记录最近一次启动。启动器通过 `HERDR_TEAM_RUN_ID` 把启动 ID 传给 Planner 窗格。通信桥核对实时工作区和三个窗格的 ID，匹配后才会使用本次启动的对话关联。
 
 文件先在 Team state 目录生成，设置为 `0600`，再 rename 覆盖 `current.json`。因此 reader 会看到旧的完整文件或新的完整文件，而不是正常情况下的半写入内容。Doctor 会在使用前验证完整文件。
 
@@ -85,8 +87,19 @@ Owner record 包含本地主机、PID、run ID、Team display name 和 owner tok
 
 Startup 结束后，精确实时名称和完整 root inspection 仍是受管 collision guard。同一仓库内并发工作仍需用户为每个 Team 创建独立 worktree。
 
-## 恢复边界
+## 恢复对话
 
-如果原来的三个 Codex process 仍然 live，请通过 Herdr 返回那些精确 pane；只有原 session 保留对话。如果它们已被替换，启动记录可以帮助核实 root 并区分旧 workspace/pane，但新 session 不会恢复旧对话。应从 Git evidence 或所报 non-Git touched path 重建任务，再发送新的自包含 handoff。
+启动团队时，脚本会把三个新对话的 Codex UUID 关联起来，并用角色名和启动 ID 给对话命名。这样，即使 Reviewer 还没收到过任务，也能重新打开它的对话。Codex 在 `session_index.jsonl` 中确认三个名称后，启动器才会报告就绪。同一团队历次启动的关联保存在 `current.json` 旁边的私有文件 `conversations.sqlite3` 中。里面记录角色的对话 ID、启动和窗格标识、项目目录。对话内容由 Codex 保存。
+
+在 Planner 窗格输入 `/resume`，选中已关联的 Planner 对话。通信桥会把对应的 `/resume <UUID>` 发给空闲的 Coder 和 Reviewer。重建团队后，只要团队名、主目录和有序的额外目录与原来一致，也可以这样恢复。角色正在工作时会等它结束。关联缺失或窗格尚未切换完成时，Planner 会停止派单。如果 Codex 在恢复时要求确认，请到对应窗格处理。
+
+升级前的对话，以及在窗格里用 `/new` 新建的对话，可以手动关联一次。先在三个角色的窗格中各自选中当时的对话，从窗格底部复制 UUID。在当前 Herdr 会话的 shell 窗格运行下面的命令，将占位符换成实际值。项目涉及额外目录时，带上原来的全部 `--add-dir` 参数，顺序也要一致。
+
+```bash
+./scripts/open.sh --team dex --cwd /path/to/project \
+  --link-current '<planner-uuid>' '<coder-uuid>' '<reviewer-uuid>'
+```
+
+命令会核对三个实时 UUID。如果 Planner 已绑定其他对话，会保留原记录并报错。升级时已在运行的团队需要用新版启动器重建工作区。三个角色的历史对话都需要能在 Codex 中打开。
 
 `partial` 只表示 startup 创建了 workspace，但没有完成并持久化 `ready` 结论；实时角色仍可能已经 ready。请检查记录的 ID 和实时 Herdr state。不要盲目重跑 startup、自动停止 workspace，也不要把 `partial` 解释为任务进度。

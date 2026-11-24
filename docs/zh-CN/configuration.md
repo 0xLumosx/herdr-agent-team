@@ -1,6 +1,29 @@
 # 配置
 
+## 每个角色的 CLI
+
+`--planner-cli`、`--coder-cli`、`--reviewer-cli` 分别选择 `codex`、`claude` 或 `agy`。也可以设置 `PLANNER_CLI`、`CODER_CLI`、`REVIEWER_CLI`。默认值都是 `codex`。本地通过相应的 `*_MODEL` 设置指定该 CLI 支持的模型。
+
+三种 CLI 都加载对应的角色指令。只有 Codex 强制加载 Stop That Shit。使用 Codex 时，Reviewer 用 review 模式，Coder 在实现任务中用 change 模式，Planner 按用户请求选择模式。Claude 和 Antigravity 的只读角色通过文件工具检查本地项目。三种 CLI 都通过团队 SSH 工具检查远端。Claude Coder 开启原生 shell 沙箱，Antigravity Coder 使用终端沙箱和工作区编辑模式。Antigravity 的命名角色定义保存在 `~/.gemini/config/agents/`。首次选用 Antigravity 时，启动器还会把 `herdr_codex_team` 和 `herdr_team_ssh` 登记到它的 MCP 配置。两项只向对应的 Herdr 角色提供工具，启动时会检查连接。卸载器移除指向本次安装的登记。
+
+
 [English](../configuration.md)
+
+
+## 本地团队共用 SSH
+
+在 Planner 里告诉它 SSH 主机和远端目录，例如“用 SSH 到 `lab-dev` 的 `/srv/project` 检查这个问题”。Planner 调用 `select_remote`，用本机 OpenSSH 验证主机并取得实际目录。之后派单会带上该目的地，Coder 和 Reviewer 从自己的窗格访问同一份远端文件。
+
+| 角色 | 远端能力 |
+| --- | --- |
+| Planner | 选择或清除目的地，查看目录、文件、状态及差异 |
+| Coder | 读取远端证据，在选定目录执行获准的编辑、构建和测试命令 |
+| Reviewer | 列目录、读文件、搜索文本、检查 Git 状态和暂存或未暂存的差异 |
+
+目的地属于当前三会话组合。切回旧 Planner 后会恢复该组合的主机和目录。要回到本地任务，告诉 Planner 切回本地，它会调用 `use_local`。临时在 shell 中运行的 `ssh` 命令不会登记团队目的地。
+
+使用已验证主机密钥、可非交互登录的 SSH 别名。OpenSSH 读取本机配置和密钥，可使用已有的 SSH agent。如需独立配置文件，在启动时设置 `HERDR_SSH_CONFIG=/absolute/path/to/config`。这里的三个 CLI 都在本地运行；`remote.sh` 用于在远端启动整个团队。
+
 
 ## Profile 位置和优先级
 
@@ -48,14 +71,15 @@ State 目录使用 `0700`，JSON 文件使用 `0600`。其中包含主/额外项
 | 受管 `default_permissions` | `herdr_read_only_network` | `herdr_workspace_network` | `herdr_read_only_network` |
 | permission parent | `:read-only` | `:workspace` | `:read-only` |
 | command network | 启用 | 启用 | 启用 |
-| reasoning 默认值 | `xhigh` | `high` | `xhigh` |
+| 模型默认值 | 继承运行主机的 Codex 默认模型 | `gpt-6.2-sol` | 继承运行主机的 Codex 默认模型 |
+| reasoning 默认值 | `xhigh` | `xhigh` | `xhigh` |
 | 应用源码编辑 | sandbox 和 prompt 均阻止 | 允许且预期 | sandbox 和 prompt 均阻止 |
 
 Coder 模板还提供以下默认建议：
 
 ```toml
-model = "gpt-5.6-luna"
-model_reasoning_effort = "high"
+model = "gpt-6.2-sol"
+model_reasoning_effort = "xhigh"
 ```
 
 工作流不会根据这个模型名称选择不同分支。用户可以使用当前 Codex account 和 CLI 支持的任何模型覆盖它。
@@ -94,6 +118,8 @@ REVIEWER_MODEL="<available-model>" \
 ## Developer instructions 和可读 Prompt
 
 规范角色文本保存在 `prompts/`，维护者无需解码长 TOML string 即可审查。安装路径通过简单 shell 过程把角色专属配置和这些指令组合起来，不需要外部 template engine。
+
+角色选用 Codex 时，安装器会将 Stop That Shit 0.2.5 写入其开发者指令，每次任务都会加载。在远端主机启动 Codex 时也一样。Claude Code 和 Antigravity 加载各自的角色指令。即使本机已经安装该 Claude 插件，受管 Claude 会话也会禁用这个技能。Antigravity 会随对话保存角色指令。如果早期测试会话保存了强制使用技能的旧指令，Herdr 会停止派单。在 Gemini 的 `/agents` 中选用当前角色可以保留历史并生成新会话，再用新的 Planner ID 和 `--link-current` 登记新组。用当前提示词创建的对话组可以按原 ID 恢复。用户照常输入任务即可。技能在各角色原有权限内指导模型，可选的 Guard 钩子有独立的启用流程。[技能正文](../../prompts/stop-that-shit/SKILL.md)
 
 修改角色时：
 

@@ -22,3 +22,6 @@ tmp/
 
 # Local backup artifacts, if copied into the repository
 herdr-codex-team-backup-*/
+
+# Untracked files in the repository test directory
+/tests/

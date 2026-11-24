@@ -833,9 +833,10 @@ json_process_has_managed_scope() {
         ] as $records |
         any($records[]; .is_codex) and
         all($records[]; (.is_codex | not) or
-          (.configs == [$agents_marker,
-                        $permission_default, $permission_extends,
-                        $permission_network] and
+          ((.configs == [$agents_marker, $permission_default, $permission_extends, $permission_network]
+            or .configs == [$agents_marker, "tui.terminal_title=[\"session-id\"]",
+                            "tui.status_line=[\"session-id\"]", $permission_default,
+                            $permission_extends, $permission_network]) and
            .sandboxes == [] and
            (.cd_override | not) and
            (.remote_override | not) and
@@ -928,8 +929,9 @@ try:
             if arg == "--remote" or arg.startswith("--remote="):
                 remote_override = True
             index += 1
-        if (configs != [agents_marker, permission_default,
-                        permission_extends, permission_network] or
+        policy = [permission_default, permission_extends, permission_network]
+        display = ["tui.terminal_title=[\"session-id\"]", "tui.status_line=[\"session-id\"]"]
+        if (configs not in ([agents_marker] + policy, [agents_marker] + display + policy) or
                 sandboxes or
                 cd_override or remote_override or bypass):
             sys.exit(1)

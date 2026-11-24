@@ -15,7 +15,9 @@ With the default `CODEX_HOME=~/.codex`, a prefixed Team uses:
 ├── startup.lock/                 # normally transient; unsafe stale owners remain
 └── teams/
     ├── legacy/current.json
-    └── prefixed-<team-prefix>/current.json
+    └── prefixed-<team-prefix>/
+        ├── current.json
+        └── conversations.sqlite3
 ```
 
 State directories are mode `0700`; `current.json` and the lock owner file are
@@ -40,9 +42,7 @@ No state is written into a primary project, an `--add-dir` project, `.git`, or
 
 The file deliberately contains no task prompt, response, terminal transcript,
 diff, source content, token, approval, task completion, or Reviewer decision.
-Only the latest created run is retained for each Team. `run_id` correlates
-fields written by one helper invocation; it is not injected into Herdr and is
-not proof that a later live process belongs to that recorded run.
+`current.json` describes the latest launch. The launcher passes its `run_id` to the Planner pane as `HERDR_TEAM_RUN_ID`. The bridge checks the live workspace and all three pane IDs before using that launch’s conversation links.
 
 The file is generated in the Team state directory, set to `0600`, and renamed
 over `current.json`. A reader therefore sees the old complete file or the new
@@ -123,14 +123,35 @@ After startup, exact live-name and complete-root inspection remains the managed
 collision guard. Concurrent work in one repository still requires separate
 user-created worktrees per Team.
 
-## Recovery boundary
+## Conversation recovery
 
-If the original three Codex processes are still live, use Herdr to return to
-those exact panes; only those sessions retain their conversations. If they have
-been replaced, the launch record can help verify roots and distinguish the old
-workspace/panes, but the new sessions have no restored conversation. Rebuild
-the task from Git evidence or reported non-Git touched paths and send a new
-self-contained handoff.
+Each managed launch links its three fresh Codex thread IDs and names the chats
+with the role name and launch ID so that an unused peer chat can be reopened. The launcher waits for Codex to acknowledge the names in `session_index.jsonl`. The private file
+`conversations.sqlite3` beside `current.json` keeps earlier groups. It records
+the Planner, Coder and Reviewer IDs, the launch and pane identities, and the
+project directories. Codex stores the chat history.
+
+In a running team, enter `/resume` in Planner and select a linked Planner chat.
+The Planner bridge asks both idle peer panes to run `/resume` with their
+recorded IDs. This also works in a newly launched team with the same name,
+primary directory and ordered additional directories. A busy peer finishes
+its work first. An unknown Planner or an incomplete switch blocks handoffs.
+If Codex needs input during a switch, resolve the prompt in that peer's pane.
+
+For chats created before linking was installed, or after using `/new` inside
+the panes, select the three corresponding chats yourself once. Copy their IDs
+from the pane footers. In a shell pane of that session, run the following with
+the team's original directories and ordered `--add-dir` arguments.
+
+```bash
+./scripts/open.sh --team dex --cwd /path/to/project \
+  --link-current '<planner-uuid>' '<coder-uuid>' '<reviewer-uuid>'
+```
+
+Replace the three placeholders before running the command. It checks the live
+IDs and refuses to overwrite an existing association. For a team already
+running during the upgrade, recreate its workspace with the updated launcher
+first. Recovery needs a chat that Codex can still open for each role.
 
 `partial` means only that startup created a workspace but did not complete and
 persist a `ready` conclusion. The live roles may still be ready. Inspect the

@@ -188,6 +188,8 @@ therefore check them every time. Pane IDs and layout are also runtime data. A
 launch record may persist pane IDs only as freshness expectations for one
 `run_id`; they are never permanent Team identity and must be rechecked live.
 
+For a Codex 0.171+ worker with a local session log, the bridge matches the submitted prompt to its native turn and returns the completed reply as `codex-turn`. It verifies the Herdr pane, conversation ID and lifecycle sequence again after delivery. Other clients and older Codex installations use the retained terminal transcript.
+
 ## Role and permission matrix
 
 | Capability | Planner | Coder | Reviewer |
@@ -282,9 +284,10 @@ outside it.
 
 ## Restart and persistence boundary
 
-The project keeps no task/workflow database. It keeps only the latest
-schema-versioned launch record per Team under `$CODEX_HOME`; see
-[Launch state](launch-state.md). If Planner restarts, preserve all files.
+The project keeps the latest launch record and the linked conversation IDs for
+each team under `$CODEX_HOME`. In a managed Planner pane, selecting a registered
+chat resumes the two associated peer chats. See [conversation recovery](launch-state.md#conversation-recovery).
+If the chat history is unavailable, preserve all files.
 For each Git-backed root, begin recovery with:
 
 ```bash
@@ -296,7 +299,7 @@ git diff --staged
 For each non-Git root, record `Git evidence: NOT AVAILABLE` and inspect the last
 reported touched paths directly; this cannot reconstruct a complete baseline.
 
-The new Planner reconstructs the goal and current state, re-derives its current
+Without a recorded conversation, the new Planner reconstructs the goal and current state, re-derives its current
 team identity, verifies the exact same-team live Herdr agents, and resumes at
 the appropriate handoff. It must not assume the Coder report or Reviewer result
 survived. A launch record can verify expected roots, workspace, and pane IDs,

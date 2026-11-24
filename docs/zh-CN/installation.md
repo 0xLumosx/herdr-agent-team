@@ -7,7 +7,9 @@
 
 ## 要求
 
-已检查基线是 Herdr 0.8.2 和 Codex CLI 0.149.1。脚本会检查自身依赖的能力，
+macOS 上已验证 Herdr 0.9.5 搭配 Codex CLI 0.171.0。升级 Herdr 后，运行 `herdr integration status` 查看各角色的集成状态。对显示 `outdated` 的集成执行相应安装命令，例如 `herdr integration install codex`。
+
+原有启动流程的基线是 Herdr 0.8.2 和 Codex CLI 0.149.1。对话联动恢复已在 Herdr 0.8.2 搭配 Codex CLI 0.160.1 和 0.171.0 时分别验证，需要 Codex 在窗格底部和终端标题中显示对话 ID，并支持窗格内的 `/rename <名称>` 和 `/resume <UUID>`。脚本会检查自身依赖的能力，
 不兼容时 fail closed。
 
 本机需要：
@@ -88,13 +90,11 @@ network。
 /path/to/herdr-codex-team/scripts/test.sh --team dex-vut communication
 ```
 
-进入或 attach 目标 session 后，继续用同一条 `open.sh` 创建或复用 Team。UI
-重连使用下文命令；保存的 launch record 不存储或恢复 Codex conversation。
+进入目标会话后，用同一条 `open.sh` 创建或复用团队。要恢复三个角色的关联对话，在 Planner 窗格输入 `/resume`，选中之前的对话。
 
 ## 远端项目
 
-远端主机需要 Codex、Herdr、Bash、Git、Python 3、`tar` 和项目目录。先在远端
-完成 Codex 登录。远端不需要 clone 本仓库；`remote.sh` 会把校验后的 launcher
+远端主机需要安装选用的角色 CLI、Herdr、Bash、Git、Python 3 和 `tar`，并能访问项目目录。先在远端登录各角色选用的 CLI。远端不需要 clone 本仓库；`remote.sh` 会把校验后的 launcher
 bundle 传入私有临时目录，并在结束后清理。
 
 从 fresh、普通本机 shell 运行：
@@ -108,10 +108,10 @@ cd /path/to/herdr-codex-team
 ```
 
 `--cwd` 与 `--add-dir` 后面都是远端绝对路径。本地 terminal 只显示 Herdr UI；
-pane、Codex process 和项目文件都留在 `user@server`。
+窗格、角色 CLI 进程和项目文件都留在 `user@server`。
 
 若首次远端 Herdr setup 打开一个初始 UI，按 `Ctrl+B`，松开后按小写 `q`。这只
-detach 当前 client；`remote.sh` 会自动继续。若远端 Codex integration 缺失，
+detach 当前 client；`remote.sh` 会自动继续。若远端缺少所选 CLI 的 Herdr 集成，
 脚本会说明全局 hook/config 变更，并在安装前询问。
 
 如果界面没有自动打开，请从 fresh、普通本机 shell 手工 attach；不要在另一个

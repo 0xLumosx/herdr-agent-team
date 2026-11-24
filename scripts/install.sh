@@ -55,7 +55,11 @@ if [[ $# -ne 0 ]]; then
   exit 2
 fi
 
-command -v codex >/dev/null 2>&1 || die 'Codex CLI was not found in PATH.'
+source "$SCRIPT_DIR/lib/team.sh"
+integrations=$(team_integrations) || exit 2
+if grep -qx codex <<<"$integrations"; then
+  command -v codex >/dev/null 2>&1 || die 'Codex CLI was not found in PATH.'
+fi
 command -v herdr >/dev/null 2>&1 || die 'Herdr was not found in PATH.'
 command -v python3 >/dev/null 2>&1 || die 'Python 3 was not found in PATH.'
 PYTHON_BIN=$(managed_python_executable) || \
@@ -72,10 +76,8 @@ for role in planner coder reviewer; do
     die "Missing profile template: profiles/$role.config.toml"
   [[ -f "$PROJECT_ROOT/prompts/$role.md" ]] || \
     die "Missing role prompt: prompts/$role.md"
-  if grep -Fq "'''" "$PROJECT_ROOT/prompts/$role.md"; then
-    die "prompts/$role.md contains three consecutive single quotes and cannot be embedded safely in TOML."
-  fi
 done
+[[ -s "$PROJECT_ROOT/prompts/stop-that-shit/SKILL.md" ]] || die 'Missing required Stop That Shit skill.'
 
 if [[ ! -d "$CODEX_DIR" ]]; then
   mkdir -p -- "$CODEX_DIR"
@@ -94,7 +96,7 @@ if [[ -L "$BRIDGE_TARGET" || ( -e "$BRIDGE_TARGET" && ! -f "$BRIDGE_TARGET" ) ]]
   die "Managed bridge target is not a safe regular file: $BRIDGE_TARGET"
 fi
 
-printf '[OK] Codex found: %s\n' "$(codex --version 2>&1 | head -n 1)"
+if command -v codex >/dev/null; then printf '[OK] Codex found: %s\n' "$(codex --version 2>&1 | head -n 1)"; fi
 printf '[OK] Herdr found: %s\n' "$(herdr --version 2>&1 | head -n 1)"
 printf '[OK] Herdr executable: %s\n' "$HERDR_BIN"
 printf '[OK] Python found: %s (%s)\n' \
@@ -144,6 +146,7 @@ else
 fi
 
 model_for_role() {
+  [[ $(team_role_cli "$1") == codex ]] || return 0
   case "$1" in
     planner) printf '%s' "${PLANNER_MODEL:-}" ;;
     coder) printf '%s' "${CODER_MODEL:-}" ;;
@@ -201,9 +204,9 @@ render_profile() {
     else
       profile_policy_render "$template" "$PYTHON_BIN" "$BRIDGE_TARGET"
     fi
-    printf '\ndeveloper_instructions = '\''\'\''\'\''\n'
-    command cat -- "$prompt"
-    printf '\n'\''\'\''\'\''\n'
+    printf "\ndeveloper_instructions = '''\n"
+    render_codex_role_instructions "$prompt"
+    printf "%s\n" "'''"
   } >"$target"
   chmod 600 "$target" 2>/dev/null || true
 }
@@ -215,10 +218,9 @@ done
 for role in planner coder reviewer; do
   validation_log="$render_dir/$role.codex-validation.log"
   validation_args=(--profile "$role")
+  staged_bridge_toml=$("$PYTHON_BIN" -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$render_dir/herdr-codex-team/herdr_mcp.py")
+  validation_args+=(-c "mcp_servers.herdr_team_ssh.args=[$staged_bridge_toml,\"--ssh\",\"$role\"]")
   if [[ "$role" == planner ]]; then
-    staged_bridge_toml=$("$PYTHON_BIN" -c \
-      'import json, sys; print(json.dumps(sys.argv[1], ensure_ascii=False))' \
-      "$render_dir/herdr-codex-team/herdr_mcp.py")
     # The final managed bridge path does not exist until every rendered profile
     # has passed validation. Launch the byte-identical staged bridge here so a
     # failed install still leaves all destination files untouched.
@@ -236,6 +238,7 @@ for role in planner coder reviewer; do
        "$PYTHON_BIN" "$BRIDGE_TARGET" 2>&1); then
     die "Rendered $role profile failed policy self-check: $integrity_error"
   fi
+  [[ $(team_role_cli "$role") == codex ]] || continue
   if ! rendered_permissions=$(CODEX_HOME="$render_dir" HERDR_BIN_PATH="$HERDR_BIN" \
        codex "${validation_args[@]}" 2>"$validation_log"); then
     if [[ -s "$validation_log" ]]; then

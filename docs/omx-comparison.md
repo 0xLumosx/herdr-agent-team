@@ -77,8 +77,7 @@ and
 
 The useful ideas adopted here are intentionally narrower:
 
-1. a per-invocation `run_id` correlates fields written by one helper run; it is
-   not injected into Herdr and does not establish live identity;
+1. a per-invocation `run_id` identifies the launch record for the Planner bridge. The bridge verifies the live workspace and panes independently;
 2. `current.json` has an explicit schema and is replaced by a same-directory
    temporary-file rename;
 3. exact ordered roots, live names, workspace ID, and pane IDs are recorded;

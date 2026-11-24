@@ -277,11 +277,66 @@ process_uses_profile() {
   json_process_uses_profile "$payload" "$role"
 }
 
+terminal_response_lines() {
+  # Codex renders a bullet on the first reply line and indents its continuation.
+  sed -E 's/^(• |  )//'
+}
+
 read_agent() {
   local role=$1
   local live_name
   live_name=$(team_agent_for_role "$role") || die "Unknown role: $role"
-  herdr agent read "$live_name" --source recent-unwrapped --lines "$READ_LINES" 2>/dev/null || true
+  herdr agent read "$live_name" --source recent-unwrapped --lines "$READ_LINES" 2>/dev/null | terminal_response_lines || true
+}
+
+read_full_evidence() {
+  local role=$1 live_name payload status
+  live_name=$(team_agent_for_role "$role") || die "Unknown role: $role"
+  payload=$(herdr agent get "$live_name") || die "Cannot resolve live $role."
+  # Codex's full-screen renderer can omit the first lines of a completed reply.
+  # Read the native final messages from this pane's verified chat for this run.
+  if PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$SCRIPT_DIR" python3 - "$payload" "$role" "$FULL_TIMEOUT_MS" "$2" "$3" "$4" <<'PY'
+import json, os, subprocess, sys, time
+from pathlib import Path
+from herdr_mcp import active_thread, codex_turn_cursor
+
+agent = json.loads(sys.argv[1])["result"]["agent"]
+if agent["agent"] != "codex":
+    sys.exit(3)
+agent["thread_id"] = active_thread(agent, lambda pane: subprocess.check_output(
+    ["herdr", "agent", "read", pane, "--source", "visible", "--lines", "12"], text=True))
+cursor = codex_turn_cursor(os.environ.get("CODEX_HOME", Path.home() / ".codex"), agent)
+if not cursor:
+    sys.exit(3)
+with cursor[0].open("rb") as stream:
+    seen = False
+    deadline = time.monotonic() + int(sys.argv[3]) / 1000
+    while True:
+        pos = stream.tell()
+        line = stream.readline()
+        if not line.endswith(b"\n"):
+            # The Planner's terminal can render its last token before Codex
+            # flushes task_complete. Both worker turns have already finished.
+            if seen or sys.argv[2] != "planner" or time.monotonic() >= deadline:
+                break
+            stream.seek(pos)
+            time.sleep(0.1)
+            continue
+        event = json.loads(line)
+        p = event["payload"]
+        if event["type"] == "event_msg" and p.get("type") == "task_complete":
+            reply = p.get("last_agent_message") or ""
+            if any(marker in reply for marker in sys.argv[4:]):
+                print(reply)
+                seen = True
+PY
+  then
+    return 0
+  else
+    status=$?
+  fi
+  [[ $status == 3 ]] || die "Could not verify this run's $role conversation."
+  read_agent "$role"
 }
 
 read_named_agent_strict() {
@@ -293,7 +348,7 @@ read_named_agent_strict() {
     printf '%s\n' "$payload" >&2
     die "Could not read retained transcript for live '$live_name'."
   fi
-  printf '%s\n' "$payload"
+  printf '%s\n' "$payload" | terminal_response_lines
 }
 
 require_named_runtime() {
@@ -330,8 +385,8 @@ require_named_runtime() {
   fi
   [[ "$live_name" == "$live_name_expected" ]] || \
     die "Target '$live_name_expected' resolved to unexpected live name '${live_name:-unknown}'."
-  [[ "$agent_kind" == 'codex' ]] || \
-    die "Live name '$live_name_expected' is agent kind '${agent_kind:-unknown}', not codex."
+  [[ "$agent_kind" == codex || "$agent_kind" == claude || "$agent_kind" == agy ]] || \
+    die "Live name '$live_name_expected' has unsupported agent kind '${agent_kind:-unknown}'."
   [[ -n "$pane_id" ]] || die "Live '$live_name_expected' did not expose its pane ID."
   [[ -n "$workspace_id" ]] || die "Live '$live_name_expected' did not expose its workspace ID."
   [[ "$state_change_seq" =~ ^[0-9]+$ ]] || \
@@ -340,8 +395,8 @@ require_named_runtime() {
     printf '%s\n' "$process_payload" >&2
     die "Could not inspect the foreground process for live '$live_name_expected'."
   fi
-  process_uses_profile "$process_payload" "$role" || \
-    die "Live '$live_name_expected' is not verifiably running with generic --profile $role. Restart it through start.sh."
+  team_process_policy "$process_payload" "$role" "$agent_kind" || \
+    die "Live '$live_name_expected' does not expose its managed $role configuration. Restart it through start.sh."
   [[ "$interactive_ready" == 'true' && "$launch_pending" == 'false' ]] || \
     die "Live '$live_name_expected' is not interactively ready (ready=${interactive_ready:-unknown}, launch_pending=${launch_pending:-unknown})."
   case "$agent_status" in
@@ -349,6 +404,7 @@ require_named_runtime() {
     *) die "Live '$live_name_expected' must be settled before testing; current state is '${agent_status:-unknown}'." ;;
   esac
   REQUIRED_AGENT_WORKSPACE=$workspace_id
+  REQUIRED_AGENT_PANE=$pane_id
   REQUIRED_AGENT_STATE_CHANGE_SEQ=$state_change_seq
 }
 
@@ -431,6 +487,7 @@ prompt_and_wait() {
   local role=$1
   local prompt=$2
   local timeout=$3
+  shift 3
   local live_name
   local result
 
@@ -442,6 +499,14 @@ prompt_and_wait() {
   if ! result=$(herdr agent prompt "$live_name" "$prompt" --wait --timeout "$timeout" 2>&1); then
     printf '%s\n' "$result" >&2
     die "Herdr prompt to '$live_name' failed. Inspect with: herdr agent get $live_name"
+  fi
+  if (( $# )); then
+    # After /resume a transient idle event can precede the actual turn.
+    herdr pane wait-output "$REQUIRED_AGENT_PANE" "$@" \
+      --source recent-unwrapped --lines 60 --timeout "$timeout" >/dev/null || \
+      die "The live $role pane did not show the expected turn result: $*"
+    herdr agent wait "$live_name" --until done --until idle --timeout "$timeout" >/dev/null || \
+      die "The live $role pane did not settle after returning its result."
   fi
   printf '%s\n' "$result"
   require_named_runtime "$role" "$live_name"
@@ -683,12 +748,12 @@ examples/multi-team.md"
     grep -Fq 'communication-test exception remains token-only' "$PROJECT_ROOT/prompts/$role.md" || \
       die "$role prompt does not preserve the token-only communication-test exception."
   done
-  grep -Eq '^model[[:space:]]*=[[:space:]]*"gpt-5\.6-luna"[[:space:]]*$' \
+  grep -Eq '^model[[:space:]]*=[[:space:]]*"gpt-6\.2-sol"[[:space:]]*$' \
     "$PROJECT_ROOT/profiles/coder.config.toml" || \
-    die 'Coder template does not default to gpt-5.6-luna.'
-  grep -Eq '^model_reasoning_effort[[:space:]]*=[[:space:]]*"high"[[:space:]]*$' \
+    die 'Coder template does not default to gpt-6.2-sol.'
+  grep -Eq '^model_reasoning_effort[[:space:]]*=[[:space:]]*"xhigh"[[:space:]]*$' \
     "$PROJECT_ROOT/profiles/coder.config.toml" || \
-    die 'Coder template does not default to high reasoning effort.'
+    die 'Coder template does not default to xhigh reasoning effort.'
   [[ $(find "$PROJECT_ROOT/profiles" -maxdepth 1 -type f -name '*.config.toml' | wc -l | tr -d ' ') -eq 3 ]] || \
     die 'The installer architecture must retain exactly three generic role profile templates.'
   [[ $(grep -Foc 'PLANNER_TO_CODER_CHALLENGE' "$PROJECT_ROOT/tests/prompts/03-planner-to-coder.md") -eq 1 ]] || \
@@ -964,6 +1029,8 @@ HERDR_CODER_DONE_fixture'
        IMPLEMENTATION_DONE 'TASK_ID: task-1' 'ROUND: 1' 'HANDOFF_ID: handoff-1' \
        HERDR_CODER_DONE_fixture) -eq 1 ]] || \
     die 'Response-correlation parser rejected a valid consecutive block.'
+  [[ $(printf '%s\n' "$correlation_fixture" | sed -e '1s/^/• /' -e '2,$s/^/  /' | terminal_response_lines) == "$correlation_fixture" ]] || \
+    die 'Codex terminal decorations obscured a valid response block.'
   correlation_fixture='IMPLEMENTATION_DONE
 ROUND: 1
 TASK_ID: task-1
@@ -1240,6 +1307,17 @@ HERDR_CODER_DONE_fixture'
     fi
     json_prompt_has_effective_role_permissions "$rendered_prompt" "$role" || \
       die "Rendered $role profile did not enable networking with its exact local filesystem boundary."
+    python3 -c '
+import json, pathlib, sys
+skill = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+mode = {"planner": "Use the task mode that matches", "coder": "Use change mode",
+        "reviewer": "Use review mode"}[sys.argv[2]]
+texts = (part.get("text", "") for message in json.load(sys.stdin)
+         if message.get("role") == "developer" for part in message.get("content", []))
+sys.exit(0 if any("Apply the embedded Stop That Shit skill on every task." in text
+                  and mode in text and skill in text for text in texts) else 1)
+' "$PROJECT_ROOT/prompts/stop-that-shit/SKILL.md" "$role" <<<"$rendered_prompt" || \
+      die "Rendered $role developer instructions do not require and include the full Stop That Shit skill."
     for native_agent_marker in \
       spawn_agent followup_task send_message wait_agent interrupt_agent list_agents; do
       if grep -Fq "$native_agent_marker" <<<"$rendered_prompt"; then
@@ -1322,7 +1400,7 @@ case "${1-}:${2-}" in
   workspace:create)
     [[ ${3-} == --help ]] && exit 0
     [[ -n ${MOCK_HERDR_CALL_LOG:-} ]] && printf '%s\n' "$*" >>"$MOCK_HERDR_CALL_LOG"
-    : >"$MOCK_WORKSPACE_MARKER"
+    printf '%s\n' "$*" >"$MOCK_WORKSPACE_MARKER"
     if [[ ${MOCK_HERDR_MODE:-} == missing-root-pane ]]; then
       printf '%s\n' '{"result":{"workspace":{"workspace_id":"mock-workspace"}}}'
     else
@@ -1350,6 +1428,12 @@ case "${1-}:${2-}" in
       printf '%s\n' 'agent_name_taken: github-coder' >&2
       exit 1
     fi
+    ;;
+  agent:prompt)
+    [[ ${3-} == --help ]] && exit 0
+    [[ ${4-} == "/rename ${3-} "* ]] || exit 1
+    uuid=$(python3 -c 'import sys,uuid; print(uuid.uuid5(uuid.NAMESPACE_URL, sys.argv[1]+sys.argv[2]))' "$(<"$MOCK_WORKSPACE_MARKER")" "$3")
+    printf '{"id":"%s","thread_name":"%s"}\n' "$uuid" "${4#/rename }" >>"$CODEX_HOME/session_index.jsonl"
     ;;
   agent:get)
     [[ ${3-} == --help ]] && exit 0
@@ -1415,12 +1499,14 @@ case "${1-}:${2-}" in
         final_project_root=${MOCK_FINAL_PROJECT_ROOT:-$MOCK_PROJECT_ROOT}
         final_ready_json=${MOCK_FINAL_READY_JSON:-true}
         final_launch_pending_json=${MOCK_FINAL_LAUNCH_PENDING_JSON:-false}
+        uuid=$(python3 -c 'import sys,uuid; print(uuid.uuid5(uuid.NAMESPACE_URL, sys.argv[1]+sys.argv[2]))' "$(<"$MOCK_WORKSPACE_MARKER")" "$3")
+        session_fields=$(printf '"terminal_title":"%s","agent_session":{"source":"herdr:codex","agent":"codex","kind":"id","value":"%s"}' "$uuid" "$uuid")
         if [[ ${MOCK_OMIT_LAUNCH_PENDING:-0} == 1 ]]; then
-          printf '{"result":{"agent":{"name":"%s","agent":"codex","agent_status":"idle","interactive_ready":%s,"pane_id":"%s","workspace_id":"mock-workspace","cwd":"%s","foreground_cwd":"%s"}}}\n' \
-            "$3" "$final_ready_json" "$pane" "$final_project_root" "$final_project_root"
+          printf '{"result":{"agent":{"name":"%s","agent":"codex","agent_status":"idle","interactive_ready":%s,"pane_id":"%s","workspace_id":"mock-workspace" ,%s,"cwd":"%s","foreground_cwd":"%s"}}}\n' \
+            "$3" "$final_ready_json" "$pane" "$session_fields" "$final_project_root" "$final_project_root"
         else
-          printf '{"result":{"agent":{"name":"%s","agent":"codex","agent_status":"idle","interactive_ready":%s,"launch_pending":%s,"pane_id":"%s","workspace_id":"mock-workspace","cwd":"%s","foreground_cwd":"%s"}}}\n' \
-            "$3" "$final_ready_json" "$final_launch_pending_json" "$pane" "$final_project_root" "$final_project_root"
+          printf '{"result":{"agent":{"name":"%s","agent":"codex","agent_status":"idle","interactive_ready":%s,"launch_pending":%s,"pane_id":"%s","workspace_id":"mock-workspace" ,%s,"cwd":"%s","foreground_cwd":"%s"}}}\n' \
+            "$3" "$final_ready_json" "$final_launch_pending_json" "$pane" "$session_fields" "$final_project_root" "$final_project_root"
         fi
       fi
       exit 0
@@ -2378,6 +2464,17 @@ MOCK_HERDR
   printf '[OK] start.sh enforces installed approval/permission policy before startup\n'
 
   cp -p -- "$codex_test_dir/coder.config.toml" "$temporary_root/coder.config.toml.policy-clean"
+  local notice_profile="$temporary_root/coder-notice-counters.toml"
+  local clean_policy
+  clean_policy=$(profile_installed_policy_sha256 "$codex_test_dir/coder.config.toml")
+  cp -- "$codex_test_dir/coder.config.toml" "$notice_profile"
+  printf '\n[tui.model_availability_nux]\ngpt-6-astra = 4\n"gpt-6.1-sol" = 3\n' >> "$notice_profile"
+  printf '\n[projects."/some project"]\ntrust_level = "trusted"\n' >> "$notice_profile"
+  [[ $(profile_installed_policy_sha256 "$notice_profile") == "$clean_policy" ]] || \
+    die 'Native Codex notice counters or folder trust changed the managed policy digest.'
+  printf '\n[permissions.extra]\nextends = ":allow-all"\n' >> "$notice_profile"
+  [[ $(profile_installed_policy_sha256 "$notice_profile") != "$clean_policy" ]] || \
+    die 'Unmanaged permissions after the notice counters escaped the policy digest.'
   awk '
     BEGIN { changed = 0 }
     !changed && /^model_reasoning_effort[[:space:]]*=/ {
@@ -2594,15 +2691,25 @@ run_route_case() {
   prompt=$(<"$prompt_file")
   prompt=$(render_team_prompt "$prompt")
   [[ "$prompt" != *'{{'* ]] || die "Unresolved team placeholder in $prompt_file."
-  unique_challenge=$(run_token "$challenge_marker")
+  # Keep the run-specific token on one line in a half-width Codex pane.
+  unique_challenge=$(run_token "${challenge_marker#PLANNER_TO_}")
   unique_response=${unique_challenge/CHALLENGE/OK}
   prompt=${prompt//"$challenge_marker"/"$unique_challenge"}
 
   target_live_name=$(team_agent_for_role "$target")
   printf 'Asking live %s to route to live %s...\n' "$PLANNER_AGENT" "$target_live_name"
-  prompt_and_wait planner "$prompt" "$TEST_TIMEOUT_MS" >/dev/null
+  prompt_and_wait planner "$prompt" "$TEST_TIMEOUT_MS" --match "$unique_response" >/dev/null
   require_runtime "$target"
-  after=$(read_agent "$target")
+  # A Herdr history capture can leave the idle Codex viewport scrolled up.
+  # Return to its current reply only when Codex displays that specific control.
+  after=$(herdr pane read "$REQUIRED_AGENT_PANE" --source visible --lines 25)
+  if [[ "$after" == *'Back to bottom'* && "$after" == *'esc latest'* ]]; then
+    herdr agent send-keys "$target_live_name" esc >/dev/null
+    herdr pane wait-output "$REQUIRED_AGENT_PANE" --match "$unique_response" \
+      --source recent-unwrapped --lines 60 --timeout "$TEST_TIMEOUT_MS" >/dev/null || \
+      die "The target pane did not show this handoff's reply: $unique_response"
+  fi
+  after=$(herdr pane read "$REQUIRED_AGENT_PANE" --source recent-unwrapped --lines "$READ_LINES")
   response_count=$(printf '%s\n' "$after" | token_line_count "$unique_response")
 
   if ! grep -Fq -- "$unique_challenge" <<<"$after"; then
@@ -3180,14 +3287,15 @@ Run-specific verification contract:
 - Do not modify, stage, commit, or weaken test_calculator.py. The only expected working-tree change is calculator.py."
 
   printf 'Running isolated full workflow in %s\n' "$test_dir"
-  if ! prompt_and_wait planner "$prompt" "$FULL_TIMEOUT_MS" >/dev/null; then
+  if ! prompt_and_wait planner "$prompt" "$FULL_TIMEOUT_MS" \
+      --regex "(?m)^(?:• |  )?($full_pass_token|$full_fail_token)[[:blank:]]*$" >/dev/null; then
     printf 'Full-test workspace preserved for diagnosis: %s\n' "$test_dir" >&2
     exit 1
   fi
 
-  coder_after=$(read_agent coder)
-  reviewer_after=$(read_agent reviewer)
-  planner_after=$(read_agent planner)
+  coder_after=$(read_full_evidence coder "$task_id" "$full_pass_token" "$full_fail_token")
+  reviewer_after=$(read_full_evidence reviewer "$task_id" "$full_pass_token" "$full_fail_token")
+  planner_after=$(read_full_evidence planner "$task_id" "$full_pass_token" "$full_fail_token")
   planner_pass_count=$(printf '%s\n' "$planner_after" | exact_line_count "$full_pass_token")
   planner_fail_count=$(printf '%s\n' "$planner_after" | exact_line_count "$full_fail_token")
   require_runtime planner coder reviewer

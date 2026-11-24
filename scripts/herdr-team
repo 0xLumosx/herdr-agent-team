@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Open the local project team, or select a CLI in a managed role pane."""
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+
+SCRIPTS = Path(__file__).resolve().parent
+
+
+def open_team():
+    cwd = Path.cwd().resolve()
+    slug = re.sub(r"[^a-z0-9]+", "-", cwd.name.lower()).strip("-")[:11] or "project"
+    name = "t-" + slug + "-" + hashlib.sha256(os.fsencode(cwd)).hexdigest()[:8]
+    env = dict(os.environ, HERDR_SESSION=name, HERDR_TEAM_SHORTCUT="1")
+    env.setdefault("HERDR_LANG", "zh-CN")
+    for key in ("HERDR_SOCKET_PATH", "TEAM_PREFIX", "PLANNER_CLI", "CODER_CLI", "REVIEWER_CLI"):
+        env.pop(key, None)
+    base = Path(env.get("CODEX_HOME", Path.home() / ".codex")) / "herdr-codex-team/state/v1/teams" / ("prefixed-" + name)
+    base.mkdir(parents=True, exist_ok=True, mode=0o700)
+    log = base / "open.log"
+    client = subprocess.Popen(["herdr", "--session", name], env=env)
+    try:
+        deadline = time.monotonic() + 30
+        while subprocess.run(["herdr", "status", "server"], env=env, capture_output=True).returncode:
+            if client.poll() is not None:
+                return client.returncode
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Herdr server did not start")
+            time.sleep(0.15)
+        record_path = base / "current.json"
+        record = json.loads(record_path.read_text()) if record_path.is_file() else {}
+        if record.get("status") == "ready" and record["launch"]["primary_cwd"] == str(cwd):
+            team = record["herdr"]
+            listed = subprocess.run(["herdr", "pane", "list", "--workspace", team["workspace_id"]],
+                                    env=env, capture_output=True, text=True)
+            if listed.returncode == 0:
+                panes = json.loads(listed.stdout)["result"]["panes"]
+                identities = {(p["pane_id"], p.get("label")) for p in panes}
+                if all((a["pane_id"], a["name"]) in identities for a in team["agents"].values()):
+                    subprocess.run(["herdr", "workspace", "focus", team["workspace_id"]], env=env,
+                                   stdout=subprocess.DEVNULL, check=True)
+                    return client.wait()
+        with log.open("w") as output:
+            result = subprocess.run([str(SCRIPTS / "open.sh"), "--team", name, "--cwd", str(cwd)],
+                                    env=env, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT)
+        if result.returncode:
+            subprocess.run(["herdr", "notification", "show", "团队启动需要检查", "--body", str(log)], env=env,
+                           stdout=subprocess.DEVNULL)
+        else:
+            record = json.loads((base / "current.json").read_text())
+            subprocess.run(["herdr", "workspace", "focus", record["herdr"]["workspace_id"]], env=env,
+                           stdout=subprocess.DEVNULL, check=True)
+            subprocess.run(["herdr", "agent", "focus", record["herdr"]["agents"]["planner"]["name"]], env=env,
+                           stdout=subprocess.DEVNULL, check=True)
+        code = client.wait()
+        if result.returncode:
+            print(log.read_text(), file=sys.stderr)
+        return result.returncode or code
+    finally:
+        if client.poll() is None:
+            client.terminate()
+            client.wait()
+
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    if args in (["-h"], ["--help"]):
+        print("herdr --team                 在当前项目启动团队\nherdr --team codex|claude|gemini   在角色窗格切换 CLI")
+    elif len(args) == 1 and args[0] in ("codex", "claude", "gemini", "agy") and os.environ.get("HERDR_TEAM_STATE_FILE"):
+        os.execv(str(SCRIPTS / "switch-role.sh"), ["switch-role.sh", "agy" if args[0] == "gemini" else args[0]])
+    elif args or os.environ.get("HERDR_ENV") == "1":
+        sys.exit("在普通终端输入 herdr --team。切换 CLI 时，请先退出当前角色的 CLI，再在该窗格输入 herdr --team claude、gemini 或 codex。")
+    else:
+        sys.exit(open_team())

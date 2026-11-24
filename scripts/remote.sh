@@ -28,6 +28,7 @@ BUNDLE_FILES=(
   scripts/doctor.sh
   scripts/install.sh
   scripts/herdr_mcp.py
+  scripts/providers.py
   scripts/lib/team.sh
   scripts/lib/json.sh
   scripts/lib/digest.sh
@@ -40,6 +41,7 @@ BUNDLE_FILES=(
   prompts/planner.md
   prompts/coder.md
   prompts/reviewer.md
+  prompts/stop-that-shit/SKILL.md
 )
 
 usage() {
@@ -85,6 +87,10 @@ parse_herdr_version() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --planner-cli|--coder-cli|--reviewer-cli)
+      [[ $# -ge 2 && -n "$2" ]] || { printf '%s requires a CLI name\n' "$1" >&2; exit 2; }
+      team_set_role_cli "$1" "$2" || exit 2
+      shift 2 ;;
     --host)
       [[ $# -ge 2 && -z "$HOST" ]] || die 2 '--host requires one value.'
       HOST=$2
@@ -173,6 +179,15 @@ REMOTE_ARGS=(
 )
 [[ $REPAIR_PROFILES -eq 0 ]] || REMOTE_ARGS+=(--repair-profiles)
 [[ $INSTALL_INTEGRATION -eq 0 ]] || REMOTE_ARGS+=(--install-integration)
+for role in planner coder reviewer; do
+  kind=$(team_role_cli "$role") || exit 2
+  case "$role" in
+    planner) selected=${PLANNER_CLI:-} ;;
+    coder) selected=${CODER_CLI:-} ;;
+    reviewer) selected=${REVIEWER_CLI:-} ;;
+  esac
+  [[ -z "$selected" ]] || REMOTE_ARGS+=("--$role-cli" "$kind")
+done
 for add_dir in ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}; do
   REMOTE_ARGS+=(--add-dir "$add_dir")
 done
@@ -222,13 +237,13 @@ if find "$runtime_dir" -type l -print -quit | grep -q .; then
 fi
 required_files=(
   scripts/open.sh scripts/start.sh scripts/doctor.sh scripts/install.sh \
-  scripts/herdr_mcp.py \
+  scripts/herdr_mcp.py scripts/providers.py \
   scripts/lib/team.sh scripts/lib/json.sh scripts/lib/digest.sh \
   scripts/lib/scope.sh scripts/lib/run-state.sh \
   scripts/lib/remote-bootstrap.sh \
   profiles/planner.config.toml profiles/coder.config.toml \
   profiles/reviewer.config.toml prompts/planner.md prompts/coder.md \
-  prompts/reviewer.md
+  prompts/reviewer.md prompts/stop-that-shit/SKILL.md
 )
 for required in "${required_files[@]}"; do
   [[ -f "$runtime_dir/$required" && ! -L "$runtime_dir/$required" ]] || {
@@ -287,7 +302,7 @@ prepare_remote_team() {
   build_remote_command
   printf 'Preparing Team %s on %s (%s) ...\n' "$TEAM" "$HOST" "$PROJECT_DIR"
   set +e
-  COPYFILE_DISABLE=1 tar -C "$PROJECT_ROOT" -cf - "${BUNDLE_FILES[@]}" | \
+  COPYFILE_DISABLE=1 tar --format=ustar -C "$PROJECT_ROOT" -cf - "${BUNDLE_FILES[@]}" | \
     ssh -T "$HOST" "$remote_command"
   pipeline_status=("${PIPESTATUS[@]}")
   set -e

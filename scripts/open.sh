@@ -38,16 +38,18 @@ NO_FOCUS=0
 REPAIR_PROFILES=0
 INSTALL_INTEGRATION=0
 ADD_DIRS=()
+LINK_IDS=()
 
 usage() {
   printf '%s\n' \
-    'Usage: ./scripts/open.sh [--no-focus] [--repair-profiles] [--install-integration] [--team PREFIX] --cwd PROJECT_DIR [--add-dir DIR]...' \
+    'Usage: ./scripts/open.sh [--planner-cli CLI] [--coder-cli CLI] [--reviewer-cli CLI] [--no-focus] [--repair-profiles] [--install-integration] [--team PREFIX] --cwd PROJECT_DIR [--add-dir DIR]...' \
     '' \
     'Opens one managed three-agent team in the current Herdr session.' \
     'If all three exact agents are healthy, the current compatible live Team is left running.' \
     'If none exist, a new team is created through start.sh.' \
+    '--link-current PLANNER_UUID CODER_UUID REVIEWER_UUID registers the three explicitly selected live chats after verification.' \
     '--repair-profiles explicitly backs up and refreshes managed profiles plus the Planner bridge, but only when no Agent is live in this Herdr session.' \
-    '--install-integration explicitly permits Herdr to install/update its Codex hooks and configuration.' \
+    '--install-integration explicitly permits Herdr to install/update hooks for the selected CLIs.' \
     'A partial or unhealthy team is never overwritten or silently replaced.'
 }
 
@@ -60,6 +62,15 @@ die() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --planner-cli|--coder-cli|--reviewer-cli)
+      [[ $# -ge 2 && -n "$2" ]] || { printf '%s requires a CLI name\n' "$1" >&2; exit 2; }
+      team_set_role_cli "$1" "$2" || exit 2
+      shift 2 ;;
+    --link-current)
+      [[ $# -ge 4 && ${#LINK_IDS[@]} -eq 0 ]] || die 2 '--link-current requires exactly three role UUIDs.'
+      LINK_IDS=("$2" "$3" "$4")
+      shift 4
+      ;;
     --no-focus)
       NO_FOCUS=1
       shift
@@ -193,20 +204,17 @@ fi
 
 case "$live_count" in
   0)
+    [[ ${#LINK_IDS[@]} -eq 0 ]] || die 3 '--link-current requires a running managed team.'
     integration_status=$(herdr integration status 2>&1 || true)
-    if ! printf '%s\n' "$integration_status" | grep -Eq '^codex: current([[:space:]]|$)'; then
-      if [[ $INSTALL_INTEGRATION -ne 1 ]]; then
-        printf 'INTEGRATION_REQUIRED: Herdr Codex integration is missing or outdated.\n' >&2
-        printf 'Installing it may change executable hooks, hooks.json, and Codex configuration. Review that boundary, then retry with --install-integration.\n' >&2
-        exit 17
+    integrations=$(team_integrations) || exit 2
+    while IFS= read -r integration; do
+      if ! grep -Eq "^$integration: current([[:space:]]|$)" <<<"$integration_status"; then
+        [[ $INSTALL_INTEGRATION -eq 1 ]] || die 17 "INTEGRATION_REQUIRED: $integration. Retry with --install-integration."
+        herdr integration install "$integration" || die 4 "Could not install $integration integration."
+        integration_status=$(herdr integration status)
+        grep -Eq "^$integration: current([[:space:]]|$)" <<<"$integration_status" || die 4 "$integration integration is still unavailable."
       fi
-      printf 'Explicit integration installation approved; Herdr may update Codex hooks and configuration.\n'
-      herdr integration install codex || \
-        die 4 'Herdr Codex integration installation failed; no Team was created.'
-      integration_status=$(herdr integration status 2>&1 || true)
-      printf '%s\n' "$integration_status" | grep -Eq '^codex: current([[:space:]]|$)' || \
-        die 4 'Herdr Codex integration is still missing or outdated after installation.'
-    fi
+    done <<<"$integrations"
     profile_count=0
     for role in planner coder reviewer; do
       profile_path=${CODEX_HOME:-"$HOME/.codex"}/$role.config.toml
@@ -243,8 +251,34 @@ case "$live_count" in
       printf 'No agent was stopped, replaced, or restarted.\n' >&2
       exit 4
     fi
+    if [[ ${#LINK_IDS[@]} -gt 0 ]]; then
+      source "$SCRIPT_DIR/lib/run-state.sh"
+      codex_dir=$(cd -- "${CODEX_HOME:-$HOME/.codex}" && pwd -P)
+      run_state_configure "$codex_dir" "$TEAM_MODE" "$TEAM_PREFIX_EFFECTIVE" || die 4 'Cannot locate the team launch record.'
+      [[ -f "$RUN_STATE_FILE" && ! -L "$RUN_STATE_FILE" ]] || die 4 'Missing team launch record.'
+      idx=0
+      for role in planner coder reviewer; do
+        live_name=$(team_agent_for_role "$role")
+        agent_payload=$(herdr agent get "$live_name") || die 4 "Cannot inspect $live_name."
+        active=$(HERDR_BIN_PATH="$(command -v herdr)" python3 "$SCRIPT_DIR/herdr_mcp.py" --thread-id <<<"$agent_payload") || die 4 "Cannot verify $live_name."
+        [[ "$active" == "${LINK_IDS[$idx]}" ]] || die 4 "The selected $role conversation differs from the supplied UUID."
+        idx=$((idx + 1))
+      done
+      python3 "$SCRIPT_DIR/herdr_mcp.py" --bind-launch "$RUN_STATE_FILE" "${LINK_IDS[@]}" || die 4 'Conversation registration failed.'
+      printf 'CONVERSATIONS_LINKED: %s\n' "${LINK_IDS[0]}"
+    fi
     if [[ $NO_FOCUS -eq 0 ]]; then
       herdr agent focus "$PLANNER_AGENT" >/dev/null
+    fi
+    if [[ -z "${RUN_STATE_FILE:-}" ]]; then
+      source "$SCRIPT_DIR/lib/run-state.sh"
+      local_home=${CODEX_HOME:-$HOME/.codex}
+      if [[ -d "$local_home" ]]; then
+        run_state_configure "$(cd -- "$local_home" && pwd -P)" "$TEAM_MODE" "$TEAM_PREFIX_EFFECTIVE"
+      fi
+    fi
+    if [[ -f "${RUN_STATE_FILE:-}" ]]; then
+      CODEX_HOME="${RUN_STATE_CODEX_DIR}" HERDR_BIN_PATH="$(command -v herdr)" python3 "$SCRIPT_DIR/herdr_mcp.py" --ensure-observer "$RUN_STATE_FILE"
     fi
     printf '\nTEAM_REUSED: %s (current compatible live Team verified; open.sh restarted nothing)\n' "$TEAM_DISPLAY"
     ;;

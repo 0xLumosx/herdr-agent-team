@@ -398,9 +398,9 @@ run_state_render_current() {
         herdr: {
           workspace_id: $workspace_id,
           agents: {
-            planner: {name: $planner_name, pane_id: $planner_pane, sandbox: "read-only"},
-            coder: {name: $coder_name, pane_id: $coder_pane, sandbox: "workspace-write"},
-            reviewer: {name: $reviewer_name, pane_id: $reviewer_pane, sandbox: "read-only"}
+            planner: {name: $planner_name, cli: $planner_cli, pane_id: $planner_pane, sandbox: "read-only"},
+            coder: {name: $coder_name, cli: $coder_cli, pane_id: $coder_pane, sandbox: "workspace-write"},
+            reviewer: {name: $reviewer_name, cli: $reviewer_cli, pane_id: $reviewer_pane, sandbox: "read-only"}
           }
         },
         authorities: {
@@ -422,10 +422,13 @@ run_state_render_current() {
       --argjson no_focus "$([[ $NO_FOCUS -eq 1 ]] && printf true || printf false)" \
       --argjson non_git "$([[ $REQUESTED_HAS_NON_GIT -eq 1 ]] && printf true || printf false)" \
       --arg workspace_id "${workspace_id:-}" \
+      --arg planner_cli "$(team_role_cli planner)" \
       --arg planner_name "$PLANNER_AGENT" \
       --arg planner_pane "${root_pane_id:-}" \
+      --arg coder_cli "$(team_role_cli coder)" \
       --arg coder_name "$CODER_AGENT" \
       --arg coder_pane "${coder_pane_id:-}" \
+      --arg reviewer_cli "$(team_role_cli reviewer)" \
       --arg reviewer_name "$REVIEWER_AGENT" \
       --arg reviewer_pane "${reviewer_pane_id:-}" \
       --args "$jq_filter" ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}
@@ -441,7 +444,7 @@ import sys
     run_id, status, started_at, updated_at, team_mode, team_prefix,
     team_display, primary_cwd, no_focus, non_git, workspace_id,
     planner_name, planner_pane, coder_name, coder_pane,
-    reviewer_name, reviewer_pane, separator, *add_dirs
+    reviewer_name, reviewer_pane, planner_cli, coder_cli, reviewer_cli, separator, *add_dirs
 ) = sys.argv[1:]
 if separator != "--":
     raise SystemExit(2)
@@ -465,9 +468,9 @@ payload = {
     "herdr": {
         "workspace_id": workspace_id,
         "agents": {
-            "planner": {"name": planner_name, "pane_id": planner_pane, "sandbox": "read-only"},
-            "coder": {"name": coder_name, "pane_id": coder_pane, "sandbox": "workspace-write"},
-            "reviewer": {"name": reviewer_name, "pane_id": reviewer_pane, "sandbox": "read-only"},
+            "planner": {"name": planner_name, "cli": planner_cli, "pane_id": planner_pane, "sandbox": "read-only"},
+            "coder": {"name": coder_name, "cli": coder_cli, "pane_id": coder_pane, "sandbox": "workspace-write"},
+            "reviewer": {"name": reviewer_name, "cli": reviewer_cli, "pane_id": reviewer_pane, "sandbox": "read-only"},
         },
     },
     "authorities": {
@@ -484,7 +487,7 @@ sys.stdout.write("\n")
     "$NO_FOCUS" "$REQUESTED_HAS_NON_GIT" "${workspace_id:-}" \
     "$PLANNER_AGENT" "${root_pane_id:-}" \
     "$CODER_AGENT" "${coder_pane_id:-}" \
-    "$REVIEWER_AGENT" "${reviewer_pane_id:-}" -- \
+    "$REVIEWER_AGENT" "${reviewer_pane_id:-}" "$(team_role_cli planner)" "$(team_role_cli coder)" "$(team_role_cli reviewer)" -- \
     ${ADD_DIRS[@]+"${ADD_DIRS[@]}"}
 }
 

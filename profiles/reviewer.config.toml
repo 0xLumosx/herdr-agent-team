@@ -24,3 +24,11 @@ permissions.herdr_read_only_network.network.enabled = true
 # shell command run by Reviewer.
 shell_environment_policy.set.PYTHONDONTWRITEBYTECODE = "1"
 shell_environment_policy.set.PYTEST_ADDOPTS = "--capture=sys -p no:cacheprovider"
+
+# Per-conversation SSH destination shared by the three roles.
+mcp_servers.herdr_team_ssh.command = "__HERDR_CODEX_TEAM_PYTHON__"
+mcp_servers.herdr_team_ssh.args = ["__HERDR_CODEX_TEAM_BRIDGE__", "--ssh", "reviewer"]
+mcp_servers.herdr_team_ssh.env_vars = ["HOME", "PATH", "CODEX_HOME", "HERDR_BIN_PATH", "HERDR_ENV", "HERDR_TEAM_RUN_ID", "HERDR_PANE_ID", "HERDR_SOCKET_PATH", "HERDR_SESSION", "HERDR_SSH_CONFIG", "SSH_AUTH_SOCK"]
+mcp_servers.herdr_team_ssh.enabled_tools = ["remote_context", "ssh_read"]
+mcp_servers.herdr_team_ssh.default_tools_approval_mode = "approve"
+mcp_servers.herdr_team_ssh.tool_timeout_sec = 135

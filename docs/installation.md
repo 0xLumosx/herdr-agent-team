@@ -8,7 +8,9 @@ host. Re-run the same command to reuse a complete healthy live Team.
 
 ## Requirements
 
-The inspected baseline is Herdr 0.8.2 and Codex CLI 0.149.1. The scripts check
+Herdr 0.9.5 on macOS was tested with Codex CLI 0.171.0. After upgrading Herdr, run `herdr integration status` and update the integrations marked outdated for your roles. For example, `herdr integration install codex` installs the version that matches the new binary.
+
+The original launcher baseline used Herdr 0.8.2 and Codex CLI 0.149.1. Linked recovery was exercised on Herdr 0.8.2 with Codex CLI 0.160.1 and 0.171.0. It needs the Codex thread-ID footer and title, plus the in-pane commands `/rename <name>` and `/resume <UUID>`. The scripts check
 the capabilities they use and fail closed on incompatible behavior.
 
 Local requirements:
@@ -92,13 +94,13 @@ Verify a managed Team after startup:
 ```
 
 After entering or attaching the intended session, use the same `open.sh`
-command to create or reuse the Team. Reattach the UI with the commands below;
-a saved launch record does not store or restore a Codex conversation.
+command to create or reuse the Team. To restore all three linked conversations,
+select the saved chat in the Planner with `/resume`.
 
 ## Remote project
 
-The remote host needs Codex, Herdr, Bash, Git, Python 3, `tar`, and the project
-directories. Authenticate Codex on the remote host first. The remote host does
+The remote host needs the selected role CLIs, Herdr, Bash, Git, Python 3, `tar`, and the project
+directories. Sign in to each selected CLI on the remote host first. The remote host does
 not need a checkout of this repository; `remote.sh` streams a checked launcher
 bundle into a private temporary directory and removes it afterward.
 
@@ -113,12 +115,12 @@ cd /path/to/herdr-codex-team
 ```
 
 The paths after `--cwd` and `--add-dir` are remote absolute paths. The local
-terminal renders the Herdr UI; the panes, Codex processes, and project files
+terminal renders the Herdr UI; the panes, role CLI processes, and project files
 remain on `user@server`.
 
 If first-time remote Herdr setup opens an initial UI, press `Ctrl+B`, release
 it, then press lowercase `q`. That detaches only that client; `remote.sh` then
-continues automatically. If remote Codex integration is missing, the script
+continues automatically. If a selected remote CLI integration is missing, the script
 describes the global hook/configuration change and asks before installing it.
 
 If the UI does not open automatically, attach manually from a fresh, normal
