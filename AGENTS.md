@@ -1,6 +1,6 @@
 # Herdr Agent Team 开发指南
 
-本文件供修改本仓库的编码 agent 使用。Herdr 管理窗格和消息投递，各 CLI 保存自己的对话历史，本仓库负责启动三个角色、关联会话和共享 SSH 目的地。若你正在受管 Herdr 窗格中工作，按该窗格的角色指令执行任务。Planner 负责派单和验收，Coder 执行获准的修改，Reviewer 只读审查。
+本文件供修改本仓库的编码 agent 使用。Herdr 管理窗格和消息投递，各 CLI 保存自己的对话历史，本仓库负责启动三个角色、关联会话和共享 SSH 目的地。若你正在受管 Herdr 窗格中工作，按该窗格的角色指令执行任务。Planner 与用户核对方案后派单并验收。Coder 执行实现任务与转交的审查修正，遇阻找 Planner。Reviewer 只读审查，先与 Planner 澄清，必要时向用户提问，最终审查报告只在 Reviewer 窗格展示。Planner 在自己的窗格给出验收决定。
 
 ## 从哪里改
 
@@ -25,4 +25,4 @@
 
 ## Git 提交
 
-提交或推送前取得用户批准。提交使用 `C1TRuSovo831 <c1trusovo@163.com>`，标题写明具体改动，需要区分模块时加 scope，例如 `fix(ssh): restore the linked remote directory`。
+提交或推送前取得用户批准。提交使用 `0xLumosx <c1trusovo@163.com>`，标题写明具体改动，需要区分模块时加 scope，例如 `fix(ssh): restore the linked remote directory`。

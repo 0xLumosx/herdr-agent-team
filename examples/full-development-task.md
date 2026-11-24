@@ -77,8 +77,7 @@ Only Coder may modify application source and tests. Reviewer is read-only and
 must inspect the original requirement, acceptance criteria, surrounding code,
 test evidence, and all available change evidence: actual git status/diff for
 Git-backed roots, or reported touched paths with explicit evidence gaps for
-non-Git roots. Reviewer returns only PASS or CHANGES_REQUIRED with
-consequence-backed findings.
+non-Git roots. Reviewer can seek clarification from Planner and then the user. Its verdict is PASS or CHANGES_REQUIRED with evidence. Read the final review in the Reviewer pane and the acceptance decision in the Planner pane.
 
 Coder and Reviewer never contact each other. Planner checks the available
 change evidence between handoffs, triages findings, and allows at most four

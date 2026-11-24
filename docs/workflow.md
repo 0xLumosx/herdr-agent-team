@@ -60,7 +60,7 @@ Planner's plan must identify:
 - validation appropriate to the risk;
 - assumptions that could change the implementation.
 
-Planner may resolve low-risk ambiguity from repository evidence. If an unresolved choice would materially change scope or behavior, it asks the user rather than hiding the assumption.
+When the proposed approach is incorrect, Planner explains the evidence and discusses an alternative with the user before dispatch. Planner may resolve low-risk ambiguity from repository evidence. If an unresolved choice would materially change scope or behavior, it asks the user rather than hiding the assumption.
 
 ## 2. Planner to Coder
 
@@ -186,7 +186,7 @@ Review scope:
 - assess correctness, regression, security, error handling, compatibility,
   state/data consistency, edge cases, and test quality
 
-Return only PASS or CHANGES_REQUIRED using the Reviewer role format.
+Return PASS or CHANGES_REQUIRED for a verdict. For clarification, return ASK_PLANNER first, then ASK_USER if discussion leaves a decision for the user. Use the Reviewer correlation fields for all four statuses.
 Do not modify files and do not contact Coder.
 ```
 
@@ -210,7 +210,7 @@ Recommended correction: bounded direction, not an implementation takeover
 
 ## 5. Planner triages findings
 
-Planner checks each finding against the requirement and code. It may reject a finding that is factually wrong, outside scope, purely preferential, or unsupported. It records the reason rather than automatically forwarding every comment.
+Planner relays actionable Reviewer instructions to Coder. For disputed findings, Planner discusses the evidence with Reviewer. For an unresolved product choice, Planner relays Reviewer’s question verbatim and waits for the user. Clarification keeps the task and round, with a fresh handoff ID per exchange.
 
 Accepted corrections go back to Coder in one consolidated, self-contained task. Reviewer never sends instructions directly to Coder.
 
@@ -227,16 +227,10 @@ The initial implementation is round 1. The maximum is four rounds. If the result
 ```text
 NOT APPROVED
 
-Remaining issues:
+Reason for rejection:
 ...
 
-Coder position:
-...
-
-Reviewer position:
-...
-
-Planner recommendation:
+Next action:
 ...
 ```
 
@@ -254,7 +248,7 @@ Reviewer `PASS` does not automatically approve the task. Planner performs a fina
 - compatibility and rollback concerns appropriate to the change;
 - whether any material assumption remains unverified.
 
-Only then may Planner return `APPROVED`, summarizing changes, validation, and remaining non-blocking risks.
+Read the final review report in the Reviewer pane. Planner gives its own `APPROVED` or `NOT APPROVED` decision in the Planner pane, with the reason and any next action.
 
 ## Communication semantics
 

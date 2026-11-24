@@ -590,7 +590,9 @@ class HerdrBridgeTests(unittest.TestCase):
                 response = super().__call__(args, timeout_ms)
                 if tuple(args)[:2] == ("agent", "prompt"):
                     with rollout.open("a") as stream:
-                        for turn, prompt, reply in (("other", "unrelated", "stale"), ("wanted", args[3], "PASS")):
+                        pane_report = "Reviewer report\n" + "pane only\n" * 25 + "End of report"
+                        for turn, prompt, reply in (("other", "unrelated", "stale"),
+                                                    ("wanted", args[3], "PASS\n" + pane_report)):
                             events = [
                                 ("event_msg", {"type": "task_started", "turn_id": turn}),
                                 ("response_item", {"type": "message", "role": "user",
@@ -608,7 +610,7 @@ class HerdrBridgeTests(unittest.TestCase):
         rollout.parent.mkdir(parents=True)
         rollout.write_text(json.dumps({"type": "session_meta", "payload": {"id": thread, "cli_version": "0.160.1"}}) + "\n")
         with mock.patch.object(subprocess, "check_output", return_value="codex-cli 0.171.0"):
-            result = bridge.prompt_agent("reviewer", "Check this change")
+            result = bridge.prompt_agent("reviewer", "Check this change", read_lines=20)
         self.assertEqual(result["transcript"]["source"], "codex-turn")
         self.assertEqual(result["transcript"]["text"], "PASS")
 
@@ -686,6 +688,17 @@ class HerdrBridgeTests(unittest.TestCase):
         self.assertEqual(len(text_calls), 1)
         self.assertEqual(text_calls[0][0][2], "w2:p3")
         self.assertEqual(result["transcript"]["source"], "recent-unwrapped")
+
+    def test_terminal_review_returns_fix_and_question_without_report_history(self):
+        bridge, _runner = self.make_bridge()
+        handoff = "CHANGES_REQUIRED\nTASK_ID: link\nROUND: 1\nHANDOFF_ID: rev\nFix the link target."
+        question = "ASK_USER\nTASK_ID: link\nROUND: 1\nHANDOFF_ID: next\nWhich directory?"
+        history = "truncated old report\nEnd of report\nReviewer report\nold format without a footer\n"
+        history += "› Review the link\n" + handoff
+        history += "\n  ● **Reviewer report**\n" + "pane only\n" * 25 + "> quoted inside the report\n  End of report\n" + question
+        with mock.patch.object(bridge, "_text_runner", return_value=history):
+            result = bridge.prompt_agent("reviewer", "Review the link", read_lines=20)
+        self.assertEqual(result["transcript"]["text"], "› Review the link\n" + handoff + "\n" + question)
 
     def test_identity_mismatch_fails_before_agent_discovery(self):
         bridge, runner = self.make_bridge(runner=FakeHerdrRunner(current_pane="w2:p9"))

@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-在 [Herdr](https://herdr.dev/) 里启动三个协作角色，各用一个终端窗格。每个角色都可以选用 Codex、Claude Code 或 Antigravity CLI。你把任务交给 Planner，由它安排 Coder 改代码、Reviewer 独立审查，最后验收结果。每个角色收到的任务和给出的回复都可以在对应窗格里查看。
+在 [Herdr](https://herdr.dev/) 里启动三个协作角色，各用一个终端窗格。每个角色都可以选用 Codex、Claude Code 或 Antigravity CLI。先和 Planner 讨论方案，再由 Coder 实现。最终审查报告只在右下角的 Reviewer 窗格展示。左侧 Planner 窗格给出验收决定。每个角色收到的任务和给出的回复都可以在对应窗格里查看。
 
 ## 本地快速开始
 
@@ -73,14 +73,16 @@ REVIEWER_MODEL=gemini-3.8-flash-high ./scripts/open.sh --team dex --cwd /path/to
 ## 三个角色如何分工
 
 ```text
-用户 -> Planner -> Coder -> Planner -> Reviewer -> Planner
+用户 ↔ Planner → Coder → Planner ↔ Reviewer
+最终审查报告 → Reviewer 窗格
+验收决定 → Planner 窗格
 ```
 
 | 角色 | 本地文件权限 | 工作内容 |
 | --- | --- | --- |
-| Planner | read-only | 确定任务范围，把实现和审查分别交给同队角色，核对结果并验收 |
-| Coder | workspace-write | 修改项目文件，运行与改动相关的检查 |
-| Reviewer | read-only | 对照原始需求，独立检查代码变更和验证结果 |
+| Planner | read-only | 判断方案是否合理、正确；有分歧或关键歧义时先与你讨论，明确后派单并核对验收结果 |
+| Coder | workspace-write | 执行 Planner 的任务和它转交的 Reviewer 修正指令，运行检查；遇阻向 Planner 报告 |
+| Reviewer | read-only | 独立审查，疑问先与 Planner 讨论；仍需你决定时由 Planner 原文转达，最后在自己的窗格给出审查报告 |
 
 Herdr 运行窗格和会话。本仓库提供角色配置、提示词、按需运行的启动脚本、诊断和测试。分支由 Git 管理，对话历史由各自的 CLI 保存。只有选用 Codex 的角色才强制加载 Stop That Shit。各角色的默认模型、推理强度和技能模式见[角色配置](docs/zh-CN/configuration.md)。
 

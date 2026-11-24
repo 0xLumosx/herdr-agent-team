@@ -79,7 +79,7 @@ with `HERDR_COMMUNICATION_FAILED`. An agent in another team is never a fallback.
 ```
 
 There is no Coder-to-Reviewer channel in the workflow. Planner is the only
-component allowed to schedule another role, decide which findings are valid,
+component allowed to schedule another role, relay Reviewer corrections,
 or declare final approval, and those scheduling rights apply only to exact
 same-team names derived from its own live Herdr identity.
 
@@ -194,7 +194,7 @@ For a Codex 0.171+ worker with a local session log, the bridge matches the submi
 
 | Capability | Planner | Coder | Reviewer |
 | --- | ---: | ---: | ---: |
-| Talk to User | yes | through Planner report | through Planner report |
+| Talk to User | discuss proposals and decisions | route blockers to Planner | ask through Planner and publish the final report in the Reviewer pane |
 | Schedule same-team Coder | yes | no | no |
 | Schedule same-team Reviewer | yes | no | no |
 | Address another team | no | no | no |
@@ -235,7 +235,7 @@ separate trust boundary.
 
 Every Planner-to-Coder message includes the goal, relevant context, constraints, acceptance criteria, expected validation, and explicit prohibition on changing unrelated code. Every Planner-to-Reviewer message includes the original requirement, acceptance criteria, current round, Coder report, validation evidence, and the exact change-evidence scope to inspect: diff/revision evidence for Git-backed roots, or reported touched paths and explicit evidence gaps for non-Git roots.
 
-The Coder returns either `IMPLEMENTATION_DONE` with factual details or `BLOCKED`. The Reviewer returns only `PASS` or `CHANGES_REQUIRED`. The Planner accepts neither report at face value: it reads the working tree before the next decision.
+The Coder returns either `IMPLEMENTATION_DONE` with factual details or `BLOCKED`. Reviewer returns `ASK_PLANNER` or `ASK_USER` for clarification and `PASS` or `CHANGES_REQUIRED` for a verdict. The bridge returns the operational verdict and findings to Planner. The user-facing report stays in the Reviewer pane. The Planner accepts neither report at face value: it reads the working tree before the next decision.
 
 ## Review rounds and termination
 

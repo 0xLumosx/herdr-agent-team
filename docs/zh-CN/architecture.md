@@ -71,7 +71,7 @@ Planner 只在自己的 Team 内编排。
                     └──────────────┘
 ```
 
-工作流中不存在 Coder-to-Reviewer channel。只有 Planner 可以调度其他角色、判断 finding 是否成立或宣布最终批准；这些调度权限只适用于从 Planner 自己的 Herdr 实时身份推导出的精确同 Team 名称。
+工作流中不存在 Coder-to-Reviewer channel。只有 Planner 可以调度其他角色、转交 Reviewer 的修正指令或宣布最终批准；这些调度权限只适用于从 Planner 自己的 Herdr 实时身份推导出的精确同 Team 名称。
 
 ## 组件
 
@@ -135,7 +135,7 @@ kind: codex, name: auth-reviewer
 
 | 能力 | Planner | Coder | Reviewer |
 | --- | ---: | ---: | ---: |
-| 与用户沟通 | 是 | 通过 Planner report | 通过 Planner report |
+| 与用户沟通 | 讨论方案并确认关键决策 | 遇阻找 Planner | 通过 Planner 向用户提问，在自己的窗格展示最终审查报告 |
 | 调度同 Team Coder | 是 | 否 | 否 |
 | 调度同 Team Reviewer | 是 | 否 | 否 |
 | 访问另一个 Team | 否 | 否 | 否 |
@@ -171,7 +171,7 @@ boundary。
 
 每条 Planner-to-Coder 消息都包含 goal、相关 context、constraints、acceptance criteria、expected validation，以及不得修改无关代码的明确禁令。每条 Planner-to-Reviewer 消息都包含原始 requirement、acceptance criteria、当前 round、Coder report、validation evidence 和要检查的精确变更证据 scope：Git-backed root 使用 diff/revision 证据，non-Git root 使用所报告的 touched path 和明确证据缺口。
 
-Coder 返回包含事实细节的 `IMPLEMENTATION_DONE` 或 `BLOCKED`。Reviewer 只返回 `PASS` 或 `CHANGES_REQUIRED`。Planner 不会照单全收任何 report：它会在做出下一步决策前读取工作树。
+Coder 返回包含事实细节的 `IMPLEMENTATION_DONE` 或 `BLOCKED`。Reviewer 用 `ASK_PLANNER` 或 `ASK_USER` 澄清疑问，用 `PASS` 或 `CHANGES_REQUIRED` 向 Planner 返回结论和技术依据。给用户的最终审查报告只在 Reviewer 窗格展示。Planner 不会照单全收任何 report：它会在做出下一步决策前读取工作树。
 
 ## 审查轮次与终止
 

@@ -73,7 +73,33 @@ def codex_turn_cursor(home, agent):
     return None
 
 
-def completed_codex_reply(cursor, prompt, deadline, lines):
+def reviewer_handoff(text, terminal=False):
+    """Remove pane-only reports from a single reply or a window of terminal history."""
+    handoff = []
+    report_open = False
+    next_turn = []
+    for line in text.splitlines():
+        heading = line.strip(" \t│•●✦#*`:").casefold()
+        if heading == "reviewer report":
+            handoff.extend(next_turn)
+            next_turn.clear()
+            report_open = True
+        elif heading == "end of report":
+            if not report_open:
+                handoff.clear()  # The terminal window started inside a report.
+            next_turn.clear()
+            report_open = False
+        elif not report_open:
+            handoff.append(line)
+        elif terminal and (next_turn or line.lstrip().startswith(("› ", "❯ ", "> "))):
+            # A legacy report had no footer. Preserve the following CLI turn,
+            # unless a footer confirms these were quoted lines inside the report.
+            next_turn.append(line)
+    handoff.extend(next_turn)
+    return "\n".join(handoff).rstrip()
+
+
+def completed_codex_reply(cursor, prompt, deadline, lines, role):
     path, start = cursor
     turn = matched = None
     with path.open("rb") as stream:
@@ -97,6 +123,8 @@ def completed_codex_reply(cursor, prompt, deadline, lines):
                         reply = payload.get("last_agent_message")
                         if not isinstance(reply, str) or not reply.strip():
                             raise BridgeError("The target Codex turn completed without a reply")
+                        if role == "reviewer":
+                            reply = reviewer_handoff(reply)
                         text = "\n".join(reply.splitlines()[-lines:])
                         if len(text.encode("utf-8")) > MAX_HERDR_OUTPUT_BYTES:
                             raise BridgeError("The target Codex reply exceeded the bridge output limit")
@@ -914,7 +942,7 @@ class HerdrBridge:
                 or prompted_target["agent"] != before_target["agent"]):
             raise BridgeError("Herdr prompt result changed the target pane identity")
         if cursor:
-            transcript_text = completed_codex_reply(cursor, prompt, deadline, read_lines)
+            transcript_text = completed_codex_reply(cursor, prompt, deadline, read_lines, target_role)
             remaining = max(1, int((deadline - time.monotonic()) * 1000))
             self._call(("agent", "wait", before_target["pane_id"], "--until", "done", "--until",
                         "idle", "--timeout", str(remaining)), timeout_ms=remaining + 1000)
@@ -939,8 +967,12 @@ class HerdrBridge:
         if after_seq < prompted_seq:
             raise BridgeError("target lifecycle regressed after the Herdr prompt")
         if not cursor:
+            # Read beyond a long report so the caller's budget applies to the handoff.
+            terminal_lines = 4000 if target_role == "reviewer" else read_lines
             transcript_text = self._read_text(("agent", "read", before_target["pane_id"], "--source",
-                                               "recent-unwrapped", "--lines", str(read_lines)))
+                                               "recent-unwrapped", "--lines", str(terminal_lines)))
+            if target_role == "reviewer":
+                transcript_text = "\n".join(reviewer_handoff(transcript_text, terminal=True).splitlines()[-read_lines:])
         final = self.inspect_team()
         final_target = final["%s_agent" % target_role]
         if (

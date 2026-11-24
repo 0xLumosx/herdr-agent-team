@@ -2,7 +2,7 @@
 
 [简体中文](README.zh-CN.md)
 
-Run three agents in separate [Herdr](https://herdr.dev/) panes. Give the task to Planner. Coder edits the project, Reviewer checks the changes independently, and Planner decides whether the work is ready. You can follow each handoff in the team's panes.
+Run three agents in separate [Herdr](https://herdr.dev/) panes. Discuss the proposal with Planner. Coder implements it, Reviewer independently checks the result and publishes the final review only in the Reviewer pane. You can follow each handoff in the team's panes.
 
 ## Quick start
 
@@ -73,14 +73,16 @@ For remote project work, give the Planner the SSH alias and directory. Coder wor
 ## How the team works
 
 ```text
-User -> Planner -> Coder -> Planner -> Reviewer -> Planner
+User ↔ Planner → Coder → Planner ↔ Reviewer
+Final review → Reviewer pane
+Acceptance decision → Planner pane
 ```
 
 | Role | Local filesystem | Responsibility |
 | --- | --- | --- |
-| Planner | read-only | Define the scope, assign implementation and review, and decide whether to accept the result |
-| Coder | workspace-write | Edit project files and run checks for the changes |
-| Reviewer | read-only | Compare the changes and the available test evidence with the original requirements |
+| Planner | read-only | Check the proposal, discuss flawed assumptions or unclear requirements with you, assign work and verify acceptance |
+| Coder | workspace-write | Carry out Planner’s tasks and Reviewer’s relayed fixes. Take blockers to Planner |
+| Reviewer | read-only | Review the evidence, discuss questions with Planner, ask you through Planner if still unresolved, and publish the final review in the Reviewer pane |
 
 Herdr runs the panes and sessions. This repository supplies role profiles, prompts, on-demand launch scripts, diagnostics, and tests. You manage branches in Git. Each CLI keeps its own conversation history. For model defaults, reasoning effort, and the Stop That Shit skill required for Codex roles, see [Role configuration](docs/configuration.md).
 

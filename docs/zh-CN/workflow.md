@@ -6,7 +6,7 @@
 
 每个任务遵守五条不变量：
 
-1. Planner 是唯一编排者和最终决策者。
+1. Planner 负责派单和验收。先判断方案是否正确、可行；发现错误前提或重要歧义时，先与你讨论再派单。
 2. Coder 是唯一预期修改应用源码的角色。
 3. Reviewer 独立、只读，绝不实现修复。
 4. Legacy Team 使用精确实时名称 `planner`、`coder` 和 `reviewer`；带前缀的 Team 只使用 `<prefix>-planner`、`<prefix>-coder` 和 `<prefix>-reviewer`。
@@ -167,7 +167,7 @@ Review scope:
 - assess correctness, regression, security, error handling, compatibility,
   state/data consistency, edge cases, and test quality
 
-Return only PASS or CHANGES_REQUIRED using the Reviewer role format.
+审查结论使用 PASS 或 CHANGES_REQUIRED。有疑问先返回 ASK_PLANNER；与 Planner 讨论后仍需用户决定时，返回 ASK_USER。四种回复均带派单关联字段。
 Do not modify files and do not contact Coder.
 ```
 
@@ -189,7 +189,7 @@ Recommended correction: bounded direction, not an implementation takeover
 
 ## 5. Planner 分诊 Finding
 
-Planner 将每条 finding 与 requirement 和代码核对。它可以拒绝 factually wrong、outside scope、purely preferential 或 unsupported finding，并记录原因，而不是自动转发每条 comment。
+Planner 转交 Reviewer 有依据的修正指令。有分歧时双方先核对证据；仍需用户决定时，Planner 原文转达 Reviewer 的问题，等用户答复后继续。澄清沿用当前任务和审查轮次，每次派单使用新的 HANDOFF_ID。
 
 已接受的 correction 会作为一个合并后的自包含任务返回 Coder。Reviewer 从不直接向 Coder 发送指令。
 
@@ -206,16 +206,10 @@ Coder 实现或修复 → Reviewer 审查 → Planner 分诊
 ```text
 NOT APPROVED
 
-Remaining issues:
+Reason for rejection:
 ...
 
-Coder position:
-...
-
-Reviewer position:
-...
-
-Planner recommendation:
+Next action:
 ...
 ```
 
@@ -232,7 +226,7 @@ Reviewer `PASS` 不会自动批准任务。Planner 最终检查：
 - 与变更相符的 compatibility 和 rollback concern；
 - 是否仍有任何 material assumption 未验证。
 
-完成后 Planner 才可返回 `APPROVED`，并总结变更、验证和剩余 non-blocking risk。
+最终审查报告只在 Reviewer 窗格展示。Planner 在自己的窗格给出 `APPROVED` 或 `NOT APPROVED`，说明验收理由及需要用户采取的下一步。
 
 ## 通信语义
 
