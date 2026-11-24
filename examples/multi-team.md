@@ -10,12 +10,12 @@ Use one primary project as the Herdr workspace cwd and repeat `--add-dir` for
 every additional project:
 
 ```bash
-/path/to/herdr-codex-team/scripts/start.sh \
+/path/to/herdr-agent-team/scripts/start.sh \
   --team product \
   --cwd /projects/api \
   --add-dir /projects/web
 
-/path/to/herdr-codex-team/scripts/doctor.sh --team product
+/path/to/herdr-agent-team/scripts/doctor.sh --team product
 ```
 
 After successful managed startup, the short Doctor command loads the safe
@@ -24,7 +24,7 @@ and ordered roots. For a deliberately replaced session or a direct scope
 check, bypass that recorded workspace/pane binding with explicit roots:
 
 ```bash
-/path/to/herdr-codex-team/scripts/doctor.sh \
+/path/to/herdr-agent-team/scripts/doctor.sh \
   --team product \
   --cwd /projects/api \
   --add-dir /projects/web
@@ -42,7 +42,7 @@ directly; this does not prove the change set is complete.
 Start the backend team in one repository:
 
 ```bash
-/path/to/herdr-codex-team/scripts/start.sh \
+/path/to/herdr-agent-team/scripts/start.sh \
   --team backend \
   --cwd /projects/backend-api
 ```
@@ -50,7 +50,7 @@ Start the backend team in one repository:
 Start the documentation team in another:
 
 ```bash
-/path/to/herdr-codex-team/scripts/start.sh \
+/path/to/herdr-agent-team/scripts/start.sh \
   --team docs \
   --cwd /projects/product-docs
 ```
@@ -72,15 +72,15 @@ The teams can run at the same time. `backend-planner` must only address
 Check each one explicitly:
 
 ```bash
-/path/to/herdr-codex-team/scripts/doctor.sh --team backend
-/path/to/herdr-codex-team/scripts/doctor.sh --team docs
+/path/to/herdr-agent-team/scripts/doctor.sh --team backend
+/path/to/herdr-agent-team/scripts/doctor.sh --team docs
 
-/path/to/herdr-codex-team/scripts/test.sh --team backend communication
-/path/to/herdr-codex-team/scripts/test.sh --team docs communication
+/path/to/herdr-agent-team/scripts/test.sh --team backend communication
+/path/to/herdr-agent-team/scripts/test.sh --team docs communication
 
-/path/to/herdr-codex-team/scripts/test.sh \
+/path/to/herdr-agent-team/scripts/test.sh \
   --team backend --against-team docs isolation
-/path/to/herdr-codex-team/scripts/test.sh \
+/path/to/herdr-agent-team/scripts/test.sh \
   --team docs --against-team backend isolation
 ```
 
@@ -102,11 +102,11 @@ git worktree add ../myapp-ui -b task/ui
 Then bind each team to its own checkout:
 
 ```bash
-/path/to/herdr-codex-team/scripts/start.sh \
+/path/to/herdr-agent-team/scripts/start.sh \
   --team auth \
   --cwd /projects/myapp-auth
 
-/path/to/herdr-codex-team/scripts/start.sh \
+/path/to/herdr-agent-team/scripts/start.sh \
   --team ui \
   --cwd /projects/myapp-ui
 ```
@@ -121,7 +121,7 @@ worktrees.
 An unprefixed team remains supported:
 
 ```bash
-/path/to/herdr-codex-team/scripts/start.sh --cwd /projects/single-task
+/path/to/herdr-agent-team/scripts/start.sh --cwd /projects/single-task
 ```
 
 That creates `planner`, `coder`, and `reviewer`. Because those live names are

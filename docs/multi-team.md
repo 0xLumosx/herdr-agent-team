@@ -65,11 +65,11 @@ profile does not have to be literally named `planner`.
 Teams working in different repositories can be started independently:
 
 ```bash
-/path/to/herdr-codex-team/scripts/start.sh \
+/path/to/herdr-agent-team/scripts/start.sh \
   --team auth \
   --cwd /path/to/backend
 
-/path/to/herdr-codex-team/scripts/start.sh \
+/path/to/herdr-agent-team/scripts/start.sh \
   --team docs \
   --cwd /path/to/documentation
 ```
@@ -85,7 +85,7 @@ docs-planner   docs-coder   docs-reviewer
 
 ```bash
 TEAM_PREFIX=auth \
-  /path/to/herdr-codex-team/scripts/start.sh --cwd /path/to/backend
+  /path/to/herdr-agent-team/scripts/start.sh --cwd /path/to/backend
 ```
 
 Prefer the explicit `--team` form in runbooks because it makes the target
@@ -95,7 +95,7 @@ disagree.
 Legacy single-team startup remains available:
 
 ```bash
-/path/to/herdr-codex-team/scripts/start.sh --cwd /path/to/project
+/path/to/herdr-agent-team/scripts/start.sh --cwd /path/to/project
 ```
 
 It produces the exact names `planner`, `coder`, and `reviewer`. Legacy mode is
@@ -104,7 +104,7 @@ for one such team only; use a prefix before starting another team.
 One team may intentionally cover multiple disjoint project roots:
 
 ```bash
-/path/to/herdr-codex-team/scripts/start.sh \
+/path/to/herdr-agent-team/scripts/start.sh \
   --team integration \
   --cwd /path/to/primary-project \
   --add-dir /path/to/second-project \
@@ -155,13 +155,13 @@ or fall back to a native/internal subagent.
 Use the same prefix for diagnostics and tests:
 
 ```bash
-/path/to/herdr-codex-team/scripts/doctor.sh --team auth
+/path/to/herdr-agent-team/scripts/doctor.sh --team auth
 
 # Explicit scope check, independent of saved workspace/pane IDs:
-/path/to/herdr-codex-team/scripts/doctor.sh \
+/path/to/herdr-agent-team/scripts/doctor.sh \
   --team auth --cwd /path/to/backend
-/path/to/herdr-codex-team/scripts/test.sh --team auth ping
-/path/to/herdr-codex-team/scripts/test.sh --team auth communication
+/path/to/herdr-agent-team/scripts/test.sh --team auth ping
+/path/to/herdr-agent-team/scripts/test.sh --team auth communication
 ```
 
 With no root options, Doctor uses this Team's latest safe launch record and
@@ -189,7 +189,7 @@ kind such as `codex` does not establish team membership.
 For an actual two-team isolation check, name both teams:
 
 ```bash
-/path/to/herdr-codex-team/scripts/test.sh \
+/path/to/herdr-agent-team/scripts/test.sh \
   --team auth --against-team docs isolation
 ```
 
@@ -238,9 +238,9 @@ cd /projects/myapp
 git worktree add ../myapp-auth -b task/auth
 git worktree add ../myapp-ui -b task/ui
 
-/path/to/herdr-codex-team/scripts/start.sh \
+/path/to/herdr-agent-team/scripts/start.sh \
   --team auth --cwd /projects/myapp-auth
-/path/to/herdr-codex-team/scripts/start.sh \
+/path/to/herdr-agent-team/scripts/start.sh \
   --team ui --cwd /projects/myapp-ui
 ```
 

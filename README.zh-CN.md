@@ -27,7 +27,7 @@ herdr --team
 在普通终端进入本仓库，运行静态检查并安装三个角色的配置和 Planner 通信桥。命令中的示例路径请换成本机的实际路径。
 
 ```bash
-cd /path/to/herdr-codex-team
+cd /path/to/herdr-agent-team
 ./scripts/test.sh static && ./scripts/install.sh
 ```
 
@@ -44,13 +44,13 @@ herdr --session dex
 进入 Herdr 窗口后，在其中的 shell 窗格运行 `open.sh`。项目目录填你要处理的代码所在目录。
 
 ```bash
-/path/to/herdr-codex-team/scripts/open.sh --team dex --cwd /path/to/project
+/path/to/herdr-agent-team/scripts/open.sh --team dex --cwd /path/to/project
 ```
 
 如果同一项工作涉及多个项目，启动时改用下面的写法。每个额外目录对应一个 `--add-dir`。Planner 可以读取额外目录，Coder 可以修改，Reviewer 的工作范围仍是主目录。
 
 ```bash
-/path/to/herdr-codex-team/scripts/open.sh --team dex --cwd /path/to/app --add-dir /path/to/lib
+/path/to/herdr-agent-team/scripts/open.sh --team dex --cwd /path/to/app --add-dir /path/to/lib
 ```
 
 团队就绪后，在 `dex-planner` 窗格里输入任务。它只会派单给同队的 `dex-coder` 和 `dex-reviewer`。如果无法确认对方属于当前团队，派单会停止。[第一个任务示例](examples/simple-task.md)
@@ -99,7 +99,7 @@ herdr session attach dex
 要确认当前会话里的团队是否正常，在该会话的 shell 窗格里运行 Doctor。
 
 ```bash
-/path/to/herdr-codex-team/scripts/doctor.sh --team dex
+/path/to/herdr-agent-team/scripts/doctor.sh --team dex
 ```
 
 再次运行原来的 `open.sh` 命令，会复用通过检查的三个角色。如果角色全都不存在，启动器会在当前窗口创建团队。如果只剩部分角色或配置与预期不符，启动器会报错并保留现场。[故障排查](docs/zh-CN/troubleshooting.md)

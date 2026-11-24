@@ -27,7 +27,7 @@ macOS 上已验证 Herdr 0.9.5 搭配 Codex CLI 0.171.0。升级 Herdr 后，运
 在启动 Team 前，对一个本机 `CODEX_HOME` 运行一次：
 
 ```bash
-cd /path/to/herdr-codex-team
+cd /path/to/herdr-agent-team
 ./scripts/test.sh static && ./scripts/install.sh
 ```
 
@@ -39,7 +39,7 @@ Static 检查不会连接 live Agent；它会验证受管文件与当前 CLI sur
 变更，确认所选 Herdr session 中没有 live Agent，再明确允许：
 
 ```bash
-/path/to/herdr-codex-team/scripts/open.sh \
+/path/to/herdr-agent-team/scripts/open.sh \
   --install-integration \
   --team dex-vut \
   --cwd /absolute/path/to/Dex_Teleop
@@ -58,7 +58,7 @@ herdr --session dex-vut
 session 管理的 shell pane 中打开一个项目：
 
 ```bash
-/path/to/herdr-codex-team/scripts/open.sh \
+/path/to/herdr-agent-team/scripts/open.sh \
   --team dex-vut \
   --cwd /absolute/path/to/Dex_Teleop
 ```
@@ -66,7 +66,7 @@ session 管理的 shell pane 中打开一个项目：
 同时使用两个项目时，显式加入第二个 root：
 
 ```bash
-/path/to/herdr-codex-team/scripts/open.sh \
+/path/to/herdr-agent-team/scripts/open.sh \
   --team dex-vut \
   --cwd /absolute/path/to/Dex_Teleop \
   --add-dir /absolute/path/to/vut_hub-0.2.0
@@ -85,9 +85,9 @@ network。
 启动后验证受管 Team：
 
 ```bash
-/path/to/herdr-codex-team/scripts/doctor.sh --team dex-vut
-/path/to/herdr-codex-team/scripts/test.sh --team dex-vut ping
-/path/to/herdr-codex-team/scripts/test.sh --team dex-vut communication
+/path/to/herdr-agent-team/scripts/doctor.sh --team dex-vut
+/path/to/herdr-agent-team/scripts/test.sh --team dex-vut ping
+/path/to/herdr-agent-team/scripts/test.sh --team dex-vut communication
 ```
 
 进入目标会话后，用同一条 `open.sh` 创建或复用团队。要恢复三个角色的关联对话，在 Planner 窗格输入 `/resume`，选中之前的对话。
@@ -100,7 +100,7 @@ bundle 传入私有临时目录，并在结束后清理。
 从 fresh、普通本机 shell 运行：
 
 ```bash
-cd /path/to/herdr-codex-team
+cd /path/to/herdr-agent-team
 ./scripts/remote.sh --host user@server --team dex-vut --cwd /home/user/workspace/Dex_Teleop
 
 # 多项目：
@@ -181,7 +181,7 @@ namespace 内的无关工作。不要用它退出界面或只停一个 Team。
 缺失或漂移，先确认所选 Herdr session 中完全没有 live Agent，再请求带备份修复：
 
 ```bash
-/path/to/herdr-codex-team/scripts/open.sh \
+/path/to/herdr-agent-team/scripts/open.sh \
   --repair-profiles \
   --team dex-vut \
   --cwd /absolute/path/to/Dex_Teleop \
@@ -194,7 +194,7 @@ Agent 时不得使用。
 修改 profile、prompt、bridge 或 startup policy source 后：
 
 ```bash
-cd /path/to/herdr-codex-team
+cd /path/to/herdr-agent-team
 ./scripts/test.sh static && ./scripts/install.sh
 ```
 
@@ -218,7 +218,7 @@ Planner 和 Reviewer 保持本地 `read-only` filesystem 边界；Coder 使用
 处理完所有 live Team 后，再检查并运行可恢复卸载：
 
 ```bash
-cd /path/to/herdr-codex-team
+cd /path/to/herdr-agent-team
 ./scripts/uninstall.sh
 ```
 

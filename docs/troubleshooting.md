@@ -8,7 +8,7 @@ Do not restart, repair, rename, or stop anything until the target Team and
 scope are explicit. Capture:
 
 ```bash
-/path/to/herdr-codex-team/scripts/doctor.sh --team dex-vut
+/path/to/herdr-agent-team/scripts/doctor.sh --team dex-vut
 herdr agent list
 herdr agent get dex-vut-planner
 herdr agent read dex-vut-planner --source recent-unwrapped --lines 120
@@ -18,7 +18,7 @@ If the saved launch record is absent or stale, bypass its workspace/pane IDs
 with the exact startup roots in the original order:
 
 ```bash
-/path/to/herdr-codex-team/scripts/doctor.sh \
+/path/to/herdr-agent-team/scripts/doctor.sh \
   --team dex-vut \
   --cwd /absolute/path/to/Dex_Teleop \
   --add-dir /absolute/path/to/vut_hub-0.2.0
@@ -52,7 +52,7 @@ anywhere in the selected Herdr session, rerun the same command with
 `--repair-profiles`:
 
 ```bash
-/path/to/herdr-codex-team/scripts/open.sh \
+/path/to/herdr-agent-team/scripts/open.sh \
   --repair-profiles \
   --team dex-vut \
   --cwd /absolute/path/to/Dex_Teleop \
@@ -156,7 +156,7 @@ Running Codex sessions do not reload managed files or launch arguments. After
 preserving work:
 
 ```bash
-cd /path/to/herdr-codex-team
+cd /path/to/herdr-agent-team
 ./scripts/test.sh static && ./scripts/install.sh
 ```
 

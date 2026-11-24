@@ -28,7 +28,7 @@ be `/`. Requested primary and additional roots must not overlap physically.
 Run this once for a local `CODEX_HOME`, before starting a Team:
 
 ```bash
-cd /path/to/herdr-codex-team
+cd /path/to/herdr-agent-team
 ./scripts/test.sh static && ./scripts/install.sh
 ```
 
@@ -42,7 +42,7 @@ configuration changes, ensure the selected Herdr session has no live Agent,
 then explicitly opt in:
 
 ```bash
-/path/to/herdr-codex-team/scripts/open.sh \
+/path/to/herdr-agent-team/scripts/open.sh \
   --install-integration \
   --team dex-vut \
   --cwd /absolute/path/to/Dex_Teleop
@@ -61,7 +61,7 @@ Do not run this attach command inside an existing Herdr pane; nested Herdr is
 disabled. In a shell pane managed by that Herdr session, open one project:
 
 ```bash
-/path/to/herdr-codex-team/scripts/open.sh \
+/path/to/herdr-agent-team/scripts/open.sh \
   --team dex-vut \
   --cwd /absolute/path/to/Dex_Teleop
 ```
@@ -69,7 +69,7 @@ disabled. In a shell pane managed by that Herdr session, open one project:
 For two projects, add the second root explicitly:
 
 ```bash
-/path/to/herdr-codex-team/scripts/open.sh \
+/path/to/herdr-agent-team/scripts/open.sh \
   --team dex-vut \
   --cwd /absolute/path/to/Dex_Teleop \
   --add-dir /absolute/path/to/vut_hub-0.2.0
@@ -88,9 +88,9 @@ on the primary root. All three roles have managed command network enabled.
 Verify a managed Team after startup:
 
 ```bash
-/path/to/herdr-codex-team/scripts/doctor.sh --team dex-vut
-/path/to/herdr-codex-team/scripts/test.sh --team dex-vut ping
-/path/to/herdr-codex-team/scripts/test.sh --team dex-vut communication
+/path/to/herdr-agent-team/scripts/doctor.sh --team dex-vut
+/path/to/herdr-agent-team/scripts/test.sh --team dex-vut ping
+/path/to/herdr-agent-team/scripts/test.sh --team dex-vut communication
 ```
 
 After entering or attaching the intended session, use the same `open.sh`
@@ -107,7 +107,7 @@ bundle into a private temporary directory and removes it afterward.
 From a fresh, normal local shell:
 
 ```bash
-cd /path/to/herdr-codex-team
+cd /path/to/herdr-agent-team
 ./scripts/remote.sh --host user@server --team dex-vut --cwd /home/user/workspace/Dex_Teleop
 
 # Multi-project:
@@ -195,7 +195,7 @@ the Planner bridge are missing or drifted, first ensure there is no live Agent
 anywhere in the selected Herdr session, then request the backed-up repair:
 
 ```bash
-/path/to/herdr-codex-team/scripts/open.sh \
+/path/to/herdr-agent-team/scripts/open.sh \
   --repair-profiles \
   --team dex-vut \
   --cwd /absolute/path/to/Dex_Teleop \
@@ -208,7 +208,7 @@ use it while the selected session contains a live Agent.
 After changing profile, prompt, bridge, or startup policy source:
 
 ```bash
-cd /path/to/herdr-codex-team
+cd /path/to/herdr-agent-team
 ./scripts/test.sh static && ./scripts/install.sh
 ```
 
@@ -234,7 +234,7 @@ policy, not remote-host safety or successful hardware/HIL validation.
 Inspect and run the recoverable uninstaller only after handling any live Team:
 
 ```bash
-cd /path/to/herdr-codex-team
+cd /path/to/herdr-agent-team
 ./scripts/uninstall.sh
 ```
 

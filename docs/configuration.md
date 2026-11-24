@@ -342,7 +342,7 @@ passed to `start.sh`, or provide the host explicitly:
 
 ```bash
 HERDR_TEST_PROJECT_DIR=/path/to/project \
-  /path/to/herdr-codex-team/scripts/test.sh --team github full
+  /path/to/herdr-agent-team/scripts/test.sh --team github full
 ```
 
 The host must be inside a Git-clean worktree with a committed `HEAD`. This placement keeps the nested fixture inside the live Coder's `workspace-write` root, while the baseline check rejects Git-visible outside changes, commits, and branch switches. Git status does not audit ignored files, so use a disposable worktree without sensitive ignored content; choosing an unrelated, unborn, or dirty directory fails safely. A team whose primary cwd is non-Git must record `full` and `policy` as `NOT RUN`; a fixture result under a Git-backed primary does not cover any non-Git additional root.

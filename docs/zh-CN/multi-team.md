@@ -50,11 +50,11 @@ reviewer.config.toml
 在不同仓库中工作的 Team 可以独立启动：
 
 ```bash
-/path/to/herdr-codex-team/scripts/start.sh \
+/path/to/herdr-agent-team/scripts/start.sh \
   --team auth \
   --cwd /path/to/backend
 
-/path/to/herdr-codex-team/scripts/start.sh \
+/path/to/herdr-agent-team/scripts/start.sh \
   --team docs \
   --cwd /path/to/documentation
 ```
@@ -70,7 +70,7 @@ docs-planner   docs-coder   docs-reviewer
 
 ```bash
 TEAM_PREFIX=auth \
-  /path/to/herdr-codex-team/scripts/start.sh --cwd /path/to/backend
+  /path/to/herdr-agent-team/scripts/start.sh --cwd /path/to/backend
 ```
 
 在 runbook 中优先使用显式 `--team`，因为它让目标身份直接显示在命令位置。如果两种形式同时提供，二者不能冲突。
@@ -78,7 +78,7 @@ TEAM_PREFIX=auth \
 仍然支持 legacy 单 Team startup：
 
 ```bash
-/path/to/herdr-codex-team/scripts/start.sh --cwd /path/to/project
+/path/to/herdr-agent-team/scripts/start.sh --cwd /path/to/project
 ```
 
 它会生成精确名称 `planner`、`coder` 和 `reviewer`。Legacy 模式只能有一个这样的 Team；启动其他 Team 前要先使用前缀。
@@ -86,7 +86,7 @@ TEAM_PREFIX=auth \
 一个 Team 可以有意覆盖多个互不重叠的项目 root：
 
 ```bash
-/path/to/herdr-codex-team/scripts/start.sh \
+/path/to/herdr-agent-team/scripts/start.sh \
   --team integration \
   --cwd /path/to/primary-project \
   --add-dir /path/to/second-project \
@@ -128,13 +128,13 @@ Planner 不得寻找模糊匹配的 Coder、使用另一个 Team 的 Agent，或
 诊断和测试应使用同一个前缀：
 
 ```bash
-/path/to/herdr-codex-team/scripts/doctor.sh --team auth
+/path/to/herdr-agent-team/scripts/doctor.sh --team auth
 
 # 不依赖保存的 workspace/pane ID，显式检查 scope：
-/path/to/herdr-codex-team/scripts/doctor.sh \
+/path/to/herdr-agent-team/scripts/doctor.sh \
   --team auth --cwd /path/to/backend
-/path/to/herdr-codex-team/scripts/test.sh --team auth ping
-/path/to/herdr-codex-team/scripts/test.sh --team auth communication
+/path/to/herdr-agent-team/scripts/test.sh --team auth ping
+/path/to/herdr-agent-team/scripts/test.sh --team auth communication
 ```
 
 未提供 root option 时，Doctor 使用该 Team 最近的安全启动记录，并向 Herdr 重新
@@ -158,14 +158,14 @@ herdr agent get auth-reviewer
 要实际检查两个 Team 的隔离，请同时指定两个 Team：
 
 ```bash
-/path/to/herdr-codex-team/scripts/test.sh \
+/path/to/herdr-agent-team/scripts/test.sh \
   --team auth --against-team docs isolation
 ```
 
 `--against-team` 只在 `isolation` 中必需。该测试要求两个 Team 都处于 live 且 settled 状态；它验证一个有方向的同 Team 路由成功，同时指定 peer Team 保留的 transcript 和 lifecycle sequence 不变。要验证反方向，必须交换 `--team` 和 `--against-team` 后再次运行：
 
 ```bash
-/path/to/herdr-codex-team/scripts/test.sh \
+/path/to/herdr-agent-team/scripts/test.sh \
   --team docs --against-team auth isolation
 ```
 
@@ -202,9 +202,9 @@ cd /projects/myapp
 git worktree add ../myapp-auth -b task/auth
 git worktree add ../myapp-ui -b task/ui
 
-/path/to/herdr-codex-team/scripts/start.sh \
+/path/to/herdr-agent-team/scripts/start.sh \
   --team auth --cwd /projects/myapp-auth
-/path/to/herdr-codex-team/scripts/start.sh \
+/path/to/herdr-agent-team/scripts/start.sh \
   --team ui --cwd /projects/myapp-ui
 ```
 

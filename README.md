@@ -27,7 +27,7 @@ You need Bash, Git, Python 3, and the signed-in CLIs selected for your roles. Co
 In a normal terminal, run the static checks and install the three role profiles and Planner's communication bridge. Substitute your own directories for the example paths.
 
 ```bash
-cd /path/to/herdr-codex-team
+cd /path/to/herdr-agent-team
 ./scripts/test.sh static && ./scripts/install.sh
 ```
 
@@ -44,13 +44,13 @@ herdr --session dex
 In a shell pane **inside the Herdr window**, run `open.sh` with the directory you want to work on.
 
 ```bash
-/path/to/herdr-codex-team/scripts/open.sh --team dex --cwd /path/to/project
+/path/to/herdr-agent-team/scripts/open.sh --team dex --cwd /path/to/project
 ```
 
 For a task that spans several projects, use the next command instead. Supply one `--add-dir` for each extra directory. Planner can read those directories, Coder can write to them, and Reviewer's scope stays on the primary directory.
 
 ```bash
-/path/to/herdr-codex-team/scripts/open.sh --team dex --cwd /path/to/app --add-dir /path/to/lib
+/path/to/herdr-agent-team/scripts/open.sh --team dex --cwd /path/to/app --add-dir /path/to/lib
 ```
 
 Once the team is ready, enter your task in the `dex-planner` pane. Planner sends work only to `dex-coder` and `dex-reviewer`. The handoff stops if Planner cannot confirm the other agent belongs to this team. [First task example](examples/simple-task.md)
@@ -99,7 +99,7 @@ To return to a saved group of conversations, use `/resume` in `dex-planner` and 
 To check the team, run Doctor in a shell pane of the selected local session.
 
 ```bash
-/path/to/herdr-codex-team/scripts/doctor.sh --team dex
+/path/to/herdr-agent-team/scripts/doctor.sh --team dex
 ```
 
 Running the same `open.sh` command reuses the team once all three agents pass the checks. If all three are absent, the launcher creates them in the current window. If some are missing or their configuration differs from the expected policy, it reports the problem and leaves the team available for inspection. [Troubleshooting](docs/troubleshooting.md)

@@ -7,7 +7,7 @@
 在明确目标 Team 与 scope 前，不要重启、修复、重命名或停止任何对象。先保存：
 
 ```bash
-/path/to/herdr-codex-team/scripts/doctor.sh --team dex-vut
+/path/to/herdr-agent-team/scripts/doctor.sh --team dex-vut
 herdr agent list
 herdr agent get dex-vut-planner
 herdr agent read dex-vut-planner --source recent-unwrapped --lines 120
@@ -17,7 +17,7 @@ herdr agent read dex-vut-planner --source recent-unwrapped --lines 120
 workspace/pane ID：
 
 ```bash
-/path/to/herdr-codex-team/scripts/doctor.sh \
+/path/to/herdr-agent-team/scripts/doctor.sh \
   --team dex-vut \
   --cwd /absolute/path/to/Dex_Teleop \
   --add-dir /absolute/path/to/vut_hub-0.2.0
@@ -47,7 +47,7 @@ Helper 有意没有覆盖任何内容。先检查 `${CODEX_HOME:-$HOME/.codex}` 
 `--repair-profiles`：
 
 ```bash
-/path/to/herdr-codex-team/scripts/open.sh \
+/path/to/herdr-agent-team/scripts/open.sh \
   --repair-profiles \
   --team dex-vut \
   --cwd /absolute/path/to/Dex_Teleop \
@@ -146,7 +146,7 @@ worktree 中切换 branch 不构成隔离。Non-Git root 的 attribution 证据�
 正在运行的 Codex session 不会重新加载受管文件或 launch argument。保留工作后：
 
 ```bash
-cd /path/to/herdr-codex-team
+cd /path/to/herdr-agent-team
 ./scripts/test.sh static && ./scripts/install.sh
 ```
 

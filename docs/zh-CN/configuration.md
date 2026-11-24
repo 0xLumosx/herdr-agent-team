@@ -262,7 +262,7 @@ HERDR_START_TIMEOUT_MS=180000 ./scripts/start.sh /path/to/project
 
 ```bash
 HERDR_TEST_PROJECT_DIR=/path/to/project \
-  /path/to/herdr-codex-team/scripts/test.sh --team github full
+  /path/to/herdr-agent-team/scripts/test.sh --team github full
 ```
 
 Host 必须位于 Git-clean worktree 中且有已提交的 `HEAD`。这一布局使 nested fixture 保持在 live Coder 的 `workspace-write` root 内，同时 baseline check 会拒绝 Git-visible 外部变更、commit 和 branch switch。Git status 不会审计 ignored file，因此应使用不含敏感 ignored content 的 disposable worktree；选择无关、unborn 或 dirty 目录会安全失败。主 cwd 为 non-Git 的 Team 必须把 `full` 和 `policy` 记为 `NOT RUN`；Git-backed 主 root 下的 fixture 结果不覆盖任何 non-Git 额外 root。
