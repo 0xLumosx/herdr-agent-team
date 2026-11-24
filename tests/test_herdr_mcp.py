@@ -113,7 +113,7 @@ class HerdrBridgeTests(unittest.TestCase):
     def setUpClass(cls):
         cls.module = load_bridge_module()
 
-    def make_bridge(self, runner=None, pane_id="w2:p1"):
+    def make_bridge(self, runner=None, pane_id="w2:p1", planner_cli="codex"):
         runner = runner or FakeHerdrRunner()
         env = {
             "HERDR_ENV": "1",
@@ -127,18 +127,21 @@ class HerdrBridgeTests(unittest.TestCase):
         directory.mkdir(parents=True)
         record = directory / "current.json"
         roles = self.module.ROLES
+        members = {role: {"pane_id": "w2:p%d" % i} for i, role in enumerate(roles, 1)}
+        if planner_cli != "codex":
+            members["planner"]["cli"] = planner_cli
         record.write_text(json.dumps({
             "run_id": "test-run", "launch": {"primary_cwd": "/project", "add_dirs": []},
-            "herdr": {"workspace_id": "w2", "agents": {
-                role: {"pane_id": "w2:p%d" % i} for i, role in enumerate(roles, 1)
-            }}
+            "herdr": {"workspace_id": "w2", "agents": members}
         }))
         threads = [str(uuid4()) for _ in roles]
         for role, thread in zip(roles, threads):
             agent = runner.agents.get("dex-vut-" + role)
             if agent is not None:
-                agent.update(terminal_title=thread, agent_session={
-                    "kind": "id", "agent": "codex", "source": "herdr:codex", "value": thread})
+                kind = planner_cli if role == "planner" else "codex"
+                source = "herdr:antigravity_cli" if kind == "agy" else "herdr:" + kind
+                agent.update(agent=kind, terminal_title=thread, agent_session={
+                    "kind": "id", "agent": kind, "source": source, "value": thread})
         self.module.bind_launch(record, threads)
         return self.module.HerdrBridge(
             env=env,
@@ -306,22 +309,18 @@ class HerdrBridgeTests(unittest.TestCase):
                     self.module.save_fresh_chats({"herdr": {"agents": agents}, "run_id": "run"}, ids)
                     self.assertEqual(send.call_count, 3)
 
-    def test_gemini_resume_checks_saved_role_instructions(self):
-        with tempfile.TemporaryDirectory(prefix="herdr-disposable-gemini-snapshot-") as temp:
-            thread = str(uuid4())
-            path = Path(temp) / ".gemini/antigravity-cli/conversations" / (thread + ".db")
-            path.parent.mkdir(parents=True)
-            with sqlite3.connect(path) as db:
-                db.execute("CREATE TABLE trajectory_metadata_blob(id TEXT PRIMARY KEY, data BLOB)")
-                db.execute("INSERT INTO trajectory_metadata_blob VALUES ('main', ?)", (
-                    b"herdr-reviewer-123456789abc Apply the embedded Stop That Shit skill on every task.",))
-            with mock.patch.dict(os.environ, HOME=temp):
-                with self.assertRaisesRegex(self.module.BridgeError, "older role"):
-                    self.module.check_agy_role_snapshot("agy:" + thread, "reviewer")
-                self.module.check_agy_role_snapshot(thread, "reviewer")
-                with sqlite3.connect(path) as db:
-                    db.execute("UPDATE trajectory_metadata_blob SET data=?", (b"herdr-reviewer-123456789abc",))
-                self.module.check_agy_role_snapshot("agy:" + thread, "reviewer")
+    def test_gemini_team_identity_is_independent_of_native_snapshot_storage(self):
+        bridge, runner = self.make_bridge(planner_cli="agy")
+        thread = runner.agents["dex-vut-planner"]["terminal_title"]
+        home = Path(bridge._env["CODEX_HOME"])
+        db = home / ".gemini/antigravity-cli/conversations" / (thread + ".db")
+        db.parent.mkdir(parents=True)
+        with sqlite3.connect(db) as native:
+            native.execute("CREATE TABLE provider_metadata(value TEXT)")
+        with mock.patch.dict(os.environ, HOME=str(home)):
+            team = bridge.inspect_team()
+        self.assertEqual(team["planner_thread"], thread)
+        self.assertEqual(team["conversation_group"], "agy:" + thread)
 
     def test_native_role_argv_round_trip(self):
         script = str(PROJECT_ROOT / "scripts/providers.py")
@@ -329,6 +328,7 @@ class HerdrBridgeTests(unittest.TestCase):
             home = Path(temp).resolve()
             codex = home / ".codex"
             bridge = codex / "herdr-codex-team/herdr_mcp.py"
+            bridge.parent.mkdir(parents=True)
             env = dict(os.environ, HOME=str(home), CODEX_HOME=str(codex))
             binary = home / "bin/herdr"
             binary.parent.mkdir()
@@ -342,14 +342,10 @@ class HerdrBridgeTests(unittest.TestCase):
                         str(folder), str(bridge), str(binary)], env=env, text=True).splitlines()
                     if kind == "claude":
                         instructions = Path(args[args.index("--append-system-prompt-file") + 1]).read_text()
-                        self.assertIn("Skill(stop-that-shit:stop-that-shit *)",
-                                      args[args.index("--disallowedTools") + 1])
                     else:
                         name = args[args.index("--agent") + 1]
                         instructions = (home / ".gemini/config/agents" / (name + ".md")).read_text()
                     self.assertIn((PROJECT_ROOT / "prompts" / (role + ".md")).read_text(), instructions)
-                    self.assertNotIn("stop that shit", instructions.lower())
-                    self.assertNotIn("stop-that-shit", instructions.lower())
                     if role != "reviewer":
                         args += ["--add-dir", "/project with spaces"]
                     command = [sys.executable, script, "inspect", kind, role]
@@ -387,7 +383,32 @@ class HerdrBridgeTests(unittest.TestCase):
 
         with mock.patch.object(self.module, "ssh_command", return_value={
                 "exit_code": 0, "output": "/srv/project\n", "truncated": False}) as ssh:
+            read_only = call("planner", "select_read_only_remote", host="test-host")
+            self.assertTrue(read_only["read_only"])
+            for worker in ("coder", "reviewer"):
+                reply = call("planner", "inspect_peer_ssh", target_role=worker)
+                self.assertEqual(reply["target_agent"], "dex-vut-" + worker)
+                packet = [args[3] for args, _ in runner.calls if args[:2] == ("agent", "prompt")][-1]
+                self.assertTrue(packet.startswith("Read-only team connectivity check."))
+                self.assertIn("ssh_read(operation=pwd)", packet)
+            for args in ({"target_role": "planner"}, {"target_role": "coder", "prompt": "edit files"}):
+                with self.assertRaises(self.module.BridgeError):
+                    call("planner", "inspect_peer_ssh", **args)
+            with self.assertRaisesRegex(self.module.BridgeError, "write-enabled"):
+                bridge.prompt_agent("coder", "Edit over SSH", task_mode="change")
+            for role in self.module.ROLES:
+                self.assertEqual(call(role, "ssh_read", operation="pwd")["destination"], read_only)
+            with self.assertRaisesRegex(self.module.BridgeError, "read-only inspection"):
+                call("coder", "ssh_run", command="touch test")
+            for role in ("coder", "reviewer"):
+                with self.assertRaises(self.module.BridgeError):
+                    call(role, "select_read_only_remote", host="other")
             selected = call("planner", "select_remote", host="test-host")
+            with self.assertRaisesRegex(self.module.BridgeError, "read-only SSH destination"):
+                call("planner", "inspect_peer_ssh", target_role="coder")
+            bridge.prompt_agent("coder", "$sample-skill Apply requested fix")
+            packet = [args[3] for args, _ in runner.calls if args[:2] == ("agent", "prompt")][-1]
+            self.assertTrue(packet.startswith("$sample-skill Apply requested fix\n"))
             for role in self.module.ROLES:
                 self.assertEqual(call(role, "remote_context"), selected)
                 call(role, "ssh_read", operation="status")
@@ -501,6 +522,24 @@ class HerdrBridgeTests(unittest.TestCase):
         with self.assertRaisesRegex(self.module.BridgeError, "Cannot verify"):
             self.module.active_thread(agent, lambda _pane: old)
 
+    def test_codex_empty_title_reads_only_the_current_status_line(self):
+        current, old = str(uuid4()), str(uuid4())
+        agent = {"pane_id": "w2:p1", "agent_session": {"agent": "codex", "source": "herdr:codex",
+                 "kind": "id", "value": old}}
+        screen = f"  {old}\n\n› Ask Codex to do anything\n\n  {current}\n  ← for agents · ? for shortcuts"
+        for title in (None, "", "   "):
+            agent["terminal_title"] = title
+            self.assertEqual(self.module.active_thread(agent, lambda _: screen), current)
+        for screen in (old, f"{old}\n› Ask Codex to do anything", f"› show ids\n{old}\n{current}",
+                       f"› show ids\n  {old}", f"  › quoted composer\n  {old}\n  ? for shortcuts"):
+            with self.assertRaisesRegex(self.module.BridgeError, "status-line UUID"):
+                self.module.active_thread(agent, lambda _: screen)
+        with self.assertRaisesRegex(self.module.BridgeError, "waiting for hook review in w2:p1"):
+            self.module.active_thread(agent, lambda _: "  Hooks need review\n› 1. Review hooks\n  2. Trust all and continue")
+        agent["terminal_title"] = "nonempty-invalid-title"
+        with self.assertRaisesRegex(self.module.BridgeError, "active thread title"):
+            self.module.active_thread(agent, lambda _: screen)
+
     def test_matching_names_do_not_authorize_a_different_scope_or_launch(self):
         bridge, _ = self.make_bridge()
         directory = self.module.team_directory(bridge._env, "dex-vut")
@@ -582,6 +621,26 @@ class HerdrBridgeTests(unittest.TestCase):
                 read_lines=120,
             )
 
+    def test_all_planners_deliver_task_text_without_interpreting_cli_directives(self):
+        for planner_cli in ("codex", "claude", "agy"):
+            bridge, runner = self.make_bridge(planner_cli=planner_cli)
+            server = self.module.McpServer(bridge)
+            for role, mode in (("coder", None), ("reviewer", None), ("coder", "change"),
+                               ("coder", "review"), ("reviewer", "review")):
+                for prompt in ("Check the fixture.", "$sample-skill -- Check the fixture."):
+                    with self.subTest(planner=planner_cli, role=role, mode=mode, prompt=prompt):
+                        args = {"target_role": role, "prompt": prompt}
+                        if mode is not None:
+                            args["task_mode"] = mode
+                        result = server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                            "params": {"name": "prompt_agent", "arguments": args}})["result"]
+                        self.assertFalse(result["isError"], result["content"])
+                        sent = [argv for argv, _ in runner.calls if argv[:2] == ("agent", "prompt")][-1]
+                        self.assertEqual(sent[2:4], (runner.agents["dex-vut-" + role]["pane_id"], prompt))
+            for role, mode in (("reviewer", "change"), ("coder", "unknown")):
+                with self.assertRaises(self.module.BridgeError):
+                    bridge.prompt_agent(role, "Check the fixture.", task_mode=mode)
+
     def test_codex_handoff_waits_for_the_exact_submitted_turn(self):
         class EarlyIdleRunner(FakeHerdrRunner):
             def __call__(self, args, timeout_ms):
@@ -610,7 +669,7 @@ class HerdrBridgeTests(unittest.TestCase):
         rollout.parent.mkdir(parents=True)
         rollout.write_text(json.dumps({"type": "session_meta", "payload": {"id": thread, "cli_version": "0.160.1"}}) + "\n")
         with mock.patch.object(subprocess, "check_output", return_value="codex-cli 0.171.0"):
-            result = bridge.prompt_agent("reviewer", "Check this change", read_lines=20)
+            result = bridge.prompt_agent("reviewer", "Check this change", read_lines=1)
         self.assertEqual(result["transcript"]["source"], "codex-turn")
         self.assertEqual(result["transcript"]["text"], "PASS")
 
@@ -673,6 +732,21 @@ class HerdrBridgeTests(unittest.TestCase):
             )
 
         self.assertFalse(any(call[0][:2] == ("agent", "read") for call in runner.calls))
+
+    def test_read_lines_accepts_short_replies_and_rejects_invalid_sizes_before_delivery(self):
+        bridge, runner = self.make_bridge()
+        spec = next(tool for tool in self.module.TOOLS if tool["name"] == "prompt_agent")
+        bounds = spec["inputSchema"]["properties"]["read_lines"]
+        self.assertEqual((bounds["minimum"], bounds["maximum"]), (1, 4000))
+        with mock.patch.object(bridge, "_text_runner", return_value="older line\nreply"):
+            for lines, expected in ((1, "reply"), (16, "older line\nreply"), (4000, "older line\nreply")):
+                result = bridge.prompt_agent("reviewer", "Check the fixture", read_lines=lines)
+                self.assertEqual(result["transcript"]["text"], expected)
+        before = len(runner.calls)
+        for value in (True, 0, -1, 4001, 1.5):
+            with self.assertRaisesRegex(self.module.BridgeError, "read_lines"):
+                bridge.prompt_agent("coder", "Check the fixture", read_lines=value)
+        self.assertEqual(len(runner.calls), before)
 
     def test_prompt_uses_text_cli_for_transcript(self):
         bridge, runner = self.make_bridge()

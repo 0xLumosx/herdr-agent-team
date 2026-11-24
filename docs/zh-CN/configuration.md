@@ -4,7 +4,7 @@
 
 `--planner-cli`、`--coder-cli`、`--reviewer-cli` 分别选择 `codex`、`claude` 或 `agy`。也可以设置 `PLANNER_CLI`、`CODER_CLI`、`REVIEWER_CLI`。默认值都是 `codex`。本地通过相应的 `*_MODEL` 设置指定该 CLI 支持的模型。
 
-三种 CLI 都加载对应的角色指令。只有 Codex 强制加载 Stop That Shit。使用 Codex 时，Reviewer 用 review 模式，Coder 在实现任务中用 change 模式，Planner 按用户请求选择模式。Claude 和 Antigravity 的只读角色通过文件工具检查本地项目。三种 CLI 都通过团队 SSH 工具检查远端。Claude Coder 开启原生 shell 沙箱，Antigravity Coder 使用终端沙箱和工作区编辑模式。Antigravity 的命名角色定义保存在 `~/.gemini/config/agents/`。首次选用 Antigravity 时，启动器还会把 `herdr_codex_team` 和 `herdr_team_ssh` 登记到它的 MCP 配置。两项只向对应的 Herdr 角色提供工具，启动时会检查连接。卸载器移除指向本次安装的登记。
+三种 CLI 都加载对应的角色指令。Claude 和 Antigravity 的只读角色通过文件工具检查本地项目。三种 CLI 都通过团队 SSH 工具检查远端。Claude Coder 开启原生 shell 沙箱，Antigravity Coder 使用终端沙箱和工作区编辑模式。Antigravity 的命名角色定义保存在 `~/.gemini/config/agents/`。首次选用 Antigravity 时，启动器还会把 `herdr_codex_team` 和 `herdr_team_ssh` 登记到它的 MCP 配置。两项只向对应的 Herdr 角色提供工具，启动时会检查连接。卸载器移除指向本次安装的登记。
 
 
 [English](../configuration.md)
@@ -12,7 +12,7 @@
 
 ## 本地团队共用 SSH
 
-在 Planner 里告诉它 SSH 主机和远端目录，例如“用 SSH 到 `lab-dev` 的 `/srv/project` 检查这个问题”。Planner 调用 `select_remote`，用本机 OpenSSH 验证主机并取得实际目录。之后派单会带上该目的地，Coder 和 Reviewer 从自己的窗格访问同一份远端文件。
+在 Planner 里告诉它 SSH 主机和远端目录，例如“用 SSH 到 `lab-dev` 的 `/srv/project` 检查这个问题”。只读检查时，Planner 直接用 `select_read_only_remote` 验证指定主机，省略目录就使用登录目录。会话会记住目的地，三个角色都只能通过桥接器读取。Planner 可用 `inspect_peer_ssh` 让现有 Coder 或 Reviewer 在自己的窗格执行 `pwd` 并返回结果。用户授权远端代码修改后，Planner 用 `select_remote` 选择目的地，只有 Coder 可以执行修改。之后派单会带上该目的地，Coder 和 Reviewer 从自己的窗格访问同一份远端文件。
 
 | 角色 | 远端能力 |
 | --- | --- |
@@ -119,7 +119,13 @@ REVIEWER_MODEL="<available-model>" \
 
 规范角色文本保存在 `prompts/`，维护者无需解码长 TOML string 即可审查。安装路径通过简单 shell 过程把角色专属配置和这些指令组合起来，不需要外部 template engine。
 
-角色选用 Codex 时，安装器会将 Stop That Shit 0.2.5 写入其开发者指令，每次任务都会加载。在远端主机启动 Codex 时也一样。Claude Code 和 Antigravity 加载各自的角色指令。即使本机已经安装该 Claude 插件，受管 Claude 会话也会禁用这个技能。Antigravity 会随对话保存角色指令。如果早期测试会话保存了强制使用技能的旧指令，Herdr 会停止派单。在 Gemini 的 `/agents` 中选用当前角色可以保留历史并生成新会话，再用新的 Planner ID 和 `--link-current` 登记新组。用当前提示词创建的对话组可以按原 ID 恢复。用户照常输入任务即可。技能在各角色原有权限内指导模型，可选的 Guard 钩子有独立的启用流程。[技能正文](../../prompts/stop-that-shit/SKILL.md)
+Codex 可以在角色配置顶层设置 `service_tier`。启动器和 Doctor 允许这个性能设置，重新安装受管配置时会保留它。角色未单独指定档位时，沿用 Codex 自身的配置。
+
+三个 Codex 配置只嵌入各自的角色提示词。运行 `./scripts/install.sh` 更新配置，再重启相应角色即可加载。
+
+`prompt_agent` 的可选参数 `read_lines` 支持 1–4000 行，默认 2000 行。只需要一行回执时可以传 1。
+
+Codex、Claude 或 Gemini 担任 Planner 时，用 `task_mode=review` 表示只读检查，用 `task_mode=change` 表示已授权的 Coder 修改。Herdr 将任务正文传给执行者，各 CLI 自行处理插件、技能及 hook 审批。Antigravity 可能在旧对话中保留当时的角色指令。如需更新，在原生 `/agents` 菜单选择当前角色，再用 `--link-current` 登记新的会话组。
 
 修改角色时：
 

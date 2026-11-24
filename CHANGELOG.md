@@ -6,7 +6,7 @@ All notable changes to this project are documented here.
 
 ### Added
 
-- Select Codex, Claude Code, or Antigravity independently for each role. Each Codex role embeds Stop That Shit with its role-specific mode.
+- Select Codex, Claude Code, or Antigravity independently for each role. Role handoffs preserve task text and leave plugin handling to the native CLI.
 - Managed launches link the three native conversations. Resuming a registered Planner chat switches its Coder and Reviewer and verifies both before handoff. The team's SSH host and directory follow the selected conversation.
 
 - Prefixed Herdr team names for multiple concurrent three-agent teams.

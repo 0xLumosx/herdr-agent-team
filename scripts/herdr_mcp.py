@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
@@ -145,23 +146,6 @@ def session_key(kind, value):
     return value if kind == "codex" else kind + ":" + value
 
 
-def check_agy_role_snapshot(key, role):
-    if not key.startswith("agy:"):
-        return
-    thread = key.split(":", 1)[1]
-    path = Path.home() / ".gemini/antigravity-cli/conversations" / (thread + ".db")
-    if not path.is_file():
-        return  # A named chat can be bound before its first model turn.
-    # A closed, checkpointed WAL database can be read without opening new WAL sidecars.
-    mode = "?mode=ro" if Path(str(path) + "-wal").exists() else "?mode=ro&immutable=1"
-    with closing(sqlite3.connect(path.as_uri() + mode, uri=True)) as db:
-        snapshot = db.execute("SELECT data FROM trajectory_metadata_blob WHERE id='main'").fetchone()
-    if (snapshot and ("herdr-" + role + "-").encode() in snapshot[0]
-            and b"Apply the embedded Stop That Shit skill on every task." in snapshot[0]):
-        raise BridgeError("This saved Gemini %s has an older role that requires Stop That Shit. "
-                          "Use /agents to fork it with the current Herdr role, then link the new group." % role)
-
-
 def active_thread(agent, read_visible):
     """Read the complete UUID. Codex truncates the terminal title to 32 chars."""
     kind = agent.get("agent", "codex")
@@ -172,7 +156,22 @@ def active_thread(agent, read_visible):
                 and reported.get("kind") == "id" and isinstance(value, str) and THREAD_ID.fullmatch(value)):
             return value
         raise BridgeError("Claude has not reported its active session")
-    title = _required_string(agent.get("terminal_title"), "active CLI terminal title")
+    title = agent.get("terminal_title")
+    if kind == "codex" and (title is None or isinstance(title, str) and not title.strip()):
+        # Herdr can lose OSC titles on server handoff. Read the configured
+        # status line below the live composer, never a UUID from chat history.
+        lines = [line.rstrip() for line in read_visible(agent["pane_id"]).splitlines() if line.strip()]
+        for index in range(len(lines) - 1, -1, -1):
+            if lines[index] == "›" or lines[index].startswith("› "):
+                footer = lines[index + 1:]
+                if (len(footer) == 2 and footer[0].startswith(" ") and THREAD_ID.fullmatch(footer[0].strip())
+                        and footer[1].strip().startswith(("? for shortcuts", "← for agents · ? for shortcuts"))):
+                    return footer[0].strip()
+                break
+        if any(line.strip() == "Hooks need review" for line in lines) and any("Review hooks" in line for line in lines):
+            raise BridgeError("Codex is waiting for hook review in %s. Open Review hooks in that pane before retrying." % agent["pane_id"])
+        raise BridgeError("Cannot verify the live Codex status-line UUID in %s. Show the prompt and session-id status line." % agent["pane_id"])
+    title = _required_string(title, "active CLI terminal title")
     if kind == "agy" and THREAD_ID.fullmatch(title):
         return title
     if kind not in ("codex", "agy"):
@@ -248,8 +247,6 @@ def bind_launch(record_path, threads):
                for r, t in zip(ROLES, threads)]
     if len(set(threads)) != 3:
         raise BridgeError("Binding requires three distinct sessions")
-    for role, key in zip(ROLES, threads):
-        check_agy_role_snapshot(key, role)
     scope = json.dumps([record["launch"]["primary_cwd"], record["launch"]["add_dirs"]])
     panes = json.dumps([record["herdr"]["agents"][role]["pane_id"] for role in ROLES])
     launch = (scope, record["herdr"]["workspace_id"], panes)
@@ -276,14 +273,18 @@ def save_fresh_chats(record, threads, roles=ROLES):
     # to acknowledge the rename before exposing the panes to user input.
     index = Path(os.environ["CODEX_HOME"]) / "session_index.jsonl"
     offset = index.stat().st_size if index.exists() else 0
-    pending = {}
-    for role, thread in zip(roles, threads):
+
+    def rename(role, thread):
         agent = record["herdr"]["agents"][role]
-        kind = agent.get("cli", "codex")
-        name = agent["name"] + " " + record["run_id"]
-        pending[(kind, thread)] = name
-        subprocess.run([os.environ["HERDR_BIN_PATH"], "agent", "prompt", agent["name"], "/rename " + name],
+        title = agent["name"] + " " + record["run_id"]
+        subprocess.run([os.environ["HERDR_BIN_PATH"], "agent", "prompt", agent["name"], "/rename " + title],
                        stdout=subprocess.DEVNULL, check=True, timeout=10)
+        return (agent.get("cli", "codex"), thread), title
+
+    # These are already verified, separate panes. Dispatch independent titles
+    # together, then confirm every native history entry before binding the group.
+    with ThreadPoolExecutor(max_workers=len(ROLES)) as workers:
+        pending = dict(workers.map(rename, roles, threads))
     claude_projects = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")) / "projects"
     agy_index = Path.home() / ".gemini/antigravity-cli/conversation_summaries.db"
     deadline = time.monotonic() + 15
@@ -365,16 +366,15 @@ def linked_peers(env, team):
         group = group_for_planner(db, planner)
         if not db.execute("SELECT 1 FROM groups_by_planner WHERE planner=? AND scope=?", (group, launch[0])).fetchone():
             raise BridgeError("No conversation link for this Planner in this team and project scope")
-        check_agy_role_snapshot(planner, "planner")
         result = {}
         for role in ("coder", "reviewer"):
             kind = team[role + "_agent"].get("agent", "codex")
             key = role_session(db, group, role, kind)
             if not key:
                 raise BridgeError("The linked %s uses a different CLI. Reopen with the original role CLIs." % role)
-            check_agy_role_snapshot(key, role)
             result[role] = key.split(":")[-1]
         team["conversation_group"] = group
+        team["project_directory"] = json.loads(launch[0])[0]
     return result
 
 
@@ -845,6 +845,9 @@ class HerdrBridge:
                     names = self._derive_team(raw["name"])
                     peer_names = {names["coder"], names["reviewer"]}
                     def title(agent):
+                        value = agent.get("terminal_title")
+                        if agent.get("agent") == "codex" and (value is None or isinstance(value, str) and not value.strip()):
+                            return self._thread(agent)
                         return ((agent.get("agent_session") or {}).get("value") if agent.get("agent") == "claude"
                                 else agent.get("terminal_title")) or ""
                     titles = (title(raw), tuple(sorted(
@@ -882,6 +885,7 @@ class HerdrBridge:
         prompt: str,
         timeout_ms: int = 120000,
         read_lines: int = 2000,
+        *, task_mode: Optional[str] = None, ssh_probe: bool = False,
     ) -> Dict[str, Any]:
         if target_role not in ("coder", "reviewer"):
             raise BridgeError("target_role must be exactly coder or reviewer")
@@ -902,19 +906,26 @@ class HerdrBridge:
         if (
             isinstance(read_lines, bool)
             or not isinstance(read_lines, int)
-            or read_lines < 20
+            or read_lines < 1
             or read_lines > 4000
         ):
-            raise BridgeError("read_lines must be an integer from 20 through 4000")
+            raise BridgeError("read_lines must be an integer from 1 through 4000")
 
         before = self.inspect_team()
         remote = saved_remote(team_directory(self._env, before["team_prefix"]),
                               before["conversation_group"])
+        if ssh_probe and (not remote or not remote.get("read_only")):
+            raise BridgeError("Select a read-only SSH destination before checking a peer connection")
+        if task_mode is not None:
+            if task_mode not in ("review", "change"):
+                raise BridgeError("task_mode must be review or change")
+            if task_mode == "change" and (target_role != "coder" or remote and remote.get("read_only")):
+                raise BridgeError("A change handoff requires Coder and a write-enabled destination")
         if remote:
             client_hint = (" In Antigravity use call_mcp_tool with ServerName herdr_team_ssh and the "
                            "requested ToolName and Arguments." if before[target_role + "_agent"]["agent"] == "agy" else "")
-            prompt = ("Use this group's verified SSH destination for the handoff: " + json.dumps(remote)
-                      + ". Use the herdr_team_ssh tools from your pane." + client_hint + "\n\n" + prompt)
+            prompt += ("\n\nUse this group's verified SSH destination for the handoff: " + json.dumps(remote)
+                       + ". Use the herdr_team_ssh tools from your pane." + client_hint)
         before_target = before["%s_agent" % target_role]
         target_name = before_target["name"]
         cursor = codex_turn_cursor(self._env.get("CODEX_HOME"), before_target)
@@ -1040,6 +1051,8 @@ TOOLS = [
                     "enum": ["coder", "reviewer"],
                 },
                 "prompt": {"type": "string", "minLength": 1, "maxLength": MAX_PROMPT_CHARS},
+                "task_mode": {"type": "string", "enum": ["review", "change"], "description":
+                    "Use review for read-only work and every Reviewer handoff. Use change only for a user-authorized Coder edit. Send plain task text."},
                 "timeout_ms": {
                     "type": "integer",
                     "minimum": 3001,
@@ -1048,7 +1061,7 @@ TOOLS = [
                 },
                 "read_lines": {
                     "type": "integer",
-                    "minimum": 20,
+                    "minimum": 1,
                     "maximum": 4000,
                     "default": 2000,
                 },
@@ -1070,7 +1083,7 @@ TOOLS = [
 # verified group, so peers cannot substitute another host in tool arguments.
 SSH_OPERATIONS = ("pwd", "list", "read", "search", "status", "diff", "staged_diff")
 SSH_BY_ROLE = {
-    "planner": ("select_remote", "use_local", "remote_context", "ssh_read"),
+    "planner": ("select_read_only_remote", "inspect_peer_ssh", "select_remote", "use_local", "remote_context", "ssh_read"),
     "coder": ("remote_context", "ssh_read", "ssh_run"),
     "reviewer": ("remote_context", "ssh_read"),
 }
@@ -1081,6 +1094,8 @@ def ssh_tools(role):
         "select_remote": ("Select the user-authorized SSH host and verify the shared remote working directory.",
                           {"host": {"type": "string"}, "directory": {"type": "string"},
                            "port": {"type": "integer", "minimum": 1, "maximum": 65535}}, ["host"]),
+        "inspect_peer_ssh": ("Ask one existing team member to read pwd on the selected read-only host and return its reply.",
+                             {"target_role": {"type": "string", "enum": ["coder", "reviewer"]}}, ["target_role"]),
         "use_local": ("Clear the SSH destination to return this group to local work.", {}, []),
         "remote_context": ("Return this conversation group's selected SSH host and directory.", {}, []),
         "ssh_read": ("Inspect the selected remote directory using a read-only operation.",
@@ -1089,6 +1104,10 @@ def ssh_tools(role):
         "ssh_run": ("Run an authorized Coder shell command in the group's remote working directory.",
                     {"command": {"type": "string"}}, ["command"]),
     }
+    _, target_fields, required_target = specs["select_remote"]
+    specs["select_read_only_remote"] = (
+        "Verify the user-authorized host with pwd and save its directory for this group. All roles get read-only SSH operations.",
+        target_fields, required_target)
     tools = []
     for name in SSH_BY_ROLE[role]:
         description, properties, required = specs[name]
@@ -1187,13 +1206,18 @@ def ssh_tool_call(bridge, role, name, arguments):
     if not schema or set(arguments) - set(schema["properties"]) or not set(schema["required"]) <= set(arguments):
         raise BridgeError("Unsupported SSH tool or arguments for " + role)
     directory, key = ssh_group(bridge, role)
+    if name == "inspect_peer_ssh":
+        return bridge.prompt_agent(arguments["target_role"],
+            "Read-only team connectivity check. Use herdr_team_ssh ssh_read(operation=pwd) from your own pane. "
+            "Report the verified host, physical directory and exit code. This check requires only pwd.",
+            read_lines=80, task_mode="review", ssh_probe=True)
     if name == "use_local":
         bridge.inspect_team()
         with closing(link_database(directory, create=True)) as db, db:
             if db.execute("SELECT 1 FROM sqlite_master WHERE name='remote_context'").fetchone():
                 db.execute("DELETE FROM remote_context WHERE planner=?", (key,))
         return {"mode": "local"}
-    if name == "select_remote":
+    if name in ("select_read_only_remote", "select_remote"):
         target = {"host": _required_string(arguments.get("host"), "SSH host"),
                   "directory": arguments.get("directory", "."), "port": arguments.get("port")}
         result = ssh_command(target, "pwd -P")
@@ -1201,6 +1225,8 @@ def ssh_tool_call(bridge, role, name, arguments):
         if result["exit_code"] or not canonical.startswith("/") or _has_unsafe_control(canonical):
             raise BridgeError("Could not verify the remote directory: " + result["output"][:1000])
         target["directory"] = canonical
+        if name == "select_read_only_remote":
+            target["read_only"] = True
         bridge.inspect_team()
         if ssh_group(bridge, role) != (directory, key):
             raise BridgeError("Planner changed sessions while selecting the SSH destination")
@@ -1216,6 +1242,8 @@ def ssh_tool_call(bridge, role, name, arguments):
     if name == "ssh_read":
         command = remote_read_command(**arguments)
     else:
+        if target.get("read_only"):
+            raise BridgeError("The Planner selected this SSH destination for read-only inspection")
         script = arguments["command"]
         if not isinstance(script, str) or not script.strip() or len(script) > MAX_PROMPT_CHARS or _has_unsafe_control(script, allow_newlines=True):
             raise BridgeError("Invalid remote Coder command")
@@ -1312,6 +1340,7 @@ class McpServer:
             elif name == "prompt_agent":
                 unknown = set(arguments) - {
                     "target_role",
+                    "task_mode",
                     "prompt",
                     "timeout_ms",
                     "read_lines",
@@ -1326,6 +1355,7 @@ class McpServer:
                 result = self._bridge.prompt_agent(
                     target_role=arguments["target_role"],
                     prompt=arguments["prompt"],
+                    task_mode=arguments.get("task_mode"),
                     timeout_ms=arguments.get("timeout_ms", 120000),
                     read_lines=arguments.get("read_lines", 2000),
                 )
@@ -1418,9 +1448,9 @@ def main(argv: List[str]) -> int:
                     try:
                         print(active_thread(agent, read_visible))
                         break
-                    except BridgeError:
+                    except BridgeError as error:
                         if time.monotonic() >= deadline:
-                            raise BridgeError("No verifiable active session in %s. Check the CLI startup screen and session hook." % identity[0])
+                            raise BridgeError("No verifiable active session in %s: %s" % (identity[0], error)) from error
                     time.sleep(0.3)
                     payload = subprocess.check_output([os.environ["HERDR_BIN_PATH"], "agent", "get", identity[0]], timeout=5)
                     agent = _result_object(json.loads(payload), "agent")

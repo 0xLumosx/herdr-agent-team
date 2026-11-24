@@ -84,7 +84,7 @@ REVIEWER_MODEL=gemini-3.8-flash-high ./scripts/open.sh --team dex --cwd /path/to
 | Coder | workspace-write | 执行 Planner 的任务和它转交的 Reviewer 修正指令，运行检查；遇阻向 Planner 报告 |
 | Reviewer | read-only | 独立审查，疑问先与 Planner 讨论；仍需你决定时由 Planner 原文转达，最后在自己的窗格给出审查报告 |
 
-Herdr 运行窗格和会话。本仓库提供角色配置、提示词、按需运行的启动脚本、诊断和测试。分支由 Git 管理，对话历史由各自的 CLI 保存。只有选用 Codex 的角色才强制加载 Stop That Shit。各角色的默认模型、推理强度和技能模式见[角色配置](docs/zh-CN/configuration.md)。
+Herdr 运行窗格和会话。本仓库提供角色配置、提示词、按需运行的启动脚本、诊断和测试。分支由 Git 管理，对话历史由各自的 CLI 保存。三个 Codex 角色都接受普通任务，你也可以针对某项任务点名已安装的技能。模型和推理强度见[角色配置](docs/zh-CN/configuration.md)。
 
 ## 日常使用
 

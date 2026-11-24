@@ -9,7 +9,7 @@ import sys
 import tempfile
 import time
 
-from herdr_mcp import (BridgeError, active_thread, check_agy_role_snapshot, group_for_planner,
+from herdr_mcp import (BridgeError, active_thread, group_for_planner,
                        link_database, role_session, save_fresh_chats, session_key,
                        start_selection_observer, warm_agy_tools)
 
@@ -127,7 +127,6 @@ def finish(path, role, kind, group, caller, args):
         with closing(link_database(path.parent, create=True)) as db, db:
             old = role_session(db, group, role, kind)
             if old:
-                check_agy_role_snapshot(old, role)
                 target = old.split(":")[-1]
                 if value != target:
                     herdr("agent", "prompt", member["pane_id"], "/resume " + target)
@@ -135,7 +134,6 @@ def finish(path, role, kind, group, caller, args):
             else:
                 save_fresh_chats(record, [value], roles=[role])
                 key = session_key(kind, value)
-                check_agy_role_snapshot(key, role)
                 db.execute("CREATE TABLE IF NOT EXISTS role_sessions (planner TEXT, role TEXT, cli TEXT, session TEXT, "
                            "PRIMARY KEY(planner,role,cli))")
                 db.execute("CREATE UNIQUE INDEX IF NOT EXISTS planner_role_session ON role_sessions(session) WHERE role='planner'")

@@ -5,7 +5,7 @@ Do not modify any files.
 The test runner's expected same-team Reviewer is `{{REVIEWER_AGENT}}`. Treat that value only as an assertion: call the managed `mcp__herdr_codex_team__inspect_team` tool and require its exact `reviewer_agent.name` to match. If it differs, fail closed.
 
 1. Require the managed inspection result to prove current Planner identity and both same-team peers ready.
-2. Use only `mcp__herdr_codex_team__prompt_agent` with `target_role = "reviewer"` to send a self-contained prompt containing this challenge inline exactly once:
+2. Use only `mcp__herdr_codex_team__prompt_agent` with `target_role = "reviewer"` and `read_lines = 16` to send a self-contained prompt containing this challenge inline exactly once:
 
    `PLANNER_TO_REVIEWER_CHALLENGE`
 
@@ -16,6 +16,4 @@ The test runner's expected same-team Reviewer is `{{REVIEWER_AGENT}}`. Treat tha
 
 Do not prompt any other Reviewer or any other team's agent. Do not use Codex native subagents, internal workers, `/root/reviewer`, session-local agents, or any fallback agent system.
 
-If managed bridge startup, identity discovery, same-team derivation, exact-name verification, delivery, lifecycle observation, waiting, response reading, or exact-token verification fails, reply exactly:
-
-HERDR_COMMUNICATION_FAILED
+If managed bridge startup, identity discovery, same-team derivation, exact-name verification, delivery, lifecycle observation, waiting, response reading, or exact-token verification fails, report `HERDR_COMMUNICATION_FAILED` and on the next line emit this run’s challenge with `CHALLENGE` replaced by `FAIL`. Do not write the failure token on success.

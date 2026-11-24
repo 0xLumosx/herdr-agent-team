@@ -7,7 +7,7 @@
 | 改动 | 入口和需要一起检查的地方 |
 | --- | --- |
 | 启动、重开或诊断团队 | 从 [open.sh](scripts/open.sh) 看新建和复用分支，再查 [start.sh](scripts/start.sh) 和 [doctor.sh](scripts/doctor.sh)。调整启动参数时，让 Doctor 能从实际进程和启动记录验证同一配置。 |
-| 角色、模型或技能 | 公共角色指令在 [prompts/](prompts/)，Codex 模板在 [profiles/](profiles/)，Claude Code 和 Antigravity 的启动参数在 [providers.py](scripts/providers.py)。只在 Codex 配置中嵌入 Stop That Shit。修改源模板后通过安装器生成配置。 |
+| 角色、模型或技能 | 公共角色指令在 [prompts/](prompts/)，Codex 模板在 [profiles/](profiles/)，Claude Code 和 Antigravity 的启动参数在 [providers.py](scripts/providers.py)。Codex 配置只嵌入角色提示词。用户可以在单次请求中点名额外的技能。修改源模板后通过安装器生成配置。 |
 | 会话恢复、派单或团队 SSH | 从 [herdr_mcp.py](scripts/herdr_mcp.py) 查绑定和身份校验。恢复时核对团队、项目目录、角色 CLI 和原生会话 ID，保留旧 Codex 记录的兼容性。SSH 目的地属于当前会话组，远端写权限只给 Coder。 |
 | 在远端启动整个团队 | 检查 [remote.sh](scripts/remote.sh) 的传输清单和 [remote-bootstrap.sh](scripts/lib/remote-bootstrap.sh) 的远端入口。新增启动依赖时，确认远端没有本仓库检出也能运行。 |
 

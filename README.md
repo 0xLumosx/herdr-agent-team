@@ -84,7 +84,7 @@ Acceptance decision → Planner pane
 | Coder | workspace-write | Carry out Planner’s tasks and Reviewer’s relayed fixes. Take blockers to Planner |
 | Reviewer | read-only | Review the evidence, discuss questions with Planner, ask you through Planner if still unresolved, and publish the final review in the Reviewer pane |
 
-Herdr runs the panes and sessions. This repository supplies role profiles, prompts, on-demand launch scripts, diagnostics, and tests. You manage branches in Git. Each CLI keeps its own conversation history. For model defaults, reasoning effort, and the Stop That Shit skill required for Codex roles, see [Role configuration](docs/configuration.md).
+Herdr runs the panes and sessions. This repository supplies role profiles, prompts, on-demand launch scripts, diagnostics, and tests. You manage branches in Git. Each CLI keeps its own conversation history. Codex roles accept ordinary prompts. You can request an installed skill for a particular task. [Role configuration](docs/configuration.md)
 
 ## Daily use
 

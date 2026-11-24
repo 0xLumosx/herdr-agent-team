@@ -41,7 +41,6 @@ BUNDLE_FILES=(
   prompts/planner.md
   prompts/coder.md
   prompts/reviewer.md
-  prompts/stop-that-shit/SKILL.md
 )
 
 usage() {
@@ -243,7 +242,7 @@ required_files=(
   scripts/lib/remote-bootstrap.sh \
   profiles/planner.config.toml profiles/coder.config.toml \
   profiles/reviewer.config.toml prompts/planner.md prompts/coder.md \
-  prompts/reviewer.md prompts/stop-that-shit/SKILL.md
+  prompts/reviewer.md
 )
 for required in "${required_files[@]}"; do
   [[ -f "$runtime_dir/$required" && ! -L "$runtime_dir/$required" ]] || {

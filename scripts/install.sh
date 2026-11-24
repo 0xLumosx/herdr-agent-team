@@ -77,7 +77,6 @@ for role in planner coder reviewer; do
   [[ -f "$PROJECT_ROOT/prompts/$role.md" ]] || \
     die "Missing role prompt: prompts/$role.md"
 done
-[[ -s "$PROJECT_ROOT/prompts/stop-that-shit/SKILL.md" ]] || die 'Missing required Stop That Shit skill.'
 
 if [[ ! -d "$CODEX_DIR" ]]; then
   mkdir -p -- "$CODEX_DIR"
@@ -183,10 +182,19 @@ render_profile() {
   local prompt="$PROJECT_ROOT/prompts/$role.md"
   local prompt_digest
   local policy_digest
+  local installed="$CODEX_DIR/$role.config.toml"
+  local tier=''
+  if [[ -f "$installed" && ! -L "$installed" ]] &&
+     [[ $(head -n 1 "$installed") == '# Installed by herdr-codex-team. Edit the source template and rerun install.sh.' ]]; then
+    tier=$(profile_service_tier_filter select <"$installed") || die "Invalid service tier in $installed."
+  fi
+  if [[ -z "$tier" ]]; then
+    tier=$(profile_service_tier_filter select <"$template") || die "Invalid service tier in $template."
+  fi
 
   model=$(model_for_role "$role")
   prompt_digest=$(prompt_payload_sha256 "$prompt") || \
-    die "Could not compute the embedded prompt digest for $role. Install shasum, sha256sum, or openssl."
+    die "Could not render or hash the developer instructions for $role."
   policy_digest=$(profile_policy_source_sha256 \
     "$template" "$PYTHON_BIN" "$BRIDGE_TARGET") || \
     die "Could not compute the managed profile-policy digest for $role."
@@ -194,15 +202,19 @@ render_profile() {
     printf '# Installed by herdr-codex-team. Edit the source template and rerun install.sh.\n'
     printf '# herdr-prompt-sha256: %s\n' "$prompt_digest"
     printf '# herdr-profile-policy-sha256: %s\n' "$policy_digest"
+    if [[ -n "$tier" ]]; then
+      printf '%s\n' "$tier"
+    fi
     if [[ -n "$model" ]]; then
       printf 'model = "%s"\n' "$model"
       # A role template may carry a default model. Remove only that key when
       # the user supplies an explicit install-time override, avoiding duplicate
       # TOML keys while preserving its reasoning and sandbox defaults.
       profile_policy_render "$template" "$PYTHON_BIN" "$BRIDGE_TARGET" |
+        profile_service_tier_filter strip |
         sed '/^[[:space:]]*model[[:space:]]*=/d'
     else
-      profile_policy_render "$template" "$PYTHON_BIN" "$BRIDGE_TARGET"
+      profile_policy_render "$template" "$PYTHON_BIN" "$BRIDGE_TARGET" | profile_service_tier_filter strip
     fi
     printf "\ndeveloper_instructions = '''\n"
     render_codex_role_instructions "$prompt"

@@ -301,7 +301,10 @@ for role in planner coder reviewer; do
   fi
 done
 
-for role in planner coder reviewer; do
+validate_role_profile() {
+  local role=$1 prompt_integrity_error policy_integrity_error expected_sandbox
+  local rendered_permissions permission_config add_dir
+  local -a validation_args
   [[ -f "$CODEX_DIR/$role.config.toml" ]] || \
     die "Missing $CODEX_DIR/$role.config.toml. Run $SCRIPT_DIR/install.sh first."
   if ! prompt_integrity_error=$(profile_prompt_integrity \
@@ -334,7 +337,7 @@ for role in planner coder reviewer; do
        "$PYTHON_BIN" "$BRIDGE_TARGET" 2>&1); then
     die "$role $policy_integrity_error. Rerun $SCRIPT_DIR/install.sh before starting a team."
   fi
-  [[ $(team_role_cli "$role") == codex ]] || continue
+  [[ $(team_role_cli "$role") == codex ]] || return 0
   validation_args=(
     --profile "$role"
     -c 'agents.enabled=false'
@@ -359,7 +362,20 @@ for role in planner coder reviewer; do
     "$rendered_permissions" "$role" "$PROJECT_DIR" \
     ${ADD_DIRS[@]+"${ADD_DIRS[@]}"} || \
     die "$role does not expose the exact managed workspace-root context. Use a compatible Codex release."
+}
+
+# Each CLI renders a different profile. Finish all checks before taking the
+# managed startup lock or making any change to the Herdr workspace.
+validation_pids=()
+for role in planner coder reviewer; do
+  validate_role_profile "$role" &
+  validation_pids+=("$!")
 done
+validation_status=0
+for pid in "${validation_pids[@]}"; do
+  wait "$pid" || validation_status=1
+done
+[[ $validation_status -eq 0 ]] || exit 1
 
 herdr agent start --help >/dev/null 2>&1 || \
   die 'Herdr does not expose `agent start` with the expected command surface.'

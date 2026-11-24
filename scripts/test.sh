@@ -1240,7 +1240,20 @@ HERDR_CODER_DONE_fixture'
   done
   printf '[OK] Startup timeout bounds fail before workspace creation\n'
 
-  printf 'original planner profile\n' >"$codex_test_dir/planner.config.toml"
+  local plain_home="$temporary_root/plain-codex"
+  if ! CODEX_HOME="$plain_home" "$SCRIPT_DIR/install.sh" >"$temporary_root/plain-install.log" 2>&1; then
+    command cat "$temporary_root/plain-install.log" >&2
+    die 'Default installation without a local Codex skill failed.'
+  fi
+  for role in planner coder reviewer; do
+    [[ $(profile_embedded_prompt_sha256 "$plain_home/$role.config.toml") == $(sha256_stream <"$PROJECT_ROOT/prompts/$role.md") ]] || \
+      die "Default $role profile should contain exactly its shared role instructions."
+  done
+  # Reinstall a managed profile after a native speed selection. Text inside
+  # the role prompt or a TOML table must never become a top-level override.
+  cp "$plain_home/planner.config.toml" "$codex_test_dir/planner.config.toml"
+  printf '\nservice_tier = "fast"\n' >> "$codex_test_dir/planner.config.toml"
+  cp "$codex_test_dir/planner.config.toml" "$temporary_root/planner-before-install.toml"
   install_log="$temporary_root/install.log"
 
   if ! CODEX_HOME="$codex_test_dir" \
@@ -1254,7 +1267,7 @@ HERDR_CODER_DONE_fixture'
 
   backup_dir=$(find "$codex_test_dir" -maxdepth 1 -type d -name 'herdr-codex-team-backup-*' | head -n 1)
   [[ -n "$backup_dir" ]] || die 'Installer did not create a backup for an existing profile.'
-  grep -Fq 'original planner profile' "$backup_dir/planner.config.toml" || \
+  cmp -s "$temporary_root/planner-before-install.toml" "$backup_dir/planner.config.toml" || \
     die 'Installer backup did not preserve the original planner profile.'
   for role in planner coder reviewer; do
     grep -Fq '# Installed by herdr-codex-team.' "$codex_test_dir/$role.config.toml" || \
@@ -1307,17 +1320,8 @@ HERDR_CODER_DONE_fixture'
     fi
     json_prompt_has_effective_role_permissions "$rendered_prompt" "$role" || \
       die "Rendered $role profile did not enable networking with its exact local filesystem boundary."
-    python3 -c '
-import json, pathlib, sys
-skill = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
-mode = {"planner": "Use the task mode that matches", "coder": "Use change mode",
-        "reviewer": "Use review mode"}[sys.argv[2]]
-texts = (part.get("text", "") for message in json.load(sys.stdin)
-         if message.get("role") == "developer" for part in message.get("content", []))
-sys.exit(0 if any("Apply the embedded Stop That Shit skill on every task." in text
-                  and mode in text and skill in text for text in texts) else 1)
-' "$PROJECT_ROOT/prompts/stop-that-shit/SKILL.md" "$role" <<<"$rendered_prompt" || \
-      die "Rendered $role developer instructions do not require and include the full Stop That Shit skill."
+    [[ $(profile_embedded_prompt_sha256 "$codex_test_dir/$role.config.toml") == $(sha256_stream <"$PROJECT_ROOT/prompts/$role.md") ]] || \
+      die "Installed $role profile differs from its role instructions."
     for native_agent_marker in \
       spawn_agent followup_task send_message wait_agent interrupt_agent list_agents; do
       if grep -Fq "$native_agent_marker" <<<"$rendered_prompt"; then
@@ -2464,14 +2468,25 @@ MOCK_HERDR
   printf '[OK] start.sh enforces installed approval/permission policy before startup\n'
 
   cp -p -- "$codex_test_dir/coder.config.toml" "$temporary_root/coder.config.toml.policy-clean"
+  [[ $(profile_service_tier_filter select <"$codex_test_dir/planner.config.toml") == 'service_tier = "fast"' ]] ||
+    die 'Reinstall lost the managed Planner service tier.'
   local notice_profile="$temporary_root/coder-notice-counters.toml"
   local clean_policy
   clean_policy=$(profile_installed_policy_sha256 "$codex_test_dir/coder.config.toml")
   cp -- "$codex_test_dir/coder.config.toml" "$notice_profile"
+  printf '\nservice_tier = "ultrafast"\n' >> "$notice_profile"
+  [[ $(profile_installed_policy_sha256 "$notice_profile") == "$clean_policy" ]] ||
+    die 'Native service tier changed the managed policy digest.'
   printf '\n[tui.model_availability_nux]\ngpt-6-astra = 4\n"gpt-6.1-sol" = 3\n' >> "$notice_profile"
   printf '\n[projects."/some project"]\ntrust_level = "trusted"\n' >> "$notice_profile"
   [[ $(profile_installed_policy_sha256 "$notice_profile") == "$clean_policy" ]] || \
     die 'Native Codex notice counters or folder trust changed the managed policy digest.'
+  printf 'service_tier = "nested"\n' >> "$notice_profile"
+  [[ $(profile_service_tier_filter select <"$notice_profile") == 'service_tier = "ultrafast"' &&
+     $(profile_installed_policy_sha256 "$notice_profile") != "$clean_policy" ]] ||
+    die 'A table-local service_tier was treated as a top-level performance setting.'
+  sed '$d' "$notice_profile" > "$temporary_root/coder-table-check.toml"
+  notice_profile="$temporary_root/coder-table-check.toml"
   printf '\n[permissions.extra]\nextends = ":allow-all"\n' >> "$notice_profile"
   [[ $(profile_installed_policy_sha256 "$notice_profile") != "$clean_policy" ]] || \
     die 'Unmanaged permissions after the notice counters escaped the policy digest.'
@@ -2677,6 +2692,74 @@ run_ping() {
   printf '\nPing tests passed.\n'
 }
 
+# Capture the exact Codex turn before submitting. A completed turn with a
+# failure or a wrong reply is conclusive even if its terminal token is absent.
+# Other CLIs use a run-specific success/failure token in their settled pane.
+require_route_reply() {
+  local prompt=$1 challenge=$2
+  require_named_runtime planner "$PLANNER_AGENT"
+  PYTHONPATH="$SCRIPT_DIR" python3 -B - "$PLANNER_AGENT" "$REQUIRED_AGENT_PANE" "$prompt" "$challenge" "$TEST_TIMEOUT_MS" <<'PYROUTE'
+import json, os, subprocess, sys, time
+from pathlib import Path
+from herdr_mcp import BridgeError, active_thread, codex_turn_cursor, completed_codex_reply
+
+name, pane, prompt, challenge, timeout = sys.argv[1:]
+success = challenge.replace("CHALLENGE", "OK")
+failure = challenge.replace("CHALLENGE", "FAIL")
+def current_agent():
+    agent = json.loads(subprocess.check_output(["herdr", "agent", "get", name]))["result"]["agent"]
+    if agent["pane_id"] != pane:
+        raise BridgeError("Planner moved to a different pane during the communication test")
+    agent["thread_id"] = active_thread(agent, lambda target: subprocess.check_output(
+        ["herdr", "pane", "read", target, "--source", "visible", "--lines", "12"], text=True))
+    return agent
+
+try:
+    agent = current_agent()
+    home = os.environ.get("CODEX_HOME", Path.home() / ".codex")
+    cursor = codex_turn_cursor(home, agent)
+    deadline = time.monotonic() + int(timeout) / 1000
+    def remaining():
+        return str(max(1, int((deadline - time.monotonic()) * 1000)))
+    result = json.loads(subprocess.check_output(["herdr", "agent", "prompt", pane, prompt,
+                                                "--wait", "--timeout", remaining()]))
+    if result["result"]["agent"]["agent_status"] == "blocked":
+        raise BridgeError("Planner is blocked")
+    if not cursor and agent["agent"] == "codex":
+        # A new chat may create its rollout on the first submitted turn.
+        opened = codex_turn_cursor(home, agent)
+        if opened:
+            cursor = (opened[0], 0)
+    if cursor:
+        reply = completed_codex_reply(cursor, prompt, deadline, 4000, "planner").strip()
+        if reply != success:
+            raise BridgeError("Planner completed the test with " + repr(reply[:500]))
+    else:
+        # Older CLIs may briefly report idle before the turn settles. Match a
+        # run-specific result, or a standalone failure after the new challenge.
+        while time.monotonic() < deadline:
+            view = subprocess.check_output(["herdr", "pane", "read", pane, "--source", "recent-unwrapped",
+                                           "--lines", "2000"], text=True)
+            replies = [line.strip().lstrip("•●").strip() for line in view.splitlines()]
+            if success in replies:
+                break
+            current = view.partition(challenge)[2]
+            if failure in replies or any(line.strip().lstrip("•●").strip() == "HERDR_COMMUNICATION_FAILED"
+                                         for line in current.splitlines()):
+                raise BridgeError("Planner reported a failed handoff for " + challenge)
+            time.sleep(0.2)
+        else:
+            raise BridgeError("Timed out waiting for a reply to " + challenge)
+    subprocess.run(["herdr", "agent", "wait", pane, "--until", "done", "--until", "idle",
+                    "--timeout", remaining()], check=True, stdout=subprocess.DEVNULL)
+    final = current_agent()
+    if (final["name"], final["agent"], final["thread_id"]) != (name, agent["agent"], agent["thread_id"]):
+        raise BridgeError("Planner identity changed during the communication test")
+except (BridgeError, subprocess.CalledProcessError) as error:
+    sys.exit("[FAIL] " + str(error))
+PYROUTE
+}
+
 run_route_case() {
   local target=$1
   local prompt_file=$2
@@ -2698,7 +2781,7 @@ run_route_case() {
 
   target_live_name=$(team_agent_for_role "$target")
   printf 'Asking live %s to route to live %s...\n' "$PLANNER_AGENT" "$target_live_name"
-  prompt_and_wait planner "$prompt" "$TEST_TIMEOUT_MS" --match "$unique_response" >/dev/null
+  require_route_reply "$prompt" "$unique_challenge" || exit 1
   require_runtime "$target"
   # A Herdr history capture can leave the idle Codex viewport scrolled up.
   # Return to its current reply only when Codex displays that specific control.

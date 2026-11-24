@@ -473,7 +473,9 @@ grep -Fxq '<remote-arg:--repair-profiles>' "$call_log" || \
 grep -Fxq '<remote-arg:--install-integration>' "$call_log" || \
   die 'remote.sh did not pass through explicit integration approval.'
 grep -Fxq 'scripts/open.sh' "$archive_log" || die 'remote.sh did not stream open.sh.'
-grep -Fxq 'prompts/stop-that-shit/SKILL.md' "$archive_log" || die 'remote.sh did not stream the required role skill.'
+if grep -Eiq '(^|/)skills/|(^|/)SKILL\.md$' "$archive_log"; then
+  die 'remote.sh bundled a host-local Codex skill.'
+fi
 grep -Fxq 'scripts/herdr_mcp.py' "$archive_log" || \
   die 'remote.sh did not stream the Planner Herdr MCP bridge.'
 grep -Fxq 'scripts/lib/remote-bootstrap.sh' "$archive_log" || \

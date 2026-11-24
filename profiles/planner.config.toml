@@ -50,6 +50,6 @@ mcp_servers.herdr_codex_team.tools.prompt_agent.approval_mode = "approve"
 mcp_servers.herdr_team_ssh.command = "__HERDR_CODEX_TEAM_PYTHON__"
 mcp_servers.herdr_team_ssh.args = ["__HERDR_CODEX_TEAM_BRIDGE__", "--ssh", "planner"]
 mcp_servers.herdr_team_ssh.env_vars = ["HOME", "PATH", "CODEX_HOME", "HERDR_BIN_PATH", "HERDR_ENV", "HERDR_TEAM_RUN_ID", "HERDR_PANE_ID", "HERDR_SOCKET_PATH", "HERDR_SESSION", "HERDR_SSH_CONFIG", "SSH_AUTH_SOCK"]
-mcp_servers.herdr_team_ssh.enabled_tools = ["remote_context", "ssh_read", "select_remote", "use_local"]
+mcp_servers.herdr_team_ssh.enabled_tools = ["remote_context", "ssh_read", "select_read_only_remote", "inspect_peer_ssh", "select_remote", "use_local"]
 mcp_servers.herdr_team_ssh.default_tools_approval_mode = "approve"
 mcp_servers.herdr_team_ssh.tool_timeout_sec = 135

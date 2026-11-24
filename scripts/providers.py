@@ -74,7 +74,7 @@ def native_args(kind, role, directory, bridge, herdr, create=True):
     ssh_names = ["remote_context", "ssh_read"]
     if role == "planner":
         servers["herdr_codex_team"] = server
-        ssh_names += ["select_remote", "use_local"]
+        ssh_names += ["select_read_only_remote", "inspect_peer_ssh", "select_remote", "use_local"]
     elif role == "coder":
         ssh_names.append("ssh_run")
     grants = [("herdr_team_ssh", name) for name in ssh_names]
@@ -94,10 +94,7 @@ def native_args(kind, role, directory, bridge, herdr, create=True):
             policy = ["--setting-sources", "user", "--settings", managed_file(settings_file, json.dumps(settings), create)]
         else:
             policy = ["--restricted", "--settings", str(user_settings)]
-        # A user's ordinary Claude installation can already have the Codex team's skill installed.
-        # Deny its native invocation just for this managed session, including invocations with arguments.
-        policy += ["--disallowedTools", "Skill(stop-that-shit *),Skill(stop-that-shit:stop-that-shit *)",
-                   "--allowedTools", ",".join("mcp__%s__%s" % item for item in grants)]
+        policy += ["--allowedTools", ",".join("mcp__%s__%s" % item for item in grants)]
         return policy + ["--strict-mcp-config", "--mcp-config", json.dumps({"mcpServers": servers}),
                          "--tools", tools, "--append-system-prompt-file", prompt_file]
     if kind != "agy":

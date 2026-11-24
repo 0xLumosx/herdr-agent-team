@@ -20,22 +20,12 @@ sha256_stream() {
 
 render_codex_role_instructions() {
   local prompt=$1
-  local skill="${prompt%/*}/stop-that-shit/SKILL.md"
-  local mode
-  case "${prompt##*/}" in
-    planner.md) mode="Use the task mode that matches the user's request." ;;
-    coder.md) mode="Use change mode for authorized implementation." ;;
-    reviewer.md) mode="Use review mode for implementation reviews." ;;
-    *) return 2 ;;
-  esac
-  [[ -s "$prompt" && -s "$skill" ]] || return 2
-  if grep -Fq "'''" "$prompt" "$skill"; then
+  [[ -s "$prompt" ]] || return 2
+  if grep -Fq "'''" "$prompt"; then
     printf 'Role instructions contain the closing TOML delimiter.\n' >&2
     return 2
   fi
-  command cat -- "$prompt" &&
-    printf '\nApply the embedded Stop That Shit skill on every task. %s\n\n' "$mode" &&
-    command cat -- "$skill" && printf '\n'
+  command cat -- "$prompt"
 }
 
 prompt_payload_sha256() {
@@ -172,8 +162,24 @@ profile_embedded_prompt_sha256() {
   ' "$profile" | sha256_stream
 }
 
-# The installed model may be selected independently, so model assignments are
-# the only template lines intentionally excluded from the managed policy hash.
+# Select or strip a top-level service tier without treating role prompt text,
+# table keys, or other TOML values as user-selectable performance settings.
+profile_service_tier_filter() {
+  local mode=$1
+  awk -v mode="$mode" -v opener="developer_instructions = '''" -v closer="'''" '
+    $0 == opener { in_prompt = 1 }
+    !in_prompt && /^[[:blank:]]*\[/ { in_table = 1 }
+    !in_prompt && !in_table && /^[[:blank:]]*service_tier[[:blank:]]*=[[:blank:]]*("[[:alnum:]_-]+"|\047[[:alnum:]_-]+\047)[[:blank:]]*(#.*)?$/ {
+      if (++count > 1) exit 2
+      if (mode == "select") print
+      next
+    }
+    mode == "strip" { print }
+    $0 == closer { in_prompt = 0 }
+  '
+}
+
+# Model selection and the native service tier are independent of role policy.
 profile_policy_source_sha256() {
   local template=${1-}
   local python_path=${2-}
@@ -181,6 +187,7 @@ profile_policy_source_sha256() {
   [[ -f "$template" ]] || return 2
   {
     profile_policy_render "$template" "$python_path" "$bridge_path" |
+      profile_service_tier_filter strip |
       sed '/^[[:space:]]*model[[:space:]]*=/d'
     printf '\n'
   } | sha256_stream
@@ -192,6 +199,7 @@ profile_policy_marker_sha256() {
 
 profile_installed_policy_sha256() {
   local profile=${1-}
+  profile_service_tier_filter strip <"$profile" |
   awk -v opener="developer_instructions = '''" -v closer="'''" '
     BEGIN { state = 0; starts = 0; closes = 0; invalid = 0 }
     $0 == opener {
@@ -208,13 +216,12 @@ profile_installed_policy_sha256() {
     state == 1 { next }
     # Native Codex writes notice counters and user-confirmed folder trust below
     # the managed prompt. Keep all other fields in the policy hash.
-    state == 2 && $0 == "[tui.model_availability_nux]" { blanks = 0; native = "notices"; next }
-    state == 2 && /^\[projects\."([^"\\]|\\.)+"\]$/ { blanks = 0; native = "trust"; next }
+    state == 2 && $0 == "[tui.model_availability_nux]" { native = "notices"; next }
+    state == 2 && /^\[projects\."([^"\\]|\\.)+"\]$/ { native = "trust"; next }
     native == "notices" && /^[[:space:]]*("[[:alnum:]_.-]+"|[[:alnum:]_-]+)[[:space:]]*=[[:space:]]*[0-9]+[[:space:]]*$/ { next }
     native == "trust" && /^[[:space:]]*trust_level[[:space:]]*=[[:space:]]*"(trusted|untrusted)"[[:space:]]*$/ { next }
-    state == 2 && $0 == "" { if (!native) blanks++; next }
+    state == 2 && $0 == "" { next }
     state == 2 {
-      while (blanks > 0) { print ""; blanks-- }
       native = ""
     }
     $0 == "# Installed by herdr-codex-team. Edit the source template and rerun install.sh." { next }
@@ -223,10 +230,9 @@ profile_installed_policy_sha256() {
     /^[[:space:]]*model[[:space:]]*=/ { next }
     { print }
     END {
-      while (blanks > 0) { print ""; blanks-- }
       if (invalid || starts != 1 || closes != 1 || state != 2) exit 2
     }
-  ' "$profile" | sha256_stream
+  ' | sha256_stream
 }
 
 # Print a stable diagnostic and return non-zero on any integrity failure.
