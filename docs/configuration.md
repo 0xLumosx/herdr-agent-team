@@ -16,9 +16,21 @@ Tell the Planner which SSH host and remote directory to use, for example “Insp
 
 | Role | Remote operations |
 | --- | --- |
-| Planner | Select or clear the destination, inspect directories, files, status and diffs |
+| Planner | Select or clear the destination, inspect files and Git state, query systemd service and Docker container logs |
 | Coder | Read files and run authorized edits, builds and tests in the selected directory |
 | Reviewer | List, read, search, inspect Git status and staged or unstaged diffs |
+
+Use `herdr_team_ssh/ssh_read` with these arguments on the selected host:
+
+| Request | Example arguments |
+| --- | --- |
+| Read lines 20 through 40 of a remote file | `{"operation":"read","path":"logs/app.log","start_line":20,"end_line":40}` |
+| Read a systemd unit's journal in a time window | `{"operation":"service_logs","service":"example.service","since":"2026-11-25T09:00:00+08:00","until":"2026-11-25T10:00:00+08:00"}` |
+| Read a Docker container's logs from a given time | `{"operation":"container_logs","container":"example-api","since":"2026-11-25T01:00:00Z"}` |
+
+Line numbers start at 1 and both bounds are inclusive. Omit either bound to read from the beginning or to the end. Only Planner can query logs. Supply an exact unit or container name and timestamps with an explicit offset. Without a time window, Planner gets the latest 200 lines. The SSH account needs read access to the journal or Docker logs. Responses retain the 128 KiB output limit and report truncation.
+
+New Gemini role definitions include their Herdr tool descriptions and argument schemas. For a resumed chat, use `list_resources` on the relevant MCP server and read the returned tool-definition resource. It contains the same definitions as the running server's `tools/list`.
 
 The destination belongs to the linked conversation group. Resuming an older Planner restores that group's host and working directory. Ask the Planner to switch back to local work to clear it with `use_local`. A one-off shell `ssh` command does not register a team destination.
 

@@ -24,6 +24,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
@@ -1082,14 +1083,30 @@ TOOLS = [
 # SSH runs through the user's OpenSSH client. Its destination is bound to a
 # verified group, so peers cannot substitute another host in tool arguments.
 SSH_OPERATIONS = ("pwd", "list", "read", "search", "status", "diff", "staged_diff")
+LOG_OPERATIONS = ("service_logs", "container_logs")
 SSH_BY_ROLE = {
-    "planner": ("select_read_only_remote", "inspect_peer_ssh", "select_remote", "use_local", "remote_context", "ssh_read"),
+    "planner": ("remote_context", "ssh_read", "select_read_only_remote", "inspect_peer_ssh", "select_remote", "use_local"),
     "coder": ("remote_context", "ssh_read", "ssh_run"),
     "reviewer": ("remote_context", "ssh_read"),
 }
 
 
 def ssh_tools(role):
+    operations = SSH_OPERATIONS + LOG_OPERATIONS if role == "planner" else SSH_OPERATIONS
+    read_fields = {
+        "operation": {"enum": list(operations), "type": "string"},
+        "path": {"type": "string", "description": "Path relative to the selected directory. Defaults to '.'."},
+        "pattern": {"type": "string", "minLength": 1, "description": "Required for search. Literal text."},
+        "start_line": {"type": "integer", "minimum": 1, "description": "For read only. First line inclusive. Defaults to 1."},
+        "end_line": {"type": "integer", "minimum": 1, "description": "For read only. Last line inclusive. Omit to read to EOF."},
+    }
+    if role == "planner":
+        read_fields.update({
+            "service": {"type": "string", "description": "Exact systemd unit name, required for service_logs."},
+            "container": {"type": "string", "description": "Docker container name or ID, required for container_logs."},
+            "since": {"type": "string", "format": "date-time", "description": "Log window start, e.g. 2026-11-25T09:00:00+08:00. Up to 6 fractional digits for systemd or 9 for Docker."},
+            "until": {"type": "string", "format": "date-time", "description": "Log window end. Same timestamp format as since."},
+        })
     specs = {
         "select_remote": ("Select the user-authorized SSH host and verify the shared remote working directory.",
                           {"host": {"type": "string"}, "directory": {"type": "string"},
@@ -1098,9 +1115,10 @@ def ssh_tools(role):
                              {"target_role": {"type": "string", "enum": ["coder", "reviewer"]}}, ["target_role"]),
         "use_local": ("Clear the SSH destination to return this group to local work.", {}, []),
         "remote_context": ("Return this conversation group's selected SSH host and directory.", {}, []),
-        "ssh_read": ("Inspect the selected remote directory using a read-only operation.",
-                     {"operation": {"enum": list(SSH_OPERATIONS), "type": "string"},
-                      "path": {"type": "string"}, "pattern": {"type": "string"}}, ["operation"]),
+        "ssh_read": ("Read from the selected SSH host. read accepts a line range. search takes a literal pattern."
+                     + (" For logs, supply the matching service or container and optional since/until. "
+                        "Without a time window, return the latest 200 lines." if role == "planner" else ""),
+                     read_fields, ["operation"]),
         "ssh_run": ("Run an authorized Coder shell command in the group's remote working directory.",
                     {"command": {"type": "string"}}, ["command"]),
     }
@@ -1142,12 +1160,68 @@ def ssh_command(destination, command):
             "truncated": len(data) > 128 * 1024}
 
 
-def remote_read_command(operation, path=".", pattern=None):
+def remote_log_command(operation, arguments):
+    is_service = operation == "service_logs"
+    target_key = "service" if is_service else "container"
+    if arguments.keys() - {target_key, "since", "until"}:
+        raise BridgeError(f"{operation} accepts only {target_key}, since and until")
+    name = arguments.get(target_key)
+    name_pattern = r"[A-Za-z0-9_:@.\\-]+" if is_service else r"[A-Za-z0-9][A-Za-z0-9_.-]*"
+    if not isinstance(name, str) or name.startswith("-") or not re.fullmatch(name_pattern, name):
+        raise BridgeError(f"{operation} requires an exact {target_key} name or ID")
+    cmd = (["journalctl", "--no-pager", "--utc", "--output=short-iso-precise", "--unit=" + name]
+           if is_service else ["docker", "logs", "--timestamps"])
+    bounds = {}
+    for key in ("since", "until"):
+        if key not in arguments:
+            continue
+        value = arguments[key]
+        match = re.fullmatch(r"([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})"
+                             r"(?:\.([0-9]{1,9}))?(Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])",
+                             value) if isinstance(value, str) else None
+        try:
+            if not match:
+                raise ValueError
+            stamp = datetime.fromisoformat(match[1] + match[3].replace("Z", "+00:00")).astimezone(timezone.utc)
+        except (ValueError, OverflowError):
+            raise BridgeError(f"{key} requires a timestamp such as 2026-11-25T09:00:00+08:00")
+        fraction = match[2] or ""
+        bounds[key] = (stamp, fraction.ljust(9, "0"))
+        if is_service:
+            if len(fraction) > 6:
+                raise BridgeError(f"{key} supports up to 6 fractional digits for systemd logs")
+            formatted = stamp.strftime("%Y-%m-%d %H:%M:%S.") + fraction.ljust(6, "0") + " UTC"
+        else:
+            formatted = stamp.strftime("%Y-%m-%dT%H:%M:%S") + ("." + fraction if fraction else "") + "Z"
+        cmd.append("--" + key + "=" + formatted)
+    if "since" in bounds and "until" in bounds and bounds["since"] > bounds["until"]:
+        raise BridgeError("since must be at or before until")
+    if not bounds:
+        cmd.append("--lines=200" if is_service else "--tail=200")
+    if not is_service:
+        cmd.extend(["--", name])
+    return shlex.join(cmd)
+
+
+def remote_read_command(operation, path=".", pattern=None, start_line=None, end_line=None):
     if not isinstance(path, str) or not path or _has_unsafe_control(path) or path.startswith("/") or ".." in path.split("/"):
         raise BridgeError("Use a relative path within the selected remote directory")
     # Explicit file path avoids magic filenames, stdin and Git pathspec expansion.
     path = shlex.quote("./" + path)
     git = "git --no-pager --no-optional-locks --literal-pathspecs"
+    if start_line is not None or end_line is not None:
+        if operation != "read" or pattern is not None:
+            raise BridgeError("start_line and end_line are only valid for read")
+        first = 1 if start_line is None else start_line
+        if type(first) is not int or first < 1 or (end_line is not None and
+                (type(end_line) is not int or end_line < first)):
+            raise BridgeError("Use positive line numbers with end_line at or after start_line")
+        # Stop at the requested end, even for a one-line range. Path already starts with ./.
+        last = end_line if end_line is not None else "$"
+        script = f"{first},{last}p" if first != last else f"{first}p"
+        if end_line is not None:
+            script += f";{end_line}q"
+        return "sed -n " + shlex.quote(script) + " " + path
     if operation == "search":
         return "grep -rnF -e " + shlex.quote(_required_string(pattern, "search pattern")) + " -- " + path
     commands = {"pwd": "pwd -P", "list": "ls -la -- " + path, "read": "cat -- " + path,
@@ -1204,7 +1278,8 @@ def ssh_tool_call(bridge, role, name, arguments):
     specs = {tool["name"]: tool["inputSchema"] for tool in ssh_tools(role)}
     schema = specs.get(name)
     if not schema or set(arguments) - set(schema["properties"]) or not set(schema["required"]) <= set(arguments):
-        raise BridgeError("Unsupported SSH tool or arguments for " + role)
+        raise BridgeError("Unsupported SSH tool or arguments for " + role +
+                          ". Read the current definitions at herdr://herdr_team_ssh/tools")
     directory, key = ssh_group(bridge, role)
     if name == "inspect_peer_ssh":
         return bridge.prompt_agent(arguments["target_role"],
@@ -1240,7 +1315,18 @@ def ssh_tool_call(bridge, role, name, arguments):
     if name == "remote_context":
         return target
     if name == "ssh_read":
-        command = remote_read_command(**arguments)
+        operation = arguments["operation"]
+        supported = schema["properties"]["operation"]["enum"]
+        if operation not in supported:
+            raise BridgeError("Supported ssh_read operations for " + role + ": " + ", ".join(supported))
+        if operation in LOG_OPERATIONS:
+            command = remote_log_command(operation, {k: v for k, v in arguments.items() if k != "operation"})
+        elif arguments.keys() - {"operation", "path", "pattern", "start_line", "end_line"}:
+            raise BridgeError("service, container, since and until are only valid for log operations")
+        else:
+            if any(arguments[key] is None for key in ("start_line", "end_line") if key in arguments):
+                raise BridgeError("Omit unspecified line bounds or supply positive integers")
+            command = remote_read_command(**arguments)
     else:
         if target.get("read_only"):
             raise BridgeError("The Planner selected this SSH destination for read-only inspection")
@@ -1252,10 +1338,13 @@ def ssh_tool_call(bridge, role, name, arguments):
 
 
 class McpServer:
-    def __init__(self, bridge: HerdrBridge, ssh_role=None, disabled=False):
+    def __init__(self, bridge: HerdrBridge, ssh_role=None, disabled=False, server_name=None):
         self._ssh_role = ssh_role
         self._disabled = disabled
         self._bridge = bridge
+        self._server_name = server_name or ("herdr_team_ssh" if ssh_role else SERVER_NAME)
+        self._tools = [] if disabled else ssh_tools(ssh_role) if ssh_role else TOOLS
+        self._resource_uri = "herdr://" + self._server_name + "/tools"
 
     @staticmethod
     def _response(request_id: Any, result: Any) -> Dict[str, Any]:
@@ -1307,9 +1396,11 @@ class McpServer:
                 request_id,
                 {
                     "protocolVersion": protocol,
-                    "capabilities": {"tools": {"listChanged": False}},
-                    "serverInfo": {"name": "herdr_team_ssh" if self._ssh_role else SERVER_NAME, "version": SERVER_VERSION},
-                    "instructions": ("Use the SSH destination selected for this linked conversation group." if self._ssh_role else
+                    "capabilities": {"tools": {"listChanged": False}, "resources": {}},
+                    "serverInfo": {"name": self._server_name, "version": SERVER_VERSION},
+                    "instructions": ("This server has no tools in this pane." if self._disabled else
+                        "Use the SSH destination selected for this linked conversation group. "
+                        "Read " + self._resource_uri + " for the available operations and arguments." if self._ssh_role else
                         "Planner-only Herdr bridge. Call inspect_team before relying on "
                         "identity. Use prompt_agent only for the returned same-team Coder "
                         "or Reviewer role. Never use shell Herdr commands or another agent "
@@ -1320,7 +1411,16 @@ class McpServer:
         if method == "ping":
             return self._response(request_id, {})
         if method == "tools/list":
-            return self._response(request_id, {"tools": [] if self._disabled else ssh_tools(self._ssh_role) if self._ssh_role else TOOLS})
+            return self._response(request_id, {"tools": self._tools})
+        if method == "resources/list":
+            resources = [{"uri": self._resource_uri, "name": "Herdr tool definitions for this role",
+                          "mimeType": "application/json"}] if self._tools else []
+            return self._response(request_id, {"resources": resources})
+        if method == "resources/read":
+            if not self._tools or params.get("uri") != self._resource_uri:
+                return self._error(request_id, -32002, "Unknown resource in this role")
+            return self._response(request_id, {"contents": [{"uri": self._resource_uri,
+                "mimeType": "application/json", "text": json.dumps(self._tools, ensure_ascii=False)}]})
         if method != "tools/call":
             return self._error(request_id, -32601, "method not found")
 
@@ -1375,11 +1475,11 @@ def _write_response(response: Mapping[str, Any]) -> None:
     sys.stdout.flush()
 
 
-def serve(ssh_role=None, disabled=False) -> int:
+def serve(ssh_role=None, disabled=False, server_name=None) -> int:
     bridge = HerdrBridge()
     if not disabled and not ssh_role and os.environ.get("HERDR_TEAM_RUN_ID") and os.environ.get("HERDR_ENV") == "1":
         threading.Thread(target=bridge.follow_planner, daemon=True).start()
-    server = McpServer(bridge, ssh_role, disabled)
+    server = McpServer(bridge, ssh_role, disabled, server_name)
     while True:
         raw = sys.stdin.buffer.readline(MAX_MESSAGE_BYTES + 1)
         if not raw:
@@ -1413,7 +1513,7 @@ def main(argv: List[str]) -> int:
         managed = os.environ.get("HERDR_ENV") == "1" and bool(os.environ.get("HERDR_TEAM_RUN_ID")) and role in ROLES
         if argv[1] == "team":
             return serve(disabled=not managed or role != "planner")
-        return serve(ssh_role=role if managed else None, disabled=not managed)
+        return serve(ssh_role=role if managed else None, disabled=not managed, server_name="herdr_team_ssh")
     if len(argv) == 2 and argv[0] == "--ssh" and argv[1] in ROLES:
         return serve(argv[1])
     if len(argv) == 2 and argv[0] in ("--ensure-observer", "--observe"):

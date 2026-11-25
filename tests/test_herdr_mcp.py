@@ -345,6 +345,14 @@ class HerdrBridgeTests(unittest.TestCase):
                     else:
                         name = args[args.index("--agent") + 1]
                         instructions = (home / ".gemini/config/agents" / (name + ".md")).read_text()
+                        catalogs = self.module.ssh_tools(role)
+                        if role == "planner":
+                            catalogs += self.module.TOOLS
+                        for tool in catalogs:
+                            schema = json.dumps(tool["inputSchema"], ensure_ascii=False, separators=(",", ":"))
+                            self.assertIn("/" + tool["name"] + " — " + tool["description"] + "\nArguments: " + schema,
+                                          instructions)
+                        self.assertEqual("container_logs" in instructions, role == "planner")
                     self.assertIn((PROJECT_ROOT / "prompts" / (role + ".md")).read_text(), instructions)
                     if role != "reviewer":
                         args += ["--add-dir", "/project with spaces"]
@@ -398,6 +406,29 @@ class HerdrBridgeTests(unittest.TestCase):
                 bridge.prompt_agent("coder", "Edit over SSH", task_mode="change")
             for role in self.module.ROLES:
                 self.assertEqual(call(role, "ssh_read", operation="pwd")["destination"], read_only)
+            call("planner", "ssh_read", operation="service_logs", service="fixture@one.service",
+                 since="2026-11-25T09:00:00+08:00", until="2026-11-25T02:00:00Z")
+            dest, command = ssh.call_args.args
+            self.assertEqual(dest, read_only)
+            self.assertIn("--unit=fixture@one.service", command)
+            self.assertIn("--since=2026-11-25 01:00:00.000000 UTC", command)
+            self.assertIn("--until=2026-11-25 02:00:00.000000 UTC", command)
+            call("planner", "ssh_read", operation="container_logs", container="service-1")
+            self.assertEqual(ssh.call_args.args[1], "docker logs --timestamps --tail=200 -- service-1")
+            call("planner", "ssh_read", operation="container_logs", container="service-1",
+                 since="2026-11-25T09:00:00.1+08:00", until="2026-11-25T01:00:00.100000009Z")
+            self.assertIn("--since=2026-11-25T01:00:00.1Z --until=2026-11-25T01:00:00.100000009Z", ssh.call_args.args[1])
+            for role in ("coder", "reviewer"):
+                with self.assertRaises(self.module.BridgeError):
+                    call(role, "ssh_read", operation="service_logs", service="fixture")
+            for args in ({"container": "-f"}, {"container": "x; whoami"},
+                         {"container": "fixture", "since": "2026-11-25T09:00:00"},
+                         {"container": "fixture", "since": "2026-11-25T12:00:00Z", "until": "2026-11-25T09:00:00Z"},
+                         {"container": "fixture", "path": "extra"}, {"service": "wrong-target"}):
+                ssh.reset_mock()
+                with self.assertRaises(self.module.BridgeError):
+                    call("planner", "ssh_read", operation="container_logs", **args)
+                ssh.assert_not_called()
             with self.assertRaisesRegex(self.module.BridgeError, "read-only inspection"):
                 call("coder", "ssh_run", command="touch test")
             for role in ("coder", "reviewer"):
@@ -797,6 +828,37 @@ class HerdrBridgeTests(unittest.TestCase):
 
         with self.assertRaisesRegex(self.module.BridgeError, "dex-vut-reviewer"):
             bridge.inspect_team()
+
+    def test_read_file_ranges_use_one_based_inclusive_lines(self):
+        with tempfile.TemporaryDirectory(prefix="herdr-disposable-line-read-") as tmp:
+            filename = "log with ' quotes"
+            (Path(tmp) / filename).write_text("one\ntwo\nthree\nfour\n")
+            ranges = [({}, "one\ntwo\nthree\nfour\n"), (dict(start_line=2, end_line=3), "two\nthree\n"),
+                      (dict(start_line=1, end_line=1), "one\n"), (dict(end_line=2), "one\ntwo\n"),
+                      (dict(start_line=4), "four\n"), (dict(start_line=6, end_line=7), "")]
+            for bounds, expected in ranges:
+                command = self.module.remote_read_command("read", filename, **bounds)
+                self.assertEqual(subprocess.check_output(["/bin/sh", "-c", command], cwd=tmp, text=True), expected)
+            for op, bounds in (("list", dict(end_line=1)), ("read", dict(start_line=True)),
+                               ("read", dict(end_line=0)), ("read", dict(start_line=3, end_line=2))):
+                with self.assertRaises(self.module.BridgeError):
+                    self.module.remote_read_command(op, filename, **bounds)
+
+    def test_role_resource_matches_tools_list_even_without_native_cache(self):
+        bridge, _runner = self.make_bridge()
+        for role in (None, *self.module.ROLES):
+            server = self.module.McpServer(bridge, ssh_role=role)
+            def request(method, **params):
+                return server.handle(dict(jsonrpc="2.0", id=1, method=method, params=params))
+            tools = request("tools/list")["result"]["tools"]
+            resource, = request("resources/list")["result"]["resources"]
+            content, = request("resources/read", uri=resource["uri"])["result"]["contents"]
+            self.assertEqual(json.loads(content["text"]), tools)
+            self.assertIn("error", request("resources/read", uri="herdr://other/tools"))
+        server = self.module.McpServer(bridge, disabled=True, server_name="herdr_team_ssh")
+        self.assertEqual(request("resources/list")["result"]["resources"], [])
+        self.assertIn("error", request("resources/read", uri=resource["uri"]))
+        self.assertEqual(request("initialize")["result"]["serverInfo"]["name"], "herdr_team_ssh")
 
     def test_mcp_server_advertises_only_the_bounded_tools(self):
         bridge, _runner = self.make_bridge()

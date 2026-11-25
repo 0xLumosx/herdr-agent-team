@@ -16,9 +16,21 @@
 
 | 角色 | 远端能力 |
 | --- | --- |
-| Planner | 选择或清除目的地，查看目录、文件、状态及差异 |
+| Planner | 选择或清除目的地，查看文件和 Git 状态，查询 systemd 服务日志和 Docker 容器日志 |
 | Coder | 读取远端证据，在选定目录执行获准的编辑、构建和测试命令 |
 | Reviewer | 列目录、读文件、搜索文本、检查 Git 状态和暂存或未暂存的差异 |
+
+选定主机后，可向 `herdr_team_ssh/ssh_read` 传入以下参数。
+
+| 请求 | 参数示例 |
+| --- | --- |
+| 读取远端文件第 20 至 40 行 | `{"operation":"read","path":"logs/app.log","start_line":20,"end_line":40}` |
+| 查询北京时间 09:00 至 10:00 的服务日志 | `{"operation":"service_logs","service":"example.service","since":"2026-11-25T09:00:00+08:00","until":"2026-11-25T10:00:00+08:00"}` |
+| 从指定时刻开始查询容器日志 | `{"operation":"container_logs","container":"example-api","since":"2026-11-25T01:00:00Z"}` |
+
+行号从 1 开始，包含首尾两行。省略起始行从文件开头读取，省略结束行读到文件末尾。服务和容器日志仅向 Planner 开放，使用准确的服务或容器名，时间须带 UTC 偏移或 `Z`。省略时间范围时返回最近 200 行。SSH 账号需要具备相应日志的读取权限。每次返回至多 128 KiB，超出时结果会标明截断。
+
+新生成的 Gemini 角色指令包含该角色的 Herdr 工具和完整参数。恢复旧对话时，可向对应 MCP 服务调用 `list_resources`，读取返回的工具说明资源。资源内容与当前服务的 `tools/list` 一致。
 
 目的地属于当前三会话组合。切回旧 Planner 后会恢复该组合的主机和目录。要回到本地任务，告诉 Planner 切回本地，它会调用 `use_local`。临时在 shell 中运行的 `ssh` 命令不会登记团队目的地。
 

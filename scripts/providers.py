@@ -2,11 +2,13 @@
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import sys
 import subprocess
 from pathlib import Path
+from herdr_mcp import TOOLS, ssh_tools
 
 ROLES = ("planner", "coder", "reviewer")
 CLAUDE_READ = "Read,Glob,Grep,WebFetch,WebSearch"
@@ -64,22 +66,18 @@ def unconfigure_agy(bridge):
             subprocess.run(["agy", "mcp", "remove", name], check=True)
 
 
-def native_args(kind, role, directory, bridge, herdr, create=True):
+def native_args(kind, role, directory, bridge, herdr, create=True, live_agent=None):
     source = Path(__file__).resolve().parents[1] / "prompts" / (role + ".md")
     prompt = source.read_text()
     prompt_file = managed_file(directory / source.name, prompt, create)
     python = os.path.realpath(sys.executable)
     server = {"command": python, "args": [str(bridge)], "env": {"HERDR_BIN_PATH": herdr}}
     servers = {"herdr_team_ssh": dict(server, args=[str(bridge), "--ssh", role])}
-    ssh_names = ["remote_context", "ssh_read"]
+    catalogs = {"herdr_team_ssh": ssh_tools(role)}
     if role == "planner":
         servers["herdr_codex_team"] = server
-        ssh_names += ["select_read_only_remote", "inspect_peer_ssh", "select_remote", "use_local"]
-    elif role == "coder":
-        ssh_names.append("ssh_run")
-    grants = [("herdr_team_ssh", name) for name in ssh_names]
-    if role == "planner":
-        grants += [("herdr_codex_team", name) for name in ("inspect_team", "prompt_agent")]
+        catalogs["herdr_codex_team"] = TOOLS
+    grants = [(name, tool["name"]) for name, tools in catalogs.items() for tool in tools]
     settings_file = directory / (role + "." + kind + ".settings.json")
     if not create and not settings_file.exists():
         settings_file = directory / (role + ".settings.json")
@@ -109,11 +107,25 @@ def native_args(kind, role, directory, bridge, herdr, create=True):
     dispatch = ("Antigravity tool calls use call_mcp_tool. Pass ServerName, ToolName and Arguments. "
                 "For SSH use ServerName herdr_team_ssh, for example ToolName ssh_read with "
                 'Arguments {"operation":"pwd"}.')
-    if role == "planner":
-        dispatch += " For handoffs use ServerName herdr_codex_team with ToolName inspect_team or prompt_agent."
-    prompt = dispatch + "\n\n" + prompt
-    body = "".join(k + ": " + json.dumps(v) + "\n" for k, v in fields.items()) + "---\n" + prompt
+    # The native CLI shares its on-disk MCP cache across panes. Keep the live
+    # contract in the role itself so another CLI's empty cache cannot replace it.
+    reference = []
+    for name, catalog in catalogs.items():
+        for tool in catalog:
+            schema = json.dumps(tool["inputSchema"], ensure_ascii=False, separators=(",", ":"))
+            reference.append(f'{name}/{tool["name"]} — {tool["description"]}\nArguments: {schema}')
+    header = "".join(k + ": " + json.dumps(v) + "\n" for k, v in fields.items()) + "---\n"
+    body = (header + dispatch + "\nUse the Herdr tool definitions below directly. Each server also publishes "
+            "its current definitions as an MCP resource.\n\n" + "\n\n".join(reference) + "\n\n" + prompt)
     name = "herdr-" + role + "-" + hashlib.sha256(body.encode()).hexdigest()[:12]
+    if not create and live_agent and live_agent != name:
+        # An already-running CLI may have the earlier preamble. Verify its
+        # full definition, including the tool and sandbox policy, in place.
+        if not re.fullmatch(r"herdr-" + role + r"-[0-9a-f]{12}", live_agent):
+            raise ValueError("Unexpected live Antigravity role: " + live_agent)
+        if role == "planner":
+            dispatch += " For handoffs use ServerName herdr_codex_team with ToolName inspect_team or prompt_agent."
+        name, body = live_agent, header + dispatch + "\n\n" + prompt
     managed_file(Path.home() / ".gemini/config/agents" / (name + ".md"), "---\nname: " + name + "\n" + body, create)
     title = {"command": shlex.quote(python) + " " + shlex.quote(str(bridge)) + " --session-title"}
     settings = {"title": title, "statusLine": title}
@@ -138,7 +150,8 @@ def inspect(kind, role):
     if directory.parent.parent != managed / "state/v1/teams" or directory.resolve() != directory:
         raise ValueError("Role configuration is outside the managed team state")
     herdr = os.path.realpath(shutil.which("herdr") or "")
-    expected = native_args(kind, role, directory, managed / "herdr_mcp.py", herdr, create=False)
+    live_agent = args[args.index("--agent") + 1] if kind == "agy" else None
+    expected = native_args(kind, role, directory, managed / "herdr_mcp.py", herdr, create=False, live_agent=live_agent)
     if args[:len(expected)] != expected:
         raise ValueError("Unexpected " + kind + " role arguments")
 
